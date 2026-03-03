@@ -96,6 +96,74 @@ Notes:
 Header:
 - `x-docdex-dag-session` (optional)
 
+
+### Capabilities
+
+`GET /v1/capabilities`
+
+Returns the optional-feature capability contract and bounded limits for retrieval enhancements.
+
+Response fields include:
+- `contract_version`
+- retrieval feature flags (`score_breakdown`, `rerank`, `snippet_provenance`, `retrieval_explanation`, `batch_search`)
+- MCP/HTTP feature flags
+- limit values (`rerank_max_candidates`, `batch_search_max_queries`, `explanation_max_chars`)
+
+### Rerank
+
+`POST /v1/search/rerank`
+
+Request body:
+```json
+{
+  "query": "capabilities",
+  "candidates": [
+    {
+      "doc_id": "docs/usage.md",
+      "snippet": "..."
+    }
+  ],
+  "limit": 5,
+  "repo_id": "<optional>"
+}
+```
+
+Response fields:
+- `hits`
+- `returned_count`
+- `input_count`
+- `limit`
+- `truncated`
+
+Notes:
+- `candidates` is required and must be non-empty.
+- Candidate input is deterministically truncated to the runtime maximum (`rerank_max_candidates` from `/v1/capabilities`).
+
+### Batch search
+
+`POST /v1/search/batch`
+
+Request body:
+```json
+{
+  "queries": ["auth flow", "retry policy"],
+  "limit": 8,
+  "include_libs": true,
+  "repo_id": "<optional>"
+}
+```
+
+Response fields:
+- `results` (per-query search responses)
+- `query_count`
+- `effective_query_count`
+- `limit`
+- `truncated`
+
+Notes:
+- `queries` is required and must include at least one non-empty value.
+- Query lists are deterministically truncated to the runtime maximum (`batch_search_max_queries` from `/v1/capabilities`).
+
 ### Snippet
 
 `GET /snippet/:doc_id`

@@ -1,4 +1,4 @@
----- START OF DOCDEX INFO V0.2.43 ----
+---- START OF DOCDEX INFO V0.2.44 ----
 Docdex URL: http://127.0.0.1:28491
 Use this base URL for Docdex HTTP endpoints.
 Health check endpoint: `GET /healthz` (not `/v1/health`).
@@ -146,6 +146,10 @@ Use these to verify index coverage, repo binding, and to read precise file slice
 - docdex_impact_graph: Mandatory before code changes to review inbound/outbound deps (use MCP/IPC if shell networking is blocked).
 - docdex_dag_export: Export dependency graph to plan change order.
 - HTTP /v1/initialize: Mount/bind a repo for HTTP daemon mode. Request JSON uses rootUri/root_uri (NOT repo_root).
+- HTTP /v1/capabilities: Read optional retrieval feature flags and bounded limits before using optional flows.
+- HTTP /v1/search/rerank: Rerank a candidate hit set; use when capability negotiation says rerank is available.
+- HTTP /v1/search/batch: Execute bounded multi-query retrieval in one request.
+- MCP tools `docdex_capabilities`, `docdex_rerank`, `docdex_batch_search`: optional capability/flow surfaces for Codali integration.
 - HTTP /v1/snippet: Fetch exact line-safe snippets for a doc_id returned by search.
 - HTTP /v1/impact/diagnostics: Inspect unresolved/dynamic imports when impact graphs look incomplete.
 
@@ -223,6 +227,41 @@ Notes:
 - If DOCDEX_WEB_ENABLED=1, web discovery can be slow; plan timeouts accordingly.
 - Responses include `meta.dag_session_id`; pass it to `/v1/dag/export` or `docdex_dag_export` to export the same trace.
 
+### 3a) Capabilities (HTTP)
+
+`GET /v1/capabilities`
+
+Returns the optional-feature capability contract and current limit values for retrieval extensions.
+
+### 3b) Rerank (HTTP)
+
+`POST /v1/search/rerank`
+
+Required JSON fields:
+- `query` (string)
+- `candidates` (array of search hits)
+
+Common optional fields:
+- `limit`, `repo_id`
+
+Notes:
+- Candidate sets are deterministically truncated to the rerank limit exposed by `/v1/capabilities`.
+- Response includes `returned_count`, `input_count`, `limit`, and `truncated`.
+
+### 3c) Batch search (HTTP)
+
+`POST /v1/search/batch`
+
+Required JSON fields:
+- `queries` (array of query strings)
+
+Common optional fields:
+- `limit`, `include_libs`, `repo_id`
+
+Notes:
+- Query lists are deterministically truncated to the batch limit exposed by `/v1/capabilities`.
+- Response includes `query_count`, `effective_query_count`, `results`, and `truncated`.
+
 ### 4) Snippet (HTTP)
 
 `GET /snippet/:doc_id`
@@ -264,6 +303,9 @@ Notes:
 Do not guess fields; use these canonical shapes.
 
 - `docdex_search`: `{ project_root, query, limit?, diff?, repo_only?, force_web? }`
+- `docdex_capabilities`: `{ project_root? }`
+- `docdex_rerank`: `{ project_root?, query, candidates, limit? }`
+- `docdex_batch_search`: `{ project_root?, queries, limit?, include_libs? }`
 - `docdex_open`: `{ project_root, path, start_line?, end_line?, head?, clamp? }` (range must be valid unless clamp/head used)
 - `docdex_files`: `{ project_root, limit?, offset? }`
 - `docdex_stats`: `{ project_root }`

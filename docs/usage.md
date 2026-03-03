@@ -151,12 +151,20 @@ Core endpoints:
 - `GET /healthz`
 - `GET /search?q=...&limit=...`
 - `GET /snippet/:doc_id`
+- `GET /v1/capabilities`
+- `POST /v1/search/rerank`
+- `POST /v1/search/batch`
 - `POST /v1/delegate`
 - `POST /v1/chat/completions`
 - `GET /v1/symbols`, `GET /v1/ast`, `GET /v1/graph/impact`
 - `GET /v1/impact/diagnostics`
 - `GET /v1/index/status`
 - `GET /v1/telemetry/delegation`
+
+Optional retrieval feature negotiation:
+- HTTP: `GET /v1/capabilities`, `POST /v1/search/rerank`, `POST /v1/search/batch`
+- MCP: `docdex_capabilities`, `docdex_rerank`, `docdex_batch_search`
+- Read current runtime limits from `GET /v1/capabilities` (for example rerank candidate cap and batch query cap).
 
 Reference: `docs/http_api.md`.
 

@@ -40,24 +40,38 @@ const MAX_BINARY_FILE_BYTES: u64 = 5 * 1024 * 1024;
 const BINARY_SNIFF_BYTES: usize = 8192;
 const INDEX_READY_FILENAME: &str = "index_ready.json";
 const RUN_TESTS_CONFIG_PATH: &str = ".docdex/run-tests.json";
+const MAX_EXPLANATION_SUMMARY_CHARS: usize = crate::capabilities::EXPLANATION_MAX_CHARS;
 const DOC_EXTENSIONS: &[&str] = &[".md", ".markdown", ".mdx", ".txt", ".yaml", ".yml"];
 const CODE_EXTENSIONS: &[&str] = &[
-    ".rs", ".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".java", ".cs", ".c", ".h", ".cc", ".cpp",
-    ".cxx", ".hh", ".hpp", ".hxx", ".php", ".kt", ".kts", ".swift", ".rb", ".lua", ".dart",
+    ".rs", ".py", ".pyi", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".go",
+    ".java", ".cs", ".c", ".h", ".cc", ".cpp", ".cxx", ".hh", ".hpp", ".hxx", ".php", ".kt",
+    ".kts", ".swift", ".rb", ".lua", ".dart", ".gradle",
 ];
 const DEFAULT_EXTENSIONS: &[&str] = &[
     ".md",
     ".markdown",
     ".mdx",
     ".txt",
+    ".json",
+    ".sh",
+    ".toml",
+    ".cfg",
+    ".xml",
+    ".mod",
+    ".sum",
     ".yaml",
     ".yml",
     ".rs",
     ".py",
+    ".pyi",
     ".js",
     ".jsx",
+    ".mjs",
+    ".cjs",
     ".ts",
     ".tsx",
+    ".mts",
+    ".cts",
     ".go",
     ".java",
     ".cs",
@@ -76,6 +90,7 @@ const DEFAULT_EXTENSIONS: &[&str] = &[
     ".rb",
     ".lua",
     ".dart",
+    ".gradle",
 ];
 const DEFAULT_EXCLUDED_DIR_NAMES: &[&str] = &[
     // Core VCS / tooling
@@ -299,7 +314,41 @@ pub enum DocType {
     Code,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct HitScoreBreakdown {
+    pub query_relevance: f32,
+    pub structural_relevance: f32,
+    pub recency_diff_relevance: f32,
+    pub total: f32,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProvenanceAnchorKind {
+    ExactLineWindow,
+    FileLevelFallback,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct HitProvenance {
+    pub doc_id: String,
+    pub rel_path: String,
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_start: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_end: Option<usize>,
+    pub anchor_kind: ProvenanceAnchorKind,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RetrievalExplanation {
+    pub summary: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub signals: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Hit {
     pub doc_id: String,
     pub rel_path: String,
@@ -320,9 +369,15 @@ pub struct Hit {
     pub line_start: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line_end: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score_breakdown: Option<HitScoreBreakdown>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<HitProvenance>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retrieval_explanation: Option<RetrievalExplanation>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchSnippetOrigin {
     Query,
@@ -365,6 +420,61 @@ pub struct SnippetResult {
     pub origin: SnippetOrigin,
     pub line_start: Option<usize>,
     pub line_end: Option<usize>,
+}
+
+pub(crate) fn build_hit_score_breakdown(
+    query_relevance: f32,
+    structural_relevance: f32,
+    recency_diff_relevance: f32,
+) -> HitScoreBreakdown {
+    HitScoreBreakdown {
+        query_relevance,
+        structural_relevance,
+        recency_diff_relevance,
+        total: query_relevance + structural_relevance + recency_diff_relevance,
+    }
+}
+
+pub(crate) fn build_hit_provenance(
+    doc_id: &str,
+    rel_path: &str,
+    path: &str,
+    line_start: Option<usize>,
+    line_end: Option<usize>,
+) -> HitProvenance {
+    let anchor_kind = if line_start.is_some() && line_end.is_some() {
+        ProvenanceAnchorKind::ExactLineWindow
+    } else {
+        ProvenanceAnchorKind::FileLevelFallback
+    };
+    HitProvenance {
+        doc_id: doc_id.to_string(),
+        rel_path: rel_path.to_string(),
+        path: path.to_string(),
+        line_start,
+        line_end,
+        anchor_kind,
+    }
+}
+
+pub(crate) fn build_retrieval_explanation(
+    summary: impl Into<String>,
+    signals: Vec<String>,
+) -> RetrievalExplanation {
+    let summary = summary.into();
+    let truncated = if summary.chars().count() <= MAX_EXPLANATION_SUMMARY_CHARS {
+        summary
+    } else {
+        summary
+            .chars()
+            .take(MAX_EXPLANATION_SUMMARY_CHARS.saturating_sub(1))
+            .collect::<String>()
+            + "…"
+    };
+    RetrievalExplanation {
+        summary: truncated,
+        signals,
+    }
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -1055,6 +1165,19 @@ impl Indexer {
                         None,
                     )
                 });
+            let snippet_signal = match snippet_origin {
+                SearchSnippetOrigin::Query => "query_snippet",
+                SearchSnippetOrigin::Preview => "preview_snippet",
+                SearchSnippetOrigin::Summary => "summary_fallback",
+            };
+            let score_breakdown = Some(build_hit_score_breakdown(score, 0.0, 0.0));
+            let provenance = Some(build_hit_provenance(
+                &doc_id, &rel_path, &path, line_start, line_end,
+            ));
+            let retrieval_explanation = Some(build_retrieval_explanation(
+                format!("Ranked by lexical query relevance ({snippet_signal})."),
+                vec!["bm25_query_match".to_string(), snippet_signal.to_string()],
+            ));
             results.push(Hit {
                 doc_id,
                 rel_path,
@@ -1069,6 +1192,9 @@ impl Indexer {
                 snippet_truncated: Some(snippet_truncated),
                 line_start,
                 line_end,
+                score_breakdown,
+                provenance,
+                retrieval_explanation,
             });
         }
         sort_hits_deterministically(&mut results);
@@ -2103,6 +2229,76 @@ mod file_decision_tests {
                 extension: ".txt".to_string()
             }
         );
+
+        let json_file = repo_root.join("docs/config.json");
+        fs::write(&json_file, "{\"ok\":true}\n").expect("write json file");
+        let json_decision = decide_file(&json_file, &repo_root, &config);
+        assert_eq!(json_decision.decision, FileDecisionOutcome::Include);
+        assert_eq!(
+            json_decision.reason,
+            FileDecisionReason::AllowedExtension {
+                extension: ".json".to_string()
+            }
+        );
+
+        let sh_file = repo_root.join("docs/run.sh");
+        fs::write(&sh_file, "echo test\n").expect("write sh file");
+        let sh_decision = decide_file(&sh_file, &repo_root, &config);
+        assert_eq!(sh_decision.decision, FileDecisionOutcome::Include);
+        assert_eq!(
+            sh_decision.reason,
+            FileDecisionReason::AllowedExtension {
+                extension: ".sh".to_string()
+            }
+        );
+
+        let toml_file = repo_root.join("docs/config.toml");
+        fs::write(&toml_file, "key = \"value\"\n").expect("write toml file");
+        let toml_decision = decide_file(&toml_file, &repo_root, &config);
+        assert_eq!(toml_decision.decision, FileDecisionOutcome::Include);
+        assert_eq!(
+            toml_decision.reason,
+            FileDecisionReason::AllowedExtension {
+                extension: ".toml".to_string()
+            }
+        );
+
+        let cjs_file = repo_root.join("docs/release.cjs");
+        fs::write(&cjs_file, "module.exports = {}\n").expect("write cjs file");
+        let cjs_decision = decide_file(&cjs_file, &repo_root, &config);
+        assert_eq!(cjs_decision.decision, FileDecisionOutcome::Include);
+        assert_eq!(
+            cjs_decision.reason,
+            FileDecisionReason::AllowedExtension {
+                extension: ".cjs".to_string()
+            }
+        );
+
+        for (rel_path, contents, extension) in [
+            ("docs/module.mjs", "export const v = 1;\n", ".mjs"),
+            ("docs/module.mts", "export const v: number = 1;\n", ".mts"),
+            ("docs/module.cts", "export const v: number = 1;\n", ".cts"),
+            ("docs/types.pyi", "def f(x: int) -> int: ...\n", ".pyi"),
+            ("docs/settings.cfg", "[tool]\nname=value\n", ".cfg"),
+            ("docs/pom.xml", "<project></project>\n", ".xml"),
+            ("go.mod", "module example.com/app\n", ".mod"),
+            ("go.sum", "example.com/mod v1.0.0 h1:abc\n", ".sum"),
+            ("build.gradle", "plugins { id 'java' }\n", ".gradle"),
+        ] {
+            let path = repo_root.join(rel_path);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("mkdir");
+            }
+            fs::write(&path, contents).expect("write supported extension file");
+            let decision = decide_file(&path, &repo_root, &config);
+            assert_eq!(decision.decision, FileDecisionOutcome::Include);
+            assert_eq!(
+                decision.reason,
+                FileDecisionReason::AllowedExtension {
+                    extension: extension.to_string()
+                }
+            );
+        }
     }
 
     #[test]
@@ -2898,6 +3094,9 @@ mod tests {
             snippet_truncated: None,
             line_start: None,
             line_end: None,
+            score_breakdown: None,
+            provenance: None,
+            retrieval_explanation: None,
         }
     }
 

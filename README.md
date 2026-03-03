@@ -217,8 +217,9 @@ DOCDEX_OLLAMA_BASE_URL=http://127.0.0.1:11434 docdex start --host 127.0.0.1 --po
 Docdex runs as a local daemon serving:
 
 * **CLI Commands:** `docdexd chat`
-* **HTTP API:** `/search`, `/v1/ast`, `/v1/graph/impact`
+* **HTTP API:** `/search`, `/v1/capabilities`, `/v1/search/rerank`, `/v1/search/batch`, `/v1/ast`, `/v1/graph/impact`
 * **MCP Endpoints:** `/v1/mcp` and `/v1/mcp/sse`
+* **Capability Negotiation Tools:** `docdex_capabilities`, `docdex_rerank`, `docdex_batch_search`
 
 ### Multi-Repo Setup
 

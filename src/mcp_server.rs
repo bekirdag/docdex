@@ -1,3 +1,4 @@
+use crate::capabilities::{self, BATCH_SEARCH_MAX_QUERIES, RERANK_MAX_CANDIDATES};
 use crate::config;
 use crate::dag::logging as dag_logging;
 use crate::diff;
@@ -60,7 +61,7 @@ const ERR_RATE_LIMITED_RPC: i32 = -32029;
 const FILES_DEFAULT_LIMIT: usize = 200;
 const FILES_MAX_LIMIT: usize = 1000;
 const FILES_MAX_OFFSET: usize = 50_000;
-const OPEN_MAX_BYTES: usize = 512 * 1024; // guard rail for returning file content
+const OPEN_MAX_BYTES: usize = 10 * 1024 * 1024; // guard rail for returning file content
 const AST_DEFAULT_MAX_NODES: usize = 20_000;
 const AST_MAX_NODES: usize = 100_000;
 const DIAGNOSTICS_DEFAULT_LIMIT: usize = 200;
@@ -464,6 +465,34 @@ struct SearchArgs {
     diff: Option<diff::DiffOptions>,
     #[serde(default, alias = "dagSessionId", alias = "session_id")]
     dag_session_id: Option<String>,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+}
+
+#[derive(Deserialize, Default)]
+struct CapabilitiesArgs {}
+
+#[derive(Deserialize)]
+struct RerankArgs {
+    query: String,
+    candidates: Vec<crate::index::Hit>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+}
+
+#[derive(Deserialize)]
+struct BatchSearchArgs {
+    queries: Vec<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    include_libs: Option<bool>,
     #[serde(default)]
     project_root: Option<PathBuf>,
     #[serde(default, alias = "repoPath")]
@@ -1299,6 +1328,115 @@ impl McpServer {
                             }
                         }
                     }
+                    "docdex_capabilities" | "docdex.capabilities" => {
+                        let args_res: Result<CapabilitiesArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_capabilities"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_capabilities"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_capabilities(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(&err, Some("docdex_capabilities"))),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_rerank" | "docdex.rerank" => {
+                        let args_res: Result<RerankArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_rerank"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_rerank"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_rerank(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(&err, Some("docdex_rerank"))),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_batch_search" | "docdex.batch_search" => {
+                        let args_res: Result<BatchSearchArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_batch_search"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_batch_search"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        let request_id = format!("mcp-batch-{}", id.clone());
+                        match self.handle_batch_search(request_id, args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(&err, Some("docdex_batch_search"))),
+                                }))
+                            }
+                        }
+                    }
                     "docdex_web_research" | "docdex.web_research" => {
                         let args_res: Result<WebResearchArgs, _> =
                             serde_json::from_value(params.arguments.clone());
@@ -1926,6 +2064,9 @@ impl McpServer {
                                     "known_tools": [
                                         "docdex_search",
                                         "docdex_web_research",
+                                        "docdex_capabilities",
+                                        "docdex_rerank",
+                                        "docdex_batch_search",
                                         "docdex_index",
                                     "docdex_files",
                                     "docdex_open",
@@ -2009,6 +2150,65 @@ impl McpServer {
                         "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" }
                     },
                     "required": ["query"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_capabilities",
+                title: "Docdex Capabilities",
+                description:
+                    "Return the Docdex optional-feature capability contract for Codali integration.",
+                annotations: Some(annotations_with_priority(0.8)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_rerank",
+                title: "Rerank Candidates",
+                description:
+                    "Rerank candidate hits with transparent score updates and deterministic fallback behavior.",
+                annotations: Some(annotations_with_priority(0.7)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "minLength": 1, "description": "Search query used for reranking" },
+                        "candidates": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": RERANK_MAX_CANDIDATES as i64,
+                            "items": { "type": "object", "additionalProperties": true },
+                            "description": "Candidate hit set to rerank"
+                        },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": self.max_results.min(RERANK_MAX_CANDIDATES) as i64, "description": "Max reranked hits to return" },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" }
+                    },
+                    "required": ["query", "candidates"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_batch_search",
+                title: "Batch Search",
+                description:
+                    "Run batched search queries with deterministic truncation and per-query responses.",
+                annotations: Some(annotations_with_priority(0.7)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "queries": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": BATCH_SEARCH_MAX_QUERIES as i64,
+                            "items": { "type": "string", "minLength": 1 },
+                            "description": "List of queries to execute"
+                        },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": self.max_results as i64, "description": "Max hits per query" },
+                        "include_libs": { "type": "boolean", "description": "Include libs index hits when available" },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" }
+                    },
+                    "required": ["queries"]
                 }),
             },
             ToolDefinition {
@@ -2702,6 +2902,128 @@ Produce a phased plan with risks and tests to run."
             payload["memoryContext"] = json!(context);
         }
         Ok(payload)
+    }
+
+    async fn handle_capabilities(&self, _args: CapabilitiesArgs) -> Result<serde_json::Value> {
+        Ok(serde_json::to_value(capabilities::current_capabilities())?)
+    }
+
+    async fn handle_rerank(&self, args: RerankArgs) -> Result<serde_json::Value> {
+        let RerankArgs {
+            query,
+            candidates,
+            limit,
+            project_root,
+            repo_path,
+        } = args;
+        let project_root = self.resolve_project_root_arg(project_root, repo_path)?;
+        if project_root.is_some() {
+            self.ensure_project_root(project_root.as_deref())?;
+        }
+
+        let query = query.trim();
+        if query.is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "query is required").into());
+        }
+        if candidates.is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "candidates must not be empty").into());
+        }
+
+        let input_count = candidates.len();
+        let mut candidates = candidates;
+        let truncated = input_count > RERANK_MAX_CANDIDATES;
+        if truncated {
+            candidates.truncate(RERANK_MAX_CANDIDATES);
+        }
+
+        let max_limit = self.max_results.min(RERANK_MAX_CANDIDATES).max(1);
+        let limit = limit.unwrap_or(candidates.len()).clamp(1, max_limit);
+        let hits = search::rerank_hits(query, candidates, limit);
+        let hits_value = serde_json::to_value(&hits)?;
+
+        Ok(json!({
+            "hits": hits_value.clone(),
+            "results": hits_value,
+            "input_count": input_count,
+            "returned_count": hits.len(),
+            "limit": limit,
+            "truncated": truncated,
+            "project_root": self.repo_root.display().to_string()
+        }))
+    }
+
+    async fn handle_batch_search(
+        &self,
+        _request_id: String,
+        args: BatchSearchArgs,
+    ) -> Result<serde_json::Value> {
+        let BatchSearchArgs {
+            queries,
+            limit,
+            include_libs,
+            project_root,
+            repo_path,
+        } = args;
+        let project_root = self.resolve_project_root_arg(project_root, repo_path)?;
+        if project_root.is_some() {
+            self.ensure_project_root(project_root.as_deref())?;
+        }
+
+        if queries.is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "queries must not be empty").into());
+        }
+
+        let query_count = queries.len();
+        let mut normalized = queries
+            .into_iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        if normalized.is_empty() {
+            return Err(AppError::new(
+                ERR_INVALID_ARGUMENT,
+                "queries must include non-empty values",
+            )
+            .into());
+        }
+
+        let truncated = normalized.len() > BATCH_SEARCH_MAX_QUERIES;
+        if truncated {
+            normalized.truncate(BATCH_SEARCH_MAX_QUERIES);
+        }
+
+        let limit = limit.unwrap_or(self.max_results).clamp(1, self.max_results);
+        let include_libs = include_libs.unwrap_or(true);
+        let libs_indexer = if include_libs {
+            self.libs_indexer.as_deref()
+        } else {
+            None
+        };
+
+        let mut results = Vec::with_capacity(normalized.len());
+        for query in normalized {
+            let response = search::run_query(
+                &self.indexer,
+                libs_indexer,
+                &query,
+                limit,
+                search::RankingSurface::Search,
+            )
+            .await?;
+            results.push(json!({
+                "query": query,
+                "response": response,
+            }));
+        }
+
+        Ok(json!({
+            "results": results,
+            "query_count": query_count,
+            "effective_query_count": results.len(),
+            "limit": limit,
+            "truncated": truncated,
+            "project_root": self.repo_root.display().to_string(),
+        }))
     }
 
     async fn handle_delegate(&self, args: DelegateArgs) -> Result<serde_json::Value> {

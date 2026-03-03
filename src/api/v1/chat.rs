@@ -2018,6 +2018,9 @@ mod tests {
             snippet_truncated: None,
             line_start: None,
             line_end: None,
+            score_breakdown: None,
+            provenance: None,
+            retrieval_explanation: None,
         }];
 
         let memory_context = MemoryContextAssembly {
@@ -2103,6 +2106,9 @@ mod tests {
             snippet_truncated: None,
             line_start: None,
             line_end: None,
+            score_breakdown: None,
+            provenance: None,
+            retrieval_explanation: None,
         }];
 
         let profile_context = ProfileContextAssembly {

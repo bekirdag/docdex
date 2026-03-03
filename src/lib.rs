@@ -1,6 +1,7 @@
 pub mod api;
 pub mod audit;
 pub mod browser_session;
+pub mod capabilities;
 pub mod cli;
 pub mod config;
 pub mod daemon;

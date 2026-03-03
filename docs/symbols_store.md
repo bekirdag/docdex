@@ -288,9 +288,9 @@ Symbol extraction is attempted only for:
 
 - Markdown (`.md`, `.markdown`, `.mdx`)
 - Rust (`.rs`)
-- Python (`.py`)
-- TypeScript/TSX (`.ts`, `.tsx`)
-- JavaScript/JSX (`.js`, `.jsx`)
+- Python (`.py`, `.pyi`)
+- TypeScript/TSX (`.ts`, `.tsx`, `.mts`, `.cts`)
+- JavaScript/JSX (`.js`, `.jsx`, `.mjs`, `.cjs`)
 - Go (`.go`)
 - Java (`.java`)
 - C# (`.cs`)

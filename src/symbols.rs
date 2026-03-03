@@ -292,13 +292,21 @@ pub fn language_for_path(rel_path: &str) -> Option<SourceLanguage> {
     if lower.ends_with(".rs") {
         return Some(SourceLanguage::Rust);
     }
-    if lower.ends_with(".py") {
+    if lower.ends_with(".py") || lower.ends_with(".pyi") {
         return Some(SourceLanguage::Python);
     }
-    if lower.ends_with(".ts") || lower.ends_with(".tsx") {
+    if lower.ends_with(".ts")
+        || lower.ends_with(".tsx")
+        || lower.ends_with(".mts")
+        || lower.ends_with(".cts")
+    {
         return Some(SourceLanguage::TypeScript);
     }
-    if lower.ends_with(".js") || lower.ends_with(".jsx") {
+    if lower.ends_with(".js")
+        || lower.ends_with(".jsx")
+        || lower.ends_with(".mjs")
+        || lower.ends_with(".cjs")
+    {
         return Some(SourceLanguage::JavaScript);
     }
     if lower.ends_with(".go") {
@@ -1609,6 +1617,30 @@ mod tests {
                 "missing migration step for v{version}"
             );
         }
+    }
+
+    #[test]
+    fn language_for_path_supports_module_and_stub_extensions() {
+        assert_eq!(
+            language_for_path("src/types.pyi"),
+            Some(SourceLanguage::Python)
+        );
+        assert_eq!(
+            language_for_path("web/module.mjs"),
+            Some(SourceLanguage::JavaScript)
+        );
+        assert_eq!(
+            language_for_path("web/module.cjs"),
+            Some(SourceLanguage::JavaScript)
+        );
+        assert_eq!(
+            language_for_path("web/module.mts"),
+            Some(SourceLanguage::TypeScript)
+        );
+        assert_eq!(
+            language_for_path("web/module.cts"),
+            Some(SourceLanguage::TypeScript)
+        );
     }
 }
 

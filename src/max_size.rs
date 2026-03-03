@@ -23,7 +23,7 @@ pub const FILES_DEFAULT_LIMIT: usize = 200;
 pub const FILES_MAX_LIMIT: usize = 1000;
 pub const FILES_MAX_OFFSET: usize = 50_000;
 // Guard rail for returning file content via tools like docdex_open.
-pub const OPEN_MAX_BYTES: usize = 512 * 1024;
+pub const OPEN_MAX_BYTES: usize = 10 * 1024 * 1024;
 pub const DEFAULT_MEMORY_RECALL: usize = 5;
 pub const MAX_MEMORY_RECALL: usize = 50;
 pub const MAX_ERROR_MESSAGE_BYTES: usize = 256;

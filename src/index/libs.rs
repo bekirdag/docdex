@@ -370,10 +370,15 @@ impl LibsIndexer {
 
             let kind = crate::index::DocumentKind::Doc;
             let doc_type = super::document_type_for_path(&rel_path, kind);
+            let snippet_signal = match snippet_origin {
+                SearchSnippetOrigin::Query => "snippet_origin_query",
+                SearchSnippetOrigin::Preview => "snippet_origin_preview",
+                SearchSnippetOrigin::Summary => "snippet_origin_summary",
+            };
             results.push(Hit {
-                doc_id,
-                rel_path,
-                path,
+                doc_id: doc_id.clone(),
+                rel_path: rel_path.clone(),
+                path: path.clone(),
                 kind,
                 doc_type,
                 score,
@@ -384,6 +389,14 @@ impl LibsIndexer {
                 snippet_truncated: Some(snippet_truncated),
                 line_start: None,
                 line_end: None,
+                score_breakdown: Some(super::build_hit_score_breakdown(score, 0.0, 0.0)),
+                provenance: Some(super::build_hit_provenance(
+                    &doc_id, &rel_path, &path, None, None,
+                )),
+                retrieval_explanation: Some(super::build_retrieval_explanation(
+                    "Library hit matched the query from the indexed docs corpus.",
+                    vec!["bm25_query_match".to_string(), snippet_signal.to_string()],
+                )),
             });
         }
 

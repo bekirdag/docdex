@@ -6,7 +6,7 @@ pub const MCP_FILES_MAX_OFFSET: usize = 50_000;
 pub const MCP_MEMORY_MAX_ITEMS: usize = 50;
 pub const MCP_SYMBOLS_MAX_ITEMS: usize = 1000;
 pub const MCP_INDEX_MAX_ITEMS: usize = 1000;
-pub const MCP_CONTENT_MAX_BYTES: usize = 512 * 1024;
+pub const MCP_CONTENT_MAX_BYTES: usize = 10 * 1024 * 1024;
 pub const MCP_SNIPPET_MAX_CHARS: usize = index::MAX_SNIPPET_CHARS;
 pub const MCP_SUMMARY_MAX_CHARS: usize = index::MAX_SUMMARY_CHARS;
 

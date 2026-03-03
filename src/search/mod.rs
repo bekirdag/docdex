@@ -1,3 +1,4 @@
+use crate::capabilities::{self, BATCH_SEARCH_MAX_QUERIES, RERANK_MAX_CANDIDATES};
 use crate::config;
 use crate::diff;
 use crate::error::{
@@ -8,8 +9,9 @@ use crate::error::{
     ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX, ERR_UNAUTHORIZED, ERR_UNKNOWN_REPO,
 };
 use crate::index::{
-    DocSnapshot, Hit, Indexer, QueryRewrite, SearchError, SearchQueryMeta, SearchSnippetOrigin,
-    SnippetOrigin, SnippetResult,
+    build_hit_provenance, build_hit_score_breakdown, build_retrieval_explanation, DocSnapshot, Hit,
+    Indexer, QueryRewrite, SearchError, SearchQueryMeta, SearchSnippetOrigin, SnippetOrigin,
+    SnippetResult,
 };
 use crate::libs::LibsIndexer;
 use crate::mcp::McpProxyRouter;
@@ -293,6 +295,9 @@ pub fn router(state: AppState) -> Router {
     let mut router = Router::new()
         .route("/healthz", get(healthz))
         .route("/search", get(search_handler))
+        .route("/v1/capabilities", get(capabilities_handler))
+        .route("/v1/search/rerank", post(rerank_handler))
+        .route("/v1/search/batch", post(batch_search_handler))
         .route("/snippet/*doc_id", get(snippet_handler))
         .route(
             "/v1/chat/completions",
@@ -1824,6 +1829,51 @@ struct SearchParams {
     repo_id: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct RerankRequest {
+    query: String,
+    candidates: Vec<Hit>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    repo_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct RerankResponse {
+    hits: Vec<Hit>,
+    input_count: usize,
+    returned_count: usize,
+    limit: usize,
+    truncated: bool,
+}
+
+#[derive(Deserialize)]
+struct BatchSearchRequest {
+    queries: Vec<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    include_libs: Option<bool>,
+    #[serde(default)]
+    repo_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct BatchSearchItem {
+    query: String,
+    response: SearchResponse,
+}
+
+#[derive(Serialize)]
+struct BatchSearchResponse {
+    results: Vec<BatchSearchItem>,
+    query_count: usize,
+    effective_query_count: usize,
+    limit: usize,
+    truncated: bool,
+}
+
 #[derive(Serialize)]
 pub struct SearchResponse {
     pub hits: Vec<Hit>,
@@ -2320,7 +2370,17 @@ fn apply_symbol_matches(
         let boost = base_boost + name_boost;
         if let Some(idx) = by_path.get(&symbol_match.file).copied() {
             let hit = &mut hits[idx];
-            hit.score += hit.score * SYMBOL_SCORE_SCALE + boost;
+            let delta = hit.score * SYMBOL_SCORE_SCALE + boost;
+            hit.score += delta;
+            if let Some(score_breakdown) = hit.score_breakdown.as_mut() {
+                score_breakdown.structural_relevance += delta;
+                score_breakdown.total = hit.score;
+            } else {
+                let base_query = (hit.score - delta).max(0.0);
+                let mut score_breakdown = build_hit_score_breakdown(base_query, delta, 0.0);
+                score_breakdown.total = hit.score;
+                hit.score_breakdown = Some(score_breakdown);
+            }
             continue;
         }
         if mode == RankingMode::IncludeNewHits {
@@ -2378,7 +2438,17 @@ fn apply_ast_matches(
         let boost = (weighted_count.max(1.0) * AST_SCORE_PER_MATCH).min(AST_SCORE_MAX_BOOST);
         if let Some(idx) = by_path.get(&ast_match.file).copied() {
             let hit = &mut hits[idx];
-            hit.score += hit.score * AST_SCORE_SCALE + boost;
+            let delta = hit.score * AST_SCORE_SCALE + boost;
+            hit.score += delta;
+            if let Some(score_breakdown) = hit.score_breakdown.as_mut() {
+                score_breakdown.structural_relevance += delta;
+                score_breakdown.total = hit.score;
+            } else {
+                let base_query = (hit.score - delta).max(0.0);
+                let mut score_breakdown = build_hit_score_breakdown(base_query, delta, 0.0);
+                score_breakdown.total = hit.score;
+                hit.score_breakdown = Some(score_breakdown);
+            }
             continue;
         }
         if mode == RankingMode::IncludeNewHits {
@@ -2549,13 +2619,31 @@ fn build_symbol_hit(
                 None,
             )
         };
+    let score = SYMBOL_SCORE_BASE + boost;
+    let snippet_signal = match snippet_origin {
+        SearchSnippetOrigin::Query => "snippet_origin_query",
+        SearchSnippetOrigin::Preview => "snippet_origin_preview",
+        SearchSnippetOrigin::Summary => "snippet_origin_summary",
+    };
+    let score_breakdown = Some(build_hit_score_breakdown(SYMBOL_SCORE_BASE, boost, 0.0));
+    let provenance = Some(build_hit_provenance(
+        &snapshot.doc_id,
+        &snapshot.rel_path,
+        &snapshot.rel_path,
+        line_start,
+        line_end,
+    ));
+    let retrieval_explanation = Some(build_retrieval_explanation(
+        "Symbol-aware ranking boosted this hit based on query-aligned definitions.",
+        vec!["symbol_match_boost".to_string(), snippet_signal.to_string()],
+    ));
     Ok(Some(Hit {
         doc_id: snapshot.doc_id.clone(),
         rel_path: snapshot.rel_path.clone(),
         path: snapshot.rel_path.clone(),
         kind: snapshot.kind,
         doc_type: snapshot.doc_type,
-        score: SYMBOL_SCORE_BASE + boost,
+        score,
         summary: snapshot.summary,
         snippet: snippet_text,
         token_estimate: snapshot.token_estimate,
@@ -2563,6 +2651,9 @@ fn build_symbol_hit(
         snippet_truncated: Some(snippet_truncated),
         line_start,
         line_end,
+        score_breakdown,
+        provenance,
+        retrieval_explanation,
     }))
 }
 
@@ -2604,13 +2695,31 @@ fn build_ast_hit(
                 None,
             )
         };
+    let score = AST_SCORE_BASE + boost;
+    let snippet_signal = match snippet_origin {
+        SearchSnippetOrigin::Query => "snippet_origin_query",
+        SearchSnippetOrigin::Preview => "snippet_origin_preview",
+        SearchSnippetOrigin::Summary => "snippet_origin_summary",
+    };
+    let score_breakdown = Some(build_hit_score_breakdown(AST_SCORE_BASE, boost, 0.0));
+    let provenance = Some(build_hit_provenance(
+        &snapshot.doc_id,
+        &snapshot.rel_path,
+        &snapshot.rel_path,
+        line_start,
+        line_end,
+    ));
+    let retrieval_explanation = Some(build_retrieval_explanation(
+        "AST-aware ranking boosted this hit based on matched structural node kinds.",
+        vec!["ast_match_boost".to_string(), snippet_signal.to_string()],
+    ));
     Ok(Some(Hit {
         doc_id: snapshot.doc_id.clone(),
         rel_path: snapshot.rel_path.clone(),
         path: snapshot.rel_path.clone(),
         kind: snapshot.kind,
         doc_type: snapshot.doc_type,
-        score: AST_SCORE_BASE + boost,
+        score,
         summary: snapshot.summary,
         snippet: snippet_text,
         token_estimate: snapshot.token_estimate,
@@ -2618,6 +2727,9 @@ fn build_ast_hit(
         snippet_truncated: Some(snippet_truncated),
         line_start,
         line_end,
+        score_breakdown,
+        provenance,
+        retrieval_explanation,
     }))
 }
 
@@ -2867,20 +2979,44 @@ fn hit_from_snapshot(snapshot: DocSnapshot, snippet: Option<SnippetResult>) -> H
                 None,
             )
         };
+    let score = 1.0_f32;
+    let snippet_signal = match snippet_origin {
+        SearchSnippetOrigin::Query => "snippet_origin_query",
+        SearchSnippetOrigin::Preview => "snippet_origin_preview",
+        SearchSnippetOrigin::Summary => "snippet_origin_summary",
+    };
+    let doc_id = snapshot.doc_id;
+    let rel_path = snapshot.rel_path;
+    let kind = snapshot.kind;
+    let doc_type = snapshot.doc_type;
+    let summary = snapshot.summary;
+    let token_estimate = snapshot.token_estimate;
+    let score_breakdown = Some(build_hit_score_breakdown(score, 0.0, 0.0));
+    let provenance = Some(build_hit_provenance(
+        &doc_id, &rel_path, &rel_path, line_start, line_end,
+    ));
+    let retrieval_explanation = Some(build_retrieval_explanation(
+        "Direct path lookup returned the indexed file snapshot.",
+        vec!["path_query_match".to_string(), snippet_signal.to_string()],
+    ));
+
     Hit {
-        doc_id: snapshot.doc_id,
-        rel_path: snapshot.rel_path.clone(),
-        path: snapshot.rel_path,
-        kind: snapshot.kind,
-        doc_type: snapshot.doc_type,
-        score: 1.0,
-        summary: snapshot.summary,
+        doc_id,
+        rel_path: rel_path.clone(),
+        path: rel_path,
+        kind,
+        doc_type,
+        score,
+        summary,
         snippet: snippet_text,
-        token_estimate: snapshot.token_estimate,
+        token_estimate,
         snippet_origin: Some(snippet_origin),
         snippet_truncated: Some(snippet_truncated),
         line_start,
         line_end,
+        score_breakdown,
+        provenance,
+        retrieval_explanation,
     }
 }
 
@@ -2963,6 +3099,157 @@ fn merge_hits(repo_hits: Vec<Hit>, libs_hits: Vec<Hit>, limit: usize) -> Vec<Hit
     ordered
 }
 
+fn query_overlap_ratio(tokens: &[String], text: &str) -> f32 {
+    if tokens.is_empty() {
+        return 0.0;
+    }
+    let lowered = text.to_lowercase();
+    let matched = tokens
+        .iter()
+        .filter(|token| lowered.contains(token.as_str()))
+        .count() as f32;
+    (matched / tokens.len() as f32).clamp(0.0, 1.0)
+}
+
+pub(crate) fn rerank_hits(query: &str, mut candidates: Vec<Hit>, limit: usize) -> Vec<Hit> {
+    let tokens = extract_query_tokens(query);
+    for hit in candidates.iter_mut() {
+        let summary_overlap = query_overlap_ratio(&tokens, &hit.summary);
+        let snippet_overlap = query_overlap_ratio(&tokens, &hit.snippet);
+        let path_overlap = query_overlap_ratio(&tokens, &hit.rel_path);
+        let lexical =
+            (summary_overlap * 0.45 + snippet_overlap * 0.35 + path_overlap * 0.20).clamp(0.0, 1.0);
+
+        let anchor_bonus = if hit.line_start.is_some() && hit.line_end.is_some() {
+            0.08
+        } else {
+            0.0
+        };
+        let origin_bonus = match hit.snippet_origin.as_ref() {
+            Some(SearchSnippetOrigin::Query) => 0.05,
+            Some(SearchSnippetOrigin::Preview) => 0.02,
+            Some(SearchSnippetOrigin::Summary) | None => 0.0,
+        };
+        let structural = anchor_bonus + origin_bonus;
+
+        let delta = lexical + structural;
+        let base_score = hit.score.max(0.0);
+        hit.score = base_score + delta;
+
+        if let Some(score_breakdown) = hit.score_breakdown.as_mut() {
+            score_breakdown.query_relevance += lexical;
+            score_breakdown.structural_relevance += structural;
+            score_breakdown.total = hit.score;
+        } else {
+            let mut score_breakdown =
+                build_hit_score_breakdown(base_score + lexical, structural, 0.0);
+            score_breakdown.total = hit.score;
+            hit.score_breakdown = Some(score_breakdown);
+        }
+
+        if hit.provenance.is_none() {
+            hit.provenance = Some(build_hit_provenance(
+                &hit.doc_id,
+                &hit.rel_path,
+                &hit.path,
+                hit.line_start,
+                hit.line_end,
+            ));
+        }
+
+        let origin_signal = match hit.snippet_origin.as_ref() {
+            Some(SearchSnippetOrigin::Query) => "snippet_origin_query",
+            Some(SearchSnippetOrigin::Preview) => "snippet_origin_preview",
+            Some(SearchSnippetOrigin::Summary) | None => "snippet_origin_summary",
+        };
+        if let Some(explanation) = hit.retrieval_explanation.as_mut() {
+            if !explanation
+                .signals
+                .iter()
+                .any(|signal| signal == "rerank_applied")
+            {
+                explanation.signals.push("rerank_applied".to_string());
+            }
+            if !explanation
+                .signals
+                .iter()
+                .any(|signal| signal.as_str() == origin_signal)
+            {
+                explanation.signals.push(origin_signal.to_string());
+            }
+        } else {
+            hit.retrieval_explanation = Some(build_retrieval_explanation(
+                "Rerank prioritized lexical overlap and evidence anchor quality.",
+                vec!["rerank_applied".to_string(), origin_signal.to_string()],
+            ));
+        }
+    }
+
+    sort_hits_deterministically(&mut candidates);
+    if candidates.len() > limit {
+        candidates.truncate(limit);
+    }
+    candidates
+}
+
+#[cfg(test)]
+mod rerank_contract_tests {
+    use super::*;
+    use crate::index::{DocType, DocumentKind};
+
+    fn make_hit(path: &str, summary: &str, score: f32) -> Hit {
+        Hit {
+            doc_id: format!("doc-{path}"),
+            rel_path: path.to_string(),
+            path: path.to_string(),
+            kind: DocumentKind::Code,
+            doc_type: Some(DocType::Code),
+            score,
+            summary: summary.to_string(),
+            snippet: summary.to_string(),
+            token_estimate: 10,
+            snippet_origin: Some(SearchSnippetOrigin::Summary),
+            snippet_truncated: Some(false),
+            line_start: None,
+            line_end: None,
+            score_breakdown: None,
+            provenance: None,
+            retrieval_explanation: None,
+        }
+    }
+
+    #[test]
+    fn rerank_prefers_query_overlap_and_enriches_metadata() {
+        let low_match = make_hit("src/low.rs", "unrelated text", 1.0);
+        let high_match = make_hit("src/high.rs", "contains alpha token", 1.0);
+
+        let reranked = rerank_hits("alpha", vec![low_match, high_match], 2);
+        assert_eq!(reranked.len(), 2);
+        assert_eq!(reranked[0].rel_path, "src/high.rs");
+        assert!(reranked[0].score_breakdown.is_some());
+        assert!(reranked[0].provenance.is_some());
+        assert!(reranked[0].retrieval_explanation.is_some());
+        let signals = &reranked[0]
+            .retrieval_explanation
+            .as_ref()
+            .expect("explanation")
+            .signals;
+        assert!(signals.iter().any(|signal| signal == "rerank_applied"));
+    }
+
+    #[test]
+    fn rerank_truncates_to_limit() {
+        let hits = vec![
+            make_hit("src/a.rs", "alpha", 1.0),
+            make_hit("src/b.rs", "beta", 1.0),
+            make_hit("src/c.rs", "gamma", 1.0),
+        ];
+
+        let reranked = rerank_hits("alpha", hits, 1);
+        assert_eq!(reranked.len(), 1);
+    }
+}
+
 fn now_epoch_ms() -> Result<u128> {
     Ok(std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
@@ -2986,6 +3273,169 @@ pub(crate) fn build_search_meta(
         query,
         context_assembly,
     })
+}
+
+async fn capabilities_handler() -> impl IntoResponse {
+    Json(capabilities::current_capabilities())
+}
+
+async fn rerank_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(repo_query): Query<RepoIdQuery>,
+    Json(request): Json<RerankRequest>,
+) -> impl IntoResponse {
+    let RerankRequest {
+        query,
+        candidates,
+        limit,
+        repo_id,
+    } = request;
+    let repo_hint = repo_id.as_deref().or(repo_query.repo_id.as_deref());
+    if let Err(err) = resolve_repo_context(&state, &headers, repo_hint, None, false) {
+        return repo_error_response(err);
+    }
+
+    let query = query.trim();
+    if query.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: ErrorDetail::new("invalid_query", "query must not be empty"),
+            }),
+        )
+            .into_response();
+    }
+
+    let input_count = candidates.len();
+    if input_count == 0 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: ErrorDetail::new("invalid_candidates", "candidates must not be empty"),
+            }),
+        )
+            .into_response();
+    }
+
+    let mut candidates = candidates;
+    let truncated = input_count > RERANK_MAX_CANDIDATES;
+    if truncated {
+        candidates.truncate(RERANK_MAX_CANDIDATES);
+    }
+
+    let max_limit = state.security.max_limit.min(RERANK_MAX_CANDIDATES).max(1);
+    let limit = limit.unwrap_or(candidates.len()).clamp(1, max_limit);
+    let hits = rerank_hits(query, candidates, limit);
+
+    Json(RerankResponse {
+        returned_count: hits.len(),
+        hits,
+        input_count,
+        limit,
+        truncated,
+    })
+    .into_response()
+}
+
+async fn batch_search_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(repo_query): Query<RepoIdQuery>,
+    Json(request): Json<BatchSearchRequest>,
+) -> impl IntoResponse {
+    let BatchSearchRequest {
+        queries,
+        limit,
+        include_libs,
+        repo_id,
+    } = request;
+    let repo_hint = repo_id.as_deref().or(repo_query.repo_id.as_deref());
+    let repo = match resolve_repo_context(&state, &headers, repo_hint, None, false) {
+        Ok(repo) => repo,
+        Err(err) => return repo_error_response(err),
+    };
+
+    if queries.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: ErrorDetail::new("invalid_queries", "queries must not be empty"),
+            }),
+        )
+            .into_response();
+    }
+
+    let query_count = queries.len();
+    let mut normalized = queries
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    if normalized.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: ErrorDetail::new("invalid_queries", "queries must include non-empty values"),
+            }),
+        )
+            .into_response();
+    }
+
+    let truncated = normalized.len() > BATCH_SEARCH_MAX_QUERIES;
+    if truncated {
+        normalized.truncate(BATCH_SEARCH_MAX_QUERIES);
+    }
+
+    let limit = limit.unwrap_or(8).clamp(1, state.security.max_limit);
+    let include_libs = include_libs.unwrap_or(true);
+    let libs_indexer = if include_libs {
+        repo.libs_indexer.as_deref()
+    } else {
+        None
+    };
+
+    let mut results = Vec::with_capacity(normalized.len());
+    for query in normalized {
+        match run_query(
+            &repo.indexer,
+            libs_indexer,
+            &query,
+            limit,
+            RankingSurface::Search,
+        )
+        .await
+        {
+            Ok(response) => results.push(BatchSearchItem { query, response }),
+            Err(err) => {
+                state.metrics.inc_error();
+                if let Some(app) = err.downcast_ref::<AppError>() {
+                    return json_error(
+                        status_for_app_error(app.code),
+                        app.code,
+                        app.message.clone(),
+                    )
+                    .into_response();
+                }
+                warn!(target: "docdexd", error = ?err, "batch search failed");
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    ERR_INTERNAL_ERROR,
+                    "batch search failed",
+                )
+                .into_response();
+            }
+        }
+    }
+
+    Json(BatchSearchResponse {
+        effective_query_count: results.len(),
+        results,
+        query_count,
+        limit,
+        truncated,
+    })
+    .into_response()
 }
 
 async fn search_handler(

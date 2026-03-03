@@ -41,6 +41,8 @@ Postinstall behavior:
 - It writes MCP client config pointing to `http://localhost:28491/v1/mcp/sse` (Codex uses `http://localhost:28491/v1/mcp`) and updates known client config files when present.
 - Auto-configured clients (when config files are present): Claude Desktop, Cursor, Windsurf, Cline, Roo Code, Continue, VS Code, PearAI, Void, Zed, Codex. Restart clients after install.
 - It registers OS startup (LaunchAgent/systemd user/Task Scheduler) so the daemon starts after reboot/login, and attempts to start it immediately when safe.
+- Startup registration now applies conservative FD-pressure controls by default: `DOCDEX_REPO_IDLE_SECONDS=300`, `DOCDEX_REPO_HIBERNATE_SECONDS=1800`, `DOCDEX_REPO_CLEANUP_INTERVAL_SECONDS=60`, `DOCDEX_WEB_MAX_CONCURRENT_BROWSER_FETCHES=1`, and `DOCDEX_WEB_MAX_CONCURRENT_LLM=1` (plus `DOCDEX_BROWSER_AUTO_INSTALL=0`).
+- On macOS, the generated LaunchAgent plist sets `SoftResourceLimits/NumberOfFiles=65536` and `HardResourceLimits/NumberOfFiles=200000` to reduce launchd `EMFILE` incidents under multi-repo load.
 - Start the daemon with `docdex start` (alias: `docdexd daemon`) or run the setup wizard (`docdex setup`) if startup registration fails. Windows uses `%LOCALAPPDATA%\\docdex\\run-daemon.cmd` for the scheduled task.
 - If Ollama is missing, the setup wizard can prompt to install it and the default embedding model.
 - Skip prompts with `DOCDEX_OLLAMA_INSTALL=0` or `DOCDEX_OLLAMA_MODEL_PROMPT=0`.
@@ -479,6 +481,22 @@ socket_path = "/absolute/path/to/mcp.sock"
 
 - HTTP/SSE remains the default for other MCP clients (`/v1/mcp/sse` or `/v1/mcp`).
 
+### FD Hardening And Lock Retry
+- Daemon startup checks runtime nofile soft limit and warns (non-fatal) when it is below `DOCDEX_MIN_NOFILE_SOFT` (default: `4096`).
+- Profile lock acquisition uses bounded retries for transient pressure conditions (`WouldBlock`, `Interrupted`, `EMFILE`, `ENFILE`).
+- Lock retry tuning:
+  - `DOCDEX_PROFILE_LOCK_MAX_ATTEMPTS` (default `5`, clamped to `1..20`)
+  - `DOCDEX_PROFILE_LOCK_RETRY_BASE_MS` (default `25`, clamped to `1..5000`)
+- Startup warning threshold tuning:
+  - `DOCDEX_MIN_NOFILE_SOFT` (default `4096`, clamped to `256..1048576`)
+- Repo/watcher pressure controls used by installer startup registration:
+  - `DOCDEX_REPO_IDLE_SECONDS` (default `300`)
+  - `DOCDEX_REPO_HIBERNATE_SECONDS` (default `1800`)
+  - `DOCDEX_REPO_CLEANUP_INTERVAL_SECONDS` (default `60`)
+  - `DOCDEX_WEB_MAX_CONCURRENT_BROWSER_FETCHES` (default `1`)
+  - `DOCDEX_WEB_MAX_CONCURRENT_LLM` (default `1`)
+- Incident response guide: `docs/ops/fd_exhaustion_playbook.md`.
+
 ### Memory and LLM
 - `--enable-memory <true|false>` / `DOCDEX_ENABLE_MEMORY`.
 - `--embedding-base-url` / `DOCDEX_EMBEDDING_BASE_URL`.
@@ -503,6 +521,7 @@ socket_path = "/absolute/path/to/mcp.sock"
 - Health check: `GET /healthz`.
 - Metrics: `GET /metrics`.
 - `docdexd check`: preflight validation for config, state, Ollama, browser, ports.
+- FD incident runbook: `docs/ops/fd_exhaustion_playbook.md`.
 - `docdexd self-check --repo <path>`: sensitive-term scan.
 
 ## Troubleshooting
@@ -516,3 +535,4 @@ socket_path = "/absolute/path/to/mcp.sock"
 - MCP errors: `docs/mcp/errors.md`
 - Quality gates: `docs/quality_gates.md`
 - Metrics dashboard: `docs/metrics_dashboard.md`
+- FD exhaustion playbook: `docs/ops/fd_exhaustion_playbook.md`

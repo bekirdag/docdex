@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.45
+- Update packaged agent docs with FD-hardening guidance and bump release metadata to 0.2.45.
+
 ## 0.2.44
 - Fix MCP tool schema compatibility with Claude Code by removing top-level anyOf from `docdex_dag_export`.
 - Bump release metadata to 0.2.44.

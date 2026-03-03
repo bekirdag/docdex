@@ -121,6 +121,9 @@ FAILURES=0
 RESULTS=()
 
 run_step "unit_component" cargo test --lib
+if [[ -x "${ROOT_DIR}/scripts/test_fd_hardening.sh" ]]; then
+  run_step "unit_fd_hardening" "${ROOT_DIR}/scripts/test_fd_hardening.sh"
+fi
 if command -v node >/dev/null 2>&1 && [[ -f "${ROOT_DIR}/npm/test/postinstall_setup.test.js" ]]; then
   run_step "unit_node_postinstall" node --test "${ROOT_DIR}/npm/test/postinstall_setup.test.js"
 fi

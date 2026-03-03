@@ -1,3 +1,4 @@
+pub mod fd_limits;
 pub mod lock;
 pub mod multi_repo;
 
@@ -320,6 +321,9 @@ pub async fn serve(
             .with_hint("Provide `--run-as-uid <uid>` and/or `--run-as-gid <gid>` to drop privileges after startup preparation.")
             .into());
         }
+    }
+    if let Some(low_limit_warning) = fd_limits::startup_low_nofile_warning() {
+        warn!(target: "docdexd", "{low_limit_warning}");
     }
     let repo_display = repo.display().to_string();
     let provider = llm_provider.trim();

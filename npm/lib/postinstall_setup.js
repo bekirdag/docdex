@@ -36,6 +36,16 @@ const AGENTS_DOC_FILENAME = "agents.md";
 const DOCDEX_INFO_START_PREFIX = "---- START OF DOCDEX INFO V";
 const DOCDEX_INFO_END = "---- END OF DOCDEX INFO -----";
 const DOCDEX_INFO_END_LEGACY = "---- END OF DOCDEX INFO ----";
+const LAUNCHD_NOFILE_SOFT = "65536";
+const LAUNCHD_NOFILE_HARD = "200000";
+const DAEMON_ENV_DEFAULTS = Object.freeze([
+  ["DOCDEX_BROWSER_AUTO_INSTALL", "0"],
+  ["DOCDEX_REPO_IDLE_SECONDS", "300"],
+  ["DOCDEX_REPO_HIBERNATE_SECONDS", "1800"],
+  ["DOCDEX_REPO_CLEANUP_INTERVAL_SECONDS", "60"],
+  ["DOCDEX_WEB_MAX_CONCURRENT_BROWSER_FETCHES", "1"],
+  ["DOCDEX_WEB_MAX_CONCURRENT_LLM", "1"]
+]);
 
 function defaultConfigPath() {
   return path.join(os.homedir(), ".docdex", "config.toml");
@@ -2247,11 +2257,63 @@ function isTempPath(value, osModule = os) {
 }
 
 function buildDaemonEnvPairs() {
-  return [["DOCDEX_BROWSER_AUTO_INSTALL", "0"]];
+  return DAEMON_ENV_DEFAULTS.map(([key, value]) => [key, value]);
 }
 
 function buildDaemonEnv() {
   return Object.fromEntries(buildDaemonEnvPairs());
+}
+
+function buildLaunchAgentPlist({
+  programArgs,
+  envPairs,
+  workingDir,
+  logDir,
+  nofileSoft = LAUNCHD_NOFILE_SOFT,
+  nofileHard = LAUNCHD_NOFILE_HARD
+} = {}) {
+  const envVars = (envPairs || []).flatMap(([key, value]) => [
+    `    <key>${key}</key>\n`,
+    `    <string>${value}</string>\n`
+  ]);
+  const args = (programArgs || []).map((arg) => `    <string>${arg}</string>\n`).join("");
+  return `<?xml version="1.0" encoding="UTF-8"?>\n` +
+    `<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n` +
+    `<plist version="1.0">\n` +
+    `<dict>\n` +
+    `  <key>Label</key>\n` +
+    `  <string>com.docdex.daemon</string>\n` +
+    `  <key>EnvironmentVariables</key>\n` +
+    `  <dict>\n` +
+    envVars.join("") +
+    `  </dict>\n` +
+    `  <key>ProgramArguments</key>\n` +
+    `  <array>\n` +
+    args +
+    `  </array>\n` +
+    (workingDir
+      ? `  <key>WorkingDirectory</key>\n` + `  <string>${workingDir}</string>\n`
+      : "") +
+    `  <key>RunAtLoad</key>\n` +
+    `  <true/>\n` +
+    `  <key>KeepAlive</key>\n` +
+    `  <true/>\n` +
+    `  <key>SoftResourceLimits</key>\n` +
+    `  <dict>\n` +
+    `    <key>NumberOfFiles</key>\n` +
+    `    <integer>${nofileSoft}</integer>\n` +
+    `  </dict>\n` +
+    `  <key>HardResourceLimits</key>\n` +
+    `  <dict>\n` +
+    `    <key>NumberOfFiles</key>\n` +
+    `    <integer>${nofileHard}</integer>\n` +
+    `  </dict>\n` +
+    `  <key>StandardOutPath</key>\n` +
+    `  <string>${path.join(logDir, "daemon.out.log")}</string>\n` +
+    `  <key>StandardErrorPath</key>\n` +
+    `  <string>${path.join(logDir, "daemon.err.log")}</string>\n` +
+    `</dict>\n` +
+    `</plist>\n`;
 }
 
 function escapeCmdArg(value) {
@@ -2323,37 +2385,12 @@ function registerStartup({ binaryPath, port, repoRoot, logger, distBaseDir, star
     const logDir = path.join(os.homedir(), ".docdex", "logs");
     fs.mkdirSync(logDir, { recursive: true });
     const programArgs = [binaryPath, ...args];
-    const envVars = envPairs.flatMap(([key, value]) => [
-      `    <key>${key}</key>\n`,
-      `    <string>${value}</string>\n`
-    ]);
-    const plist = `<?xml version="1.0" encoding="UTF-8"?>\n` +
-      `<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n` +
-      `<plist version="1.0">\n` +
-      `<dict>\n` +
-      `  <key>Label</key>\n` +
-      `  <string>com.docdex.daemon</string>\n` +
-      `  <key>EnvironmentVariables</key>\n` +
-      `  <dict>\n` +
-      envVars.join("") +
-      `  </dict>\n` +
-      `  <key>ProgramArguments</key>\n` +
-      `  <array>\n` +
-      programArgs.map((arg) => `    <string>${arg}</string>\n`).join("") +
-      `  </array>\n` +
-      (workingDir
-        ? `  <key>WorkingDirectory</key>\n` + `  <string>${workingDir}</string>\n`
-        : "") +
-      `  <key>RunAtLoad</key>\n` +
-      `  <true/>\n` +
-      `  <key>KeepAlive</key>\n` +
-      `  <true/>\n` +
-      `  <key>StandardOutPath</key>\n` +
-      `  <string>${path.join(logDir, "daemon.out.log")}</string>\n` +
-      `  <key>StandardErrorPath</key>\n` +
-      `  <string>${path.join(logDir, "daemon.err.log")}</string>\n` +
-      `</dict>\n` +
-      `</plist>\n`;
+    const plist = buildLaunchAgentPlist({
+      programArgs,
+      envPairs,
+      workingDir,
+      logDir
+    });
     fs.mkdirSync(path.dirname(plistPath), { recursive: true });
     fs.writeFileSync(plistPath, plist);
     if (!startNow) return { ok: true };
@@ -2820,6 +2857,7 @@ module.exports = {
   launchSetupWizard,
   applyAgentInstructions,
   buildDaemonEnv,
+  buildLaunchAgentPlist,
   resolveDaemonPortState,
   normalizeVersion
 };

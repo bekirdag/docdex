@@ -1,4 +1,4 @@
----- START OF DOCDEX INFO V0.2.44 ----
+---- START OF DOCDEX INFO V0.2.45 ----
 Docdex URL: http://127.0.0.1:28491
 Use this base URL for Docdex HTTP endpoints.
 Health check endpoint: `GET /healthz` (not `/v1/health`).
@@ -16,6 +16,7 @@ Health check endpoint: `GET /healthz` (not `/v1/health`).
 - When a Docdex feature makes a task easier/safer, you MUST use it instead of ad-hoc inspection. Examples: `docdex_search` for context, `docdex_open`/`/v1/snippet` for file slices, `docdex_symbols`/`docdex_ast` for structure, `docdex_impact_graph`/`docdex_impact_diagnostics` for dependency safety, and `docdex_dag_export` to review session traces.
 - For dependency/library docs, run `docdexd libs discover`/`docdexd libs fetch` and search with `include_libs` rather than web searching.
 - For test execution, use `docdexd run-tests` (or `docdexd test run-node`) instead of ad-hoc commands when feasible.
+- For daemon stability triage, prioritize FD hardening checks: startup nofile warning threshold (`DOCDEX_MIN_NOFILE_SOFT`), profile lock retry knobs (`DOCDEX_PROFILE_LOCK_MAX_ATTEMPTS`, `DOCDEX_PROFILE_LOCK_RETRY_BASE_MS`), installer pressure defaults (`DOCDEX_REPO_IDLE_SECONDS`, `DOCDEX_REPO_HIBERNATE_SECONDS`, `DOCDEX_REPO_CLEANUP_INTERVAL_SECONDS`), and `docs/ops/fd_exhaustion_playbook.md`.
 - For staged-change validation, use `docdexd hook pre-commit`.
 - For MCP client registration, use `docdexd mcp add` (or `--all`) instead of editing configs by hand.
 

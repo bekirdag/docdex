@@ -1,12 +1,13 @@
 use crate::profiles::{Agent, Preference, PreferenceCategory};
 use crate::state_layout::StateLayout;
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use fs4::FileExt;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::fs::OpenOptions;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::warn;
 use uuid::Uuid;
 
@@ -42,6 +43,15 @@ pub struct ProfileImportSummary {
     pub updated: usize,
     pub skipped: usize,
 }
+
+const PROFILE_LOCK_MAX_ATTEMPTS_ENV: &str = "DOCDEX_PROFILE_LOCK_MAX_ATTEMPTS";
+const PROFILE_LOCK_RETRY_BASE_MS_ENV: &str = "DOCDEX_PROFILE_LOCK_RETRY_BASE_MS";
+const DEFAULT_PROFILE_LOCK_MAX_ATTEMPTS: u32 = 5;
+const DEFAULT_PROFILE_LOCK_RETRY_BASE_MS: u64 = 25;
+const MIN_PROFILE_LOCK_MAX_ATTEMPTS: u32 = 1;
+const MAX_PROFILE_LOCK_MAX_ATTEMPTS: u32 = 20;
+const MIN_PROFILE_LOCK_RETRY_BASE_MS: u64 = 1;
+const MAX_PROFILE_LOCK_RETRY_BASE_MS: u64 = 5_000;
 
 #[derive(Debug, Clone)]
 pub struct ProfileExportManifest {
@@ -624,54 +634,114 @@ struct FileLock {
 
 impl FileLock {
     fn acquire(path: &Path, shared: bool) -> Result<Self> {
-        let file = match OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .open(path)
-        {
-            Ok(file) => Some(file),
-            Err(err) => {
-                if should_ignore_lock_error(&err) {
-                    warn!(
-                        error = ?err,
-                        path = %path.display(),
-                        "profile lock unavailable; proceeding without file lock"
-                    );
-                    return Ok(Self {
-                        file: None,
-                        locked: false,
-                    });
+        let retry_policy = profile_lock_retry_policy_from_env();
+        for attempt in 1..=retry_policy.max_attempts {
+            let file = match OpenOptions::new()
+                .create(true)
+                .read(true)
+                .write(true)
+                .open(path)
+            {
+                Ok(file) => Some(file),
+                Err(err) => {
+                    if should_ignore_lock_error(&err) {
+                        warn!(
+                            error = ?err,
+                            path = %path.display(),
+                            "profile lock unavailable; proceeding without file lock"
+                        );
+                        return Ok(Self {
+                            file: None,
+                            locked: false,
+                        });
+                    }
+                    if is_retryable_lock_error(&err) && attempt < retry_policy.max_attempts {
+                        let backoff_ms = retry_policy.backoff_for_attempt(attempt);
+                        warn!(
+                            error = ?err,
+                            path = %path.display(),
+                            attempt,
+                            max_attempts = retry_policy.max_attempts,
+                            backoff_ms,
+                            operation = "open",
+                            error_class = lock_error_class(&err),
+                            "profile lock transient error; retrying"
+                        );
+                        std::thread::sleep(Duration::from_millis(backoff_ms));
+                        continue;
+                    }
+                    if is_retryable_lock_error(&err) {
+                        return Err(retry_exhausted_error("open lock file", path, attempt, &err));
+                    }
+                    return Err(err).with_context(|| format!("open lock file {}", path.display()));
                 }
-                return Err(err).with_context(|| format!("open lock file {}", path.display()));
-            }
-        };
-        if let Some(file_ref) = file.as_ref() {
-            let result = if shared {
-                file_ref
-                    .lock_shared()
-                    .with_context(|| format!("lock shared {}", path.display()))
-            } else {
-                file_ref
-                    .lock_exclusive()
-                    .with_context(|| format!("lock exclusive {}", path.display()))
             };
-            if let Err(err) = result {
-                if should_ignore_lock_error_anyhow(&err) {
-                    warn!(
-                        error = ?err,
-                        path = %path.display(),
-                        "profile lock unavailable; proceeding without file lock"
-                    );
-                    return Ok(Self {
-                        file,
-                        locked: false,
+
+            if let Some(file_ref) = file.as_ref() {
+                let lock_result = if shared {
+                    file_ref.lock_shared()
+                } else {
+                    file_ref.lock_exclusive()
+                };
+                if let Err(err) = lock_result {
+                    if should_ignore_lock_error(&err) {
+                        warn!(
+                            error = ?err,
+                            path = %path.display(),
+                            "profile lock unavailable; proceeding without file lock"
+                        );
+                        return Ok(Self {
+                            file,
+                            locked: false,
+                        });
+                    }
+                    if is_retryable_lock_error(&err) && attempt < retry_policy.max_attempts {
+                        let backoff_ms = retry_policy.backoff_for_attempt(attempt);
+                        warn!(
+                            error = ?err,
+                            path = %path.display(),
+                            attempt,
+                            max_attempts = retry_policy.max_attempts,
+                            backoff_ms,
+                            operation = if shared { "lock_shared" } else { "lock_exclusive" },
+                            error_class = lock_error_class(&err),
+                            "profile lock transient error; retrying"
+                        );
+                        std::thread::sleep(Duration::from_millis(backoff_ms));
+                        continue;
+                    }
+                    if is_retryable_lock_error(&err) {
+                        return Err(retry_exhausted_error(
+                            if shared {
+                                "lock shared"
+                            } else {
+                                "lock exclusive"
+                            },
+                            path,
+                            attempt,
+                            &err,
+                        ));
+                    }
+                    return Err(err).with_context(|| {
+                        format!(
+                            "{} {}",
+                            if shared {
+                                "lock shared"
+                            } else {
+                                "lock exclusive"
+                            },
+                            path.display()
+                        )
                     });
                 }
-                return Err(err);
             }
+            return Ok(Self { file, locked: true });
         }
-        Ok(Self { file, locked: true })
+
+        Err(anyhow!(
+            "profile lock retry policy exhausted unexpectedly for {}",
+            path.display()
+        ))
     }
 }
 
@@ -685,6 +755,70 @@ impl Drop for FileLock {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ProfileLockRetryPolicy {
+    max_attempts: u32,
+    base_backoff_ms: u64,
+}
+
+impl ProfileLockRetryPolicy {
+    fn backoff_for_attempt(self, attempt: u32) -> u64 {
+        self.base_backoff_ms.saturating_mul(u64::from(attempt))
+    }
+}
+
+fn profile_lock_retry_policy_from_env() -> ProfileLockRetryPolicy {
+    let max_attempts = parse_profile_lock_max_attempts(
+        std::env::var(PROFILE_LOCK_MAX_ATTEMPTS_ENV).ok().as_deref(),
+    );
+    let base_backoff_ms = parse_profile_lock_retry_base_ms(
+        std::env::var(PROFILE_LOCK_RETRY_BASE_MS_ENV)
+            .ok()
+            .as_deref(),
+    );
+    ProfileLockRetryPolicy {
+        max_attempts,
+        base_backoff_ms,
+    }
+}
+
+fn parse_profile_lock_max_attempts(raw: Option<&str>) -> u32 {
+    let Some(raw) = raw else {
+        return DEFAULT_PROFILE_LOCK_MAX_ATTEMPTS;
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return DEFAULT_PROFILE_LOCK_MAX_ATTEMPTS;
+    }
+    let Ok(parsed) = trimmed.parse::<u32>() else {
+        return DEFAULT_PROFILE_LOCK_MAX_ATTEMPTS;
+    };
+    if parsed == 0 {
+        return DEFAULT_PROFILE_LOCK_MAX_ATTEMPTS;
+    }
+    parsed.clamp(MIN_PROFILE_LOCK_MAX_ATTEMPTS, MAX_PROFILE_LOCK_MAX_ATTEMPTS)
+}
+
+fn parse_profile_lock_retry_base_ms(raw: Option<&str>) -> u64 {
+    let Some(raw) = raw else {
+        return DEFAULT_PROFILE_LOCK_RETRY_BASE_MS;
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return DEFAULT_PROFILE_LOCK_RETRY_BASE_MS;
+    }
+    let Ok(parsed) = trimmed.parse::<u64>() else {
+        return DEFAULT_PROFILE_LOCK_RETRY_BASE_MS;
+    };
+    if parsed == 0 {
+        return DEFAULT_PROFILE_LOCK_RETRY_BASE_MS;
+    }
+    parsed.clamp(
+        MIN_PROFILE_LOCK_RETRY_BASE_MS,
+        MAX_PROFILE_LOCK_RETRY_BASE_MS,
+    )
+}
+
 fn should_ignore_lock_error(err: &std::io::Error) -> bool {
     matches!(
         err.kind(),
@@ -692,16 +826,158 @@ fn should_ignore_lock_error(err: &std::io::Error) -> bool {
     )
 }
 
-fn should_ignore_lock_error_anyhow(err: &anyhow::Error) -> bool {
-    err.downcast_ref::<std::io::Error>()
-        .map(should_ignore_lock_error)
-        .unwrap_or(false)
+fn is_retryable_lock_error(err: &std::io::Error) -> bool {
+    if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) {
+        return true;
+    }
+    match err.raw_os_error() {
+        Some(code) if code == os_error_emfile() || code == os_error_enfile() => true,
+        _ => false,
+    }
+}
+
+fn lock_error_class(err: &std::io::Error) -> &'static str {
+    if should_ignore_lock_error(err) {
+        "ignore"
+    } else if is_retryable_lock_error(err) {
+        "retryable"
+    } else {
+        "fatal"
+    }
+}
+
+fn retry_exhausted_error(
+    operation: &str,
+    path: &Path,
+    attempts: u32,
+    err: &std::io::Error,
+) -> anyhow::Error {
+    anyhow!(
+        "{} {} failed after {} attempts; error_class={} kind={:?} os_error={:?}: {}",
+        operation,
+        path.display(),
+        attempts,
+        lock_error_class(err),
+        err.kind(),
+        err.raw_os_error(),
+        err
+    )
+}
+
+#[cfg(unix)]
+fn os_error_emfile() -> i32 {
+    nix::libc::EMFILE
+}
+
+#[cfg(not(unix))]
+fn os_error_emfile() -> i32 {
+    24
+}
+
+#[cfg(unix)]
+fn os_error_enfile() -> i32 {
+    nix::libc::ENFILE
+}
+
+#[cfg(not(unix))]
+fn os_error_enfile() -> i32 {
+    23
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn parse_profile_lock_max_attempts_defaults_and_clamps() {
+        assert_eq!(
+            parse_profile_lock_max_attempts(None),
+            DEFAULT_PROFILE_LOCK_MAX_ATTEMPTS
+        );
+        assert_eq!(
+            parse_profile_lock_max_attempts(Some("")),
+            DEFAULT_PROFILE_LOCK_MAX_ATTEMPTS
+        );
+        assert_eq!(
+            parse_profile_lock_max_attempts(Some("abc")),
+            DEFAULT_PROFILE_LOCK_MAX_ATTEMPTS
+        );
+        assert_eq!(
+            parse_profile_lock_max_attempts(Some("0")),
+            DEFAULT_PROFILE_LOCK_MAX_ATTEMPTS
+        );
+        assert_eq!(
+            parse_profile_lock_max_attempts(Some("1")),
+            MIN_PROFILE_LOCK_MAX_ATTEMPTS
+        );
+        assert_eq!(
+            parse_profile_lock_max_attempts(Some("200")),
+            MAX_PROFILE_LOCK_MAX_ATTEMPTS
+        );
+    }
+
+    #[test]
+    fn parse_profile_lock_retry_base_ms_defaults_and_clamps() {
+        assert_eq!(
+            parse_profile_lock_retry_base_ms(None),
+            DEFAULT_PROFILE_LOCK_RETRY_BASE_MS
+        );
+        assert_eq!(
+            parse_profile_lock_retry_base_ms(Some("")),
+            DEFAULT_PROFILE_LOCK_RETRY_BASE_MS
+        );
+        assert_eq!(
+            parse_profile_lock_retry_base_ms(Some("abc")),
+            DEFAULT_PROFILE_LOCK_RETRY_BASE_MS
+        );
+        assert_eq!(
+            parse_profile_lock_retry_base_ms(Some("0")),
+            DEFAULT_PROFILE_LOCK_RETRY_BASE_MS
+        );
+        assert_eq!(
+            parse_profile_lock_retry_base_ms(Some("1")),
+            MIN_PROFILE_LOCK_RETRY_BASE_MS
+        );
+        assert_eq!(
+            parse_profile_lock_retry_base_ms(Some("999999")),
+            MAX_PROFILE_LOCK_RETRY_BASE_MS
+        );
+    }
+
+    #[test]
+    fn retryable_lock_errors_cover_kinds_and_fd_os_codes() {
+        assert!(is_retryable_lock_error(&std::io::Error::new(
+            ErrorKind::WouldBlock,
+            "busy"
+        )));
+        assert!(is_retryable_lock_error(&std::io::Error::new(
+            ErrorKind::Interrupted,
+            "signal"
+        )));
+        assert!(is_retryable_lock_error(&std::io::Error::from_raw_os_error(
+            os_error_emfile()
+        )));
+        assert!(is_retryable_lock_error(&std::io::Error::from_raw_os_error(
+            os_error_enfile()
+        )));
+        assert!(!is_retryable_lock_error(&std::io::Error::new(
+            ErrorKind::NotFound,
+            "missing"
+        )));
+    }
+
+    #[test]
+    fn retry_exhausted_error_includes_path_attempts_and_class() {
+        let path = Path::new("/tmp/profiles.lock");
+        let err = std::io::Error::new(ErrorKind::WouldBlock, "busy");
+        let message = retry_exhausted_error("lock shared", path, 5, &err).to_string();
+
+        assert!(message.contains("lock shared"));
+        assert!(message.contains(path.to_string_lossy().as_ref()));
+        assert!(message.contains("5 attempts"));
+        assert!(message.contains("error_class=retryable"));
+    }
 
     #[test]
     fn recall_orders_by_distance_then_recency() -> Result<()> {

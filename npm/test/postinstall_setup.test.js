@@ -27,7 +27,8 @@ const {
   shouldSkipSetup,
   launchSetupWizard,
   applyAgentInstructions,
-  buildDaemonEnv
+  buildDaemonEnv,
+  buildLaunchAgentPlist
 } = require("../lib/postinstall_setup");
 
 test("upsertServerConfig adds server section when missing", () => {
@@ -310,7 +311,30 @@ test("buildDaemonEnv includes base daemon env values", () => {
     env: { DOCDEX_ENABLE_STANDALONE_MCP: "1" }
   });
   assert.equal(env.DOCDEX_BROWSER_AUTO_INSTALL, "0");
+  assert.equal(env.DOCDEX_REPO_IDLE_SECONDS, "300");
+  assert.equal(env.DOCDEX_REPO_HIBERNATE_SECONDS, "1800");
+  assert.equal(env.DOCDEX_REPO_CLEANUP_INTERVAL_SECONDS, "60");
+  assert.equal(env.DOCDEX_WEB_MAX_CONCURRENT_BROWSER_FETCHES, "1");
+  assert.equal(env.DOCDEX_WEB_MAX_CONCURRENT_LLM, "1");
   assert.equal(env.DOCDEX_MCP_SERVER_BIN, undefined);
+});
+
+test("buildLaunchAgentPlist includes NumberOfFiles soft/hard limits", () => {
+  const plist = buildLaunchAgentPlist({
+    programArgs: ["/tmp/docdexd", "daemon"],
+    envPairs: [["DOCDEX_BROWSER_AUTO_INSTALL", "0"]],
+    workingDir: "/tmp/docdex",
+    logDir: "/tmp/docdex/logs"
+  });
+  assert.ok(plist.includes("<key>SoftResourceLimits</key>"));
+  assert.ok(plist.includes("<key>HardResourceLimits</key>"));
+  assert.ok(plist.includes("<key>NumberOfFiles</key>"));
+  assert.ok(plist.includes("<integer>65536</integer>"));
+  assert.ok(plist.includes("<integer>200000</integer>"));
+  assert.ok(plist.includes("<key>RunAtLoad</key>"));
+  assert.ok(plist.includes("<key>KeepAlive</key>"));
+  assert.ok(plist.includes("daemon.out.log"));
+  assert.ok(plist.includes("daemon.err.log"));
 });
 
 test("resolveOllamaInstallMode respects env overrides", () => {

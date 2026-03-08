@@ -81,11 +81,11 @@ pub async fn delegate_handler(
         ));
     }
 
-    if let Err(err) =
-        resolve_repo_context(&state, &headers, None, payload.repo_id.as_deref(), false)
+    let repo = match resolve_repo_context(&state, &headers, None, payload.repo_id.as_deref(), false)
     {
-        return Err(crate::search::repo_error_response(err));
-    }
+        Ok(repo) => repo,
+        Err(err) => return Err(crate::search::repo_error_response(err)),
+    };
 
     let task_type = TaskType::parse(&payload.task_type).ok_or_else(|| {
         json_error(
@@ -207,6 +207,8 @@ pub async fn delegate_handler(
         || !state.llm_config.delegation.local_agent_id.trim().is_empty();
     if state.llm_config.delegation.enforce_local && local_target.is_none() && !local_override {
         state.metrics.inc_delegate_local_enforced_failure();
+        repo.delegation_metrics
+            .inc_delegate_local_enforced_failure();
         return Err(json_error_with_details(
             StatusCode::BAD_REQUEST,
             ERR_DELEGATION_LOCAL_REQUIRED,
@@ -237,6 +239,7 @@ pub async fn delegate_handler(
     .map_err(|err| {
         if let Some(enforcement) = err.downcast_ref::<DelegationEnforcementError>() {
             state.metrics.inc_delegate_local_enforced_failure();
+            repo.delegation_metrics.inc_delegate_local_enforced_failure();
             return json_error_with_details(
                 StatusCode::BAD_REQUEST,
                 ERR_DELEGATION_LOCAL_REQUIRED,
@@ -258,11 +261,16 @@ pub async fn delegate_handler(
     })?;
 
     state.metrics.inc_delegate_request();
+    repo.delegation_metrics.inc_delegate_request();
     state
         .metrics
         .record_delegate_latency(started_at.elapsed().as_millis());
+    repo.delegation_metrics
+        .record_delegate_latency(started_at.elapsed().as_millis());
     state
         .metrics
+        .record_delegate_token_estimate(result.token_estimate);
+    repo.delegation_metrics
         .record_delegate_token_estimate(result.token_estimate);
     let local_cost_per_million = resolve_local_cost_per_million(
         &state.llm_config,
@@ -279,18 +287,27 @@ pub async fn delegate_handler(
     let primary_cost_micros = compute_cost_micros(result.primary_tokens, primary_cost_per_million);
     if result.local_tokens > 0 {
         state.metrics.inc_delegate_offloaded();
+        repo.delegation_metrics.inc_delegate_offloaded();
     }
     state
         .metrics
         .record_delegate_local_tokens(result.local_tokens);
+    repo.delegation_metrics
+        .record_delegate_local_tokens(result.local_tokens);
     state
         .metrics
+        .record_delegate_primary_tokens(result.primary_tokens);
+    repo.delegation_metrics
         .record_delegate_primary_tokens(result.primary_tokens);
     state
         .metrics
         .record_delegate_local_cost_micros(local_cost_micros);
+    repo.delegation_metrics
+        .record_delegate_local_cost_micros(local_cost_micros);
     state
         .metrics
+        .record_delegate_primary_cost_micros(primary_cost_micros);
+    repo.delegation_metrics
         .record_delegate_primary_cost_micros(primary_cost_micros);
     let savings = compute_delegation_savings(
         result.local_tokens,
@@ -300,11 +317,16 @@ pub async fn delegate_handler(
     state
         .metrics
         .record_delegate_token_savings(savings.token_savings);
+    repo.delegation_metrics
+        .record_delegate_token_savings(savings.token_savings);
     state
         .metrics
         .record_delegate_cost_savings_micros(savings.cost_savings_micros);
+    repo.delegation_metrics
+        .record_delegate_cost_savings_micros(savings.cost_savings_micros);
     if result.fallback_used {
         state.metrics.inc_delegate_fallback();
+        repo.delegation_metrics.inc_delegate_fallback();
     }
 
     Ok(Json(DelegateResponse {

@@ -4,21 +4,56 @@ use crate::llm::local_library::{
     load_local_library, refresh_local_library_if_stale, LocalModelLibrary,
 };
 use anyhow::Result;
+use chrono::{TimeZone, Utc};
 use reqwest::Method;
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct DelegationSavingsPricing {
+    primary_usd_per_1k_tokens: f64,
+    local_usd_per_1k_tokens: f64,
+}
+
+#[derive(Deserialize)]
+struct DelegationSavingsResponse {
+    generated_at_epoch_ms: i64,
+    delegate_requests_total: u64,
+    delegate_offloaded_total: u64,
+    delegate_fallbacks_total: u64,
+    delegate_token_estimate_total: u64,
+    delegate_local_tokens_total: u64,
+    delegate_primary_tokens_total: u64,
+    delegate_tokens_total: u64,
+    delegate_token_savings_total: u64,
+    delegate_local_cost_micros_total: u64,
+    delegate_primary_cost_micros_total: u64,
+    delegate_cost_savings_micros_total: u64,
+    delegate_cost_savings_usd: f64,
+    pricing: DelegationSavingsPricing,
+}
 
 pub(crate) async fn run(command: crate::cli::DelegationCommand) -> Result<()> {
     match command {
-        crate::cli::DelegationCommand::Savings { json } => run_savings(json).await,
+        crate::cli::DelegationCommand::Savings { repo, all, json } => {
+            run_savings(repo, all, json).await
+        }
         crate::cli::DelegationCommand::Agents { json } => run_agents(json).await,
     }
 }
 
-async fn run_savings(json: bool) -> Result<()> {
+async fn run_savings(repo: crate::config::RepoArgs, all: bool, json: bool) -> Result<()> {
     let client = CliHttpClient::new()?;
-    let resp = client
-        .request(Method::GET, "/v1/telemetry/delegation")
-        .send()
-        .await?;
+    let req = if all {
+        client
+            .request(Method::GET, "/v1/telemetry/delegation")
+            .query(&[("all", "true")])
+    } else {
+        let repo_root = repo.repo_root();
+        client.ensure_repo(&repo_root).await?;
+        let req = client.request(Method::GET, "/v1/telemetry/delegation");
+        client.with_repo(req, &repo_root)?
+    };
+    let resp = req.send().await?;
     let status = resp.status();
     let text = resp.text().await?;
     if !status.is_success() {
@@ -28,7 +63,8 @@ async fn run_savings(json: bool) -> Result<()> {
         let value: serde_json::Value = serde_json::from_str(&text)?;
         println!("{}", serde_json::to_string_pretty(&value)?);
     } else {
-        println!("{text}");
+        let response: DelegationSavingsResponse = serde_json::from_str(&text)?;
+        println!("{}", render_delegation_savings_table(&response));
     }
     Ok(())
 }
@@ -50,6 +86,120 @@ async fn run_agents(json: bool) -> Result<()> {
     }
     println!("{}", render_delegation_table(&library));
     Ok(())
+}
+
+fn render_delegation_savings_table(response: &DelegationSavingsResponse) -> String {
+    let rows = vec![
+        (
+            "Requests".to_string(),
+            format_u64(response.delegate_requests_total),
+        ),
+        (
+            "Offloaded".to_string(),
+            format_u64(response.delegate_offloaded_total),
+        ),
+        (
+            "Fallbacks".to_string(),
+            format_u64(response.delegate_fallbacks_total),
+        ),
+        (
+            "Token Estimate".to_string(),
+            format_u64(response.delegate_token_estimate_total),
+        ),
+        (
+            "Local Tokens".to_string(),
+            format_u64(response.delegate_local_tokens_total),
+        ),
+        (
+            "Primary Tokens".to_string(),
+            format_u64(response.delegate_primary_tokens_total),
+        ),
+        (
+            "Total Tokens".to_string(),
+            format_u64(response.delegate_tokens_total),
+        ),
+        (
+            "Token Savings".to_string(),
+            format_u64(response.delegate_token_savings_total),
+        ),
+        (
+            "Local Cost".to_string(),
+            format_cost(response.delegate_local_cost_micros_total),
+        ),
+        (
+            "Primary Cost".to_string(),
+            format_cost(response.delegate_primary_cost_micros_total),
+        ),
+        (
+            "Cost Savings".to_string(),
+            format!(
+                "{} ({} micros)",
+                format_usd(response.delegate_cost_savings_usd),
+                format_u64(response.delegate_cost_savings_micros_total)
+            ),
+        ),
+        (
+            "Local Rate".to_string(),
+            format_rate(response.pricing.local_usd_per_1k_tokens),
+        ),
+        (
+            "Primary Rate".to_string(),
+            format_rate(response.pricing.primary_usd_per_1k_tokens),
+        ),
+        (
+            "Generated At".to_string(),
+            format_generated_at(response.generated_at_epoch_ms),
+        ),
+    ];
+
+    render_boxed_kv_table("METRIC", "VALUE", &rows)
+}
+
+fn render_boxed_kv_table(
+    left_header: &str,
+    right_header: &str,
+    rows: &[(String, String)],
+) -> String {
+    let left_width = std::iter::once(left_header)
+        .chain(rows.iter().map(|(label, _)| label.as_str()))
+        .map(display_width)
+        .max()
+        .unwrap_or(0);
+    let right_width = std::iter::once(right_header)
+        .chain(rows.iter().map(|(_, value)| value.as_str()))
+        .map(display_width)
+        .max()
+        .unwrap_or(0);
+
+    let mut lines = Vec::with_capacity(rows.len() + 4);
+    lines.push(format!(
+        "╭{}┬{}╮",
+        "─".repeat(left_width + 2),
+        "─".repeat(right_width + 2)
+    ));
+    lines.push(format!(
+        "│ {} │ {} │",
+        pad_right(left_header, left_width),
+        pad_right(right_header, right_width)
+    ));
+    lines.push(format!(
+        "├{}┼{}┤",
+        "─".repeat(left_width + 2),
+        "─".repeat(right_width + 2)
+    ));
+    for (label, value) in rows {
+        lines.push(format!(
+            "│ {} │ {} │",
+            pad_right(label, left_width),
+            pad_left(value, right_width)
+        ));
+    }
+    lines.push(format!(
+        "╰{}┴{}╯",
+        "─".repeat(left_width + 2),
+        "─".repeat(right_width + 2)
+    ));
+    lines.join("\n")
 }
 
 fn render_delegation_table(library: &LocalModelLibrary) -> String {
@@ -154,6 +304,61 @@ fn format_separator(widths: &[usize; 13]) -> String {
         .join("-+-")
 }
 
+fn display_width(value: &str) -> usize {
+    value.chars().count()
+}
+
+fn pad_right(value: &str, width: usize) -> String {
+    format!(
+        "{}{}",
+        value,
+        " ".repeat(width.saturating_sub(display_width(value)))
+    )
+}
+
+fn pad_left(value: &str, width: usize) -> String {
+    format!(
+        "{}{}",
+        " ".repeat(width.saturating_sub(display_width(value))),
+        value
+    )
+}
+
+fn format_u64(value: u64) -> String {
+    let digits = value.to_string();
+    let mut out = String::with_capacity(digits.len() + (digits.len() / 3));
+    for (idx, ch) in digits.chars().enumerate() {
+        if idx > 0 && (digits.len() - idx) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn format_cost(micros: u64) -> String {
+    format!(
+        "{} ({} micros)",
+        format_usd(micros as f64 / 1_000_000.0),
+        format_u64(micros)
+    )
+}
+
+fn format_usd(value: f64) -> String {
+    format!("${}", format_float_with_precision(value, 6))
+}
+
+fn format_rate(value: f64) -> String {
+    format!("${}/1k", format_float_with_precision(value, 4))
+}
+
+fn format_generated_at(epoch_ms: i64) -> String {
+    match Utc.timestamp_millis_opt(epoch_ms).single() {
+        Some(timestamp) => timestamp.to_rfc3339(),
+        None => epoch_ms.to_string(),
+    }
+}
+
 fn format_caps(caps: &[String]) -> String {
     if caps.is_empty() {
         return "-".to_string();
@@ -190,10 +395,14 @@ fn format_opt_f64(value: Option<f64>) -> String {
 }
 
 fn format_float(value: f64) -> String {
+    format_float_with_precision(value, 2)
+}
+
+fn format_float_with_precision(value: f64, precision: usize) -> String {
     if !value.is_finite() {
         return "-".to_string();
     }
-    let mut formatted = format!("{:.2}", value);
+    let mut formatted = format!("{value:.precision$}");
     while formatted.ends_with('0') {
         formatted.pop();
     }
@@ -201,4 +410,42 @@ fn format_float(value: f64) -> String {
         formatted.pop();
     }
     formatted
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        render_delegation_savings_table, DelegationSavingsPricing, DelegationSavingsResponse,
+    };
+
+    #[test]
+    fn render_delegation_savings_table_uses_box_drawing_output() {
+        let response = DelegationSavingsResponse {
+            generated_at_epoch_ms: 1_772_971_367_124,
+            delegate_requests_total: 4,
+            delegate_offloaded_total: 4,
+            delegate_fallbacks_total: 0,
+            delegate_token_estimate_total: 692,
+            delegate_local_tokens_total: 610,
+            delegate_primary_tokens_total: 0,
+            delegate_tokens_total: 610,
+            delegate_token_savings_total: 610,
+            delegate_local_cost_micros_total: 426,
+            delegate_primary_cost_micros_total: 0,
+            delegate_cost_savings_micros_total: 0,
+            delegate_cost_savings_usd: 0.0,
+            pricing: DelegationSavingsPricing {
+                local_usd_per_1k_tokens: 0.0,
+                primary_usd_per_1k_tokens: 0.0,
+            },
+        };
+
+        let rendered = render_delegation_savings_table(&response);
+
+        assert!(rendered.starts_with("╭"));
+        assert!(rendered.contains("│ METRIC"));
+        assert!(rendered.contains("Token Savings"));
+        assert!(rendered.contains("610"));
+        assert!(rendered.ends_with("╯"));
+    }
 }

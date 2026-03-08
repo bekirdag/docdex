@@ -221,7 +221,7 @@ fn cli_index_and_query_use_http() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn cli_delegation_savings_returns_json() -> Result<(), Box<dyn Error>> {
+fn cli_delegation_savings_defaults_to_boxed_table() -> Result<(), Box<dyn Error>> {
     let repo = TempDir::new()?;
     write_repo(repo.path())?;
     let state_root = TempDir::new()?;
@@ -243,7 +243,60 @@ fn cli_delegation_savings_returns_json() -> Result<(), Box<dyn Error>> {
         .env("DOCDEX_HTTP_CONNECT_TIMEOUT_MS", "5000")
         .env("DOCDEX_CLI_LOCAL", "0")
         .env("DOCDEX_STATE_DIR", local_state.path())
-        .args(["delegation", "savings"])
+        .args([
+            "delegation",
+            "savings",
+            "--repo",
+            repo.path().to_str().ok_or("repo path utf8")?,
+        ])
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "docdexd delegation savings failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rendered = String::from_utf8(output.stdout)?;
+    assert!(rendered.starts_with("╭"));
+    assert!(rendered.contains("│ METRIC"));
+    assert!(rendered.contains("Requests"));
+    assert!(rendered.contains("Generated At"));
+
+    server.kill().ok();
+    server.wait().ok();
+    Ok(())
+}
+
+#[test]
+fn cli_delegation_savings_returns_json_with_flag() -> Result<(), Box<dyn Error>> {
+    let repo = TempDir::new()?;
+    write_repo(repo.path())?;
+    let state_root = TempDir::new()?;
+    let local_state = TempDir::new()?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
+    wait_for_health(host, port)?;
+
+    let base_url = format!("http://{host}:{port}");
+    let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
+        .env("DOCDEX_ENABLE_MEMORY", "0")
+        .env("DOCDEX_HTTP_BASE_URL", &base_url)
+        .env("DOCDEX_HTTP_TIMEOUT_MS", "5000")
+        .env("DOCDEX_HTTP_CONNECT_TIMEOUT_MS", "5000")
+        .env("DOCDEX_CLI_LOCAL", "0")
+        .env("DOCDEX_STATE_DIR", local_state.path())
+        .args([
+            "delegation",
+            "savings",
+            "--repo",
+            repo.path().to_str().ok_or("repo path utf8")?,
+            "--json",
+        ])
         .output()?;
 
     assert!(
@@ -255,6 +308,48 @@ fn cli_delegation_savings_returns_json() -> Result<(), Box<dyn Error>> {
     assert!(payload.get("delegate_token_savings_total").is_some());
     assert!(payload.get("delegate_cost_savings_micros_total").is_some());
     assert!(payload.get("pricing").is_some());
+
+    server.kill().ok();
+    server.wait().ok();
+    Ok(())
+}
+
+#[test]
+fn cli_delegation_savings_all_uses_global_scope_without_repo_flag() -> Result<(), Box<dyn Error>> {
+    let repo = TempDir::new()?;
+    write_repo(repo.path())?;
+    let state_root = TempDir::new()?;
+    let local_state = TempDir::new()?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut server = spawn_server(state_root.path(), repo.path(), host, port)?;
+    wait_for_health(host, port)?;
+
+    let base_url = format!("http://{host}:{port}");
+    let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
+        .env("DOCDEX_ENABLE_MEMORY", "0")
+        .env("DOCDEX_HTTP_BASE_URL", &base_url)
+        .env("DOCDEX_HTTP_TIMEOUT_MS", "5000")
+        .env("DOCDEX_HTTP_CONNECT_TIMEOUT_MS", "5000")
+        .env("DOCDEX_CLI_LOCAL", "0")
+        .env("DOCDEX_STATE_DIR", local_state.path())
+        .args(["delegation", "savings", "--all"])
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "docdexd delegation savings --all failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rendered = String::from_utf8(output.stdout)?;
+    assert!(rendered.starts_with("╭"));
+    assert!(rendered.contains("│ METRIC"));
+    assert!(rendered.contains("Requests"));
+    assert!(rendered.contains("Generated At"));
 
     server.kill().ok();
     server.wait().ok();

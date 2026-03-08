@@ -15,7 +15,19 @@ const DEFAULT_OLLAMA_CLI_MODEL: &str = "llama3";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_ZHIPU_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
 
-const CLI_BASED_ADAPTERS: [&str; 4] = ["codex-cli", "gemini-cli", "openai-cli", "ollama-cli"];
+const CLI_BASED_ADAPTERS: [&str; 5] = [
+    "codex-cli",
+    "gemini-cli",
+    "openai-cli",
+    "ollama-cli",
+    "claude-cli",
+];
+
+const DOCDEX_CODEX_BIN: &str = "DOCDEX_CODEX_BIN";
+const DOCDEX_OPENAI_CLI_BIN: &str = "DOCDEX_OPENAI_CLI_BIN";
+const DOCDEX_GEMINI_BIN: &str = "DOCDEX_GEMINI_BIN";
+const DOCDEX_CLAUDE_BIN: &str = "DOCDEX_CLAUDE_BIN";
+const DOCDEX_OLLAMA_BIN: &str = "DOCDEX_OLLAMA_BIN";
 
 pub struct LlmCompletion {
     pub output: String,
@@ -37,6 +49,7 @@ pub enum LlmAdapter {
     CodexCli(CodexCliClient),
     OpenAiCli(CodexCliClient),
     GeminiCli(GeminiCliClient),
+    ClaudeCli(ClaudeCliClient),
     OpenAiApi(OpenAiApiClient),
     ZhipuApi(ZhipuApiClient),
 }
@@ -49,6 +62,7 @@ impl LlmAdapter {
             LlmAdapter::CodexCli(_) => "codex-cli",
             LlmAdapter::OpenAiCli(_) => "openai-cli",
             LlmAdapter::GeminiCli(_) => "gemini-cli",
+            LlmAdapter::ClaudeCli(_) => "claude-cli",
             LlmAdapter::OpenAiApi(_) => "openai-api",
             LlmAdapter::ZhipuApi(_) => "zhipu-api",
         }
@@ -68,6 +82,7 @@ impl LlmClient for LlmAdapter {
             LlmAdapter::CodexCli(client) => client.generate(prompt, max_tokens, timeout),
             LlmAdapter::OpenAiCli(client) => client.generate(prompt, max_tokens, timeout),
             LlmAdapter::GeminiCli(client) => client.generate(prompt, max_tokens, timeout),
+            LlmAdapter::ClaudeCli(client) => client.generate(prompt, max_tokens, timeout),
             LlmAdapter::OpenAiApi(client) => client.generate(prompt, max_tokens, timeout),
             LlmAdapter::ZhipuApi(client) => client.generate(prompt, max_tokens, timeout),
         }
@@ -88,10 +103,26 @@ pub fn resolve_agent_adapter(agent: &McodaAgent) -> Result<LlmAdapter> {
         "ollama-remote" => {
             LlmAdapter::OllamaRemote(OllamaRemoteClient::new(model, adapter_type, config)?)
         }
-        "ollama-cli" => LlmAdapter::OllamaCli(OllamaCliClient::new(model, adapter_type)),
-        "codex-cli" => LlmAdapter::CodexCli(CodexCliClient::new(model, adapter_type)),
-        "openai-cli" => LlmAdapter::OpenAiCli(CodexCliClient::new(model, adapter_type)),
-        "gemini-cli" => LlmAdapter::GeminiCli(GeminiCliClient::new(model, adapter_type)),
+        "ollama-cli" => {
+            let command = resolve_cli_command(agent, adapter_type.as_str());
+            LlmAdapter::OllamaCli(OllamaCliClient::new(model, adapter_type, command))
+        }
+        "codex-cli" => {
+            let command = resolve_cli_command(agent, adapter_type.as_str());
+            LlmAdapter::CodexCli(CodexCliClient::new(model, adapter_type, command))
+        }
+        "openai-cli" => {
+            let command = resolve_cli_command(agent, adapter_type.as_str());
+            LlmAdapter::OpenAiCli(CodexCliClient::new(model, adapter_type, command))
+        }
+        "gemini-cli" => {
+            let command = resolve_cli_command(agent, adapter_type.as_str());
+            LlmAdapter::GeminiCli(GeminiCliClient::new(model, adapter_type, command))
+        }
+        "claude-cli" => {
+            let command = resolve_cli_command(agent, adapter_type.as_str());
+            LlmAdapter::ClaudeCli(ClaudeCliClient::new(model, adapter_type, command))
+        }
         "openai-api" => {
             let api_key = non_empty_trimmed(
                 agent
@@ -162,6 +193,37 @@ fn resolve_adapter_type(agent: &McodaAgent, has_secret: bool) -> Result<String> 
         }
     }
     Ok(adapter_type)
+}
+
+fn default_cli_command(adapter_type: &str) -> &str {
+    match adapter_type {
+        "openai-cli" | "codex-cli" => "codex",
+        "gemini-cli" => "gemini",
+        "claude-cli" => "claude",
+        "ollama-cli" => "ollama",
+        _ => adapter_type,
+    }
+}
+
+fn env_override_for_cli(adapter_type: &str) -> Option<String> {
+    match adapter_type {
+        "openai-cli" => {
+            env_trimmed(DOCDEX_OPENAI_CLI_BIN).or_else(|| env_trimmed(DOCDEX_CODEX_BIN))
+        }
+        "codex-cli" => env_trimmed(DOCDEX_CODEX_BIN),
+        "gemini-cli" => env_trimmed(DOCDEX_GEMINI_BIN),
+        "claude-cli" => env_trimmed(DOCDEX_CLAUDE_BIN),
+        "ollama-cli" => env_trimmed(DOCDEX_OLLAMA_BIN),
+        _ => None,
+    }
+}
+
+fn resolve_cli_command(agent: &McodaAgent, adapter_type: &str) -> String {
+    env_override_for_cli(adapter_type)
+        .or_else(|| non_empty_trimmed(agent.cli_binary.as_deref()))
+        .or_else(|| config_string(agent.config.as_ref(), "binary"))
+        .or_else(|| config_string(agent.config.as_ref(), "cliBinary"))
+        .unwrap_or_else(|| default_cli_command(adapter_type).to_string())
 }
 
 pub struct OllamaRemoteClient {
@@ -247,11 +309,16 @@ impl LlmClient for OllamaRemoteClient {
 pub struct OllamaCliClient {
     model: Option<String>,
     adapter: String,
+    command: String,
 }
 
 impl OllamaCliClient {
-    fn new(model: Option<String>, adapter: String) -> Self {
-        Self { model, adapter }
+    fn new(model: Option<String>, adapter: String, command: String) -> Self {
+        Self {
+            model,
+            adapter,
+            command,
+        }
     }
 }
 
@@ -269,7 +336,7 @@ impl LlmClient for OllamaCliClient {
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| DEFAULT_OLLAMA_CLI_MODEL.to_string());
-            let mut command = Command::new("ollama");
+            let mut command = Command::new(self.command.as_str());
             command
                 .arg("run")
                 .arg(model.as_str())
@@ -305,11 +372,16 @@ impl LlmClient for OllamaCliClient {
 pub struct CodexCliClient {
     model: Option<String>,
     adapter: String,
+    command: String,
 }
 
 impl CodexCliClient {
-    fn new(model: Option<String>, adapter: String) -> Self {
-        Self { model, adapter }
+    fn new(model: Option<String>, adapter: String, command: String) -> Self {
+        Self {
+            model,
+            adapter,
+            command,
+        }
     }
 }
 
@@ -325,7 +397,7 @@ impl LlmClient for CodexCliClient {
                 .model
                 .clone()
                 .unwrap_or_else(|| DEFAULT_CODEX_MODEL.to_string());
-            let mut command = Command::new("codex");
+            let mut command = Command::new(self.command.as_str());
             command
                 .arg("exec")
                 .arg("--model")
@@ -371,11 +443,16 @@ impl LlmClient for CodexCliClient {
 pub struct GeminiCliClient {
     model: Option<String>,
     adapter: String,
+    command: String,
 }
 
 impl GeminiCliClient {
-    fn new(model: Option<String>, adapter: String) -> Self {
-        Self { model, adapter }
+    fn new(model: Option<String>, adapter: String, command: String) -> Self {
+        Self {
+            model,
+            adapter,
+            command,
+        }
     }
 }
 
@@ -387,7 +464,7 @@ impl LlmClient for GeminiCliClient {
         timeout_duration: Duration,
     ) -> LlmFuture<'a> {
         Box::pin(async move {
-            let mut command = Command::new("gemini");
+            let mut command = Command::new(self.command.as_str());
             command.arg("prompt");
             if let Some(model) = self.model.as_ref() {
                 if !model.trim().is_empty() {
@@ -409,6 +486,67 @@ impl LlmClient for GeminiCliClient {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 return Err(anyhow!(
                     "gemini CLI failed (exit {:?}): {}",
+                    output.status.code(),
+                    stderr.trim()
+                ));
+            }
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            Ok(LlmCompletion {
+                output: stdout.trim().to_string(),
+                adapter: self.adapter.clone(),
+                model: self.model.clone(),
+                metadata: None,
+            })
+        })
+    }
+}
+
+pub struct ClaudeCliClient {
+    model: Option<String>,
+    adapter: String,
+    command: String,
+}
+
+impl ClaudeCliClient {
+    fn new(model: Option<String>, adapter: String, command: String) -> Self {
+        Self {
+            model,
+            adapter,
+            command,
+        }
+    }
+}
+
+impl LlmClient for ClaudeCliClient {
+    fn generate<'a>(
+        &'a self,
+        prompt: &'a str,
+        _max_tokens: u32,
+        timeout_duration: Duration,
+    ) -> LlmFuture<'a> {
+        Box::pin(async move {
+            let mut command = Command::new(self.command.as_str());
+            command.arg("--print").arg("--output-format").arg("text");
+            if let Some(model) = self.model.as_ref() {
+                if !model.trim().is_empty() {
+                    command.arg("--model").arg(model.as_str());
+                }
+            }
+            command
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let mut child = command.spawn().context("spawn claude CLI")?;
+            if let Some(mut stdin) = child.stdin.take() {
+                tokio::io::AsyncWriteExt::write_all(&mut stdin, prompt.as_bytes()).await?;
+            }
+            let output = timeout(timeout_duration, child.wait_with_output())
+                .await
+                .context("claude CLI timeout")??;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(anyhow!(
+                    "claude CLI failed (exit {:?}): {}",
                     output.status.code(),
                     stderr.trim()
                 ));
@@ -674,6 +812,13 @@ fn non_empty_trimmed(value: Option<&str>) -> Option<String> {
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
         .map(|value| value.to_string())
+}
+
+fn env_trimmed(key: &str) -> Option<String> {
+    match std::env::var(key) {
+        Ok(value) => non_empty_trimmed(Some(value.as_str())),
+        Err(_) => None,
+    }
 }
 
 fn config_string(config: Option<&Value>, key: &str) -> Option<String> {

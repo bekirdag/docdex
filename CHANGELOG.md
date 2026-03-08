@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.46
+- Bump release metadata to 0.2.46.
+
 ## 0.2.45
 - Add FD-hardening guidance to agent docs (startup nofile warning threshold, profile lock retry knobs, and ops playbook reference).
 - Bump release metadata to 0.2.45.

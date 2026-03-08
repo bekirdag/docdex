@@ -245,6 +245,7 @@ pub struct AppState {
     pub access_log: bool,
     pub audit: Option<crate::audit::AuditLogger>,
     pub metrics: Arc<crate::metrics::Metrics>,
+    pub delegation_metrics: Arc<crate::metrics::DelegationMetrics>,
     pub memory: Option<MemoryState>,
     pub profile_state: Option<ProfileState>,
     pub features: crate::config::FeatureFlagsConfig,
@@ -267,6 +268,7 @@ pub(crate) struct RepoContext {
     pub indexer: Arc<Indexer>,
     pub libs_indexer: Option<Arc<LibsIndexer>>,
     pub memory: Option<MemoryState>,
+    pub delegation_metrics: Arc<crate::metrics::DelegationMetrics>,
 }
 
 impl RepoContext {
@@ -587,6 +589,7 @@ pub(crate) fn resolve_repo_context(
         indexer: state.indexer.clone(),
         libs_indexer: state.libs_indexer.clone(),
         memory: state.memory.clone(),
+        delegation_metrics: state.delegation_metrics.clone(),
     };
     let Some(candidate) = selected else {
         if explicit_required {
@@ -636,6 +639,7 @@ pub(crate) fn resolve_repo_context(
             indexer: repo.indexer.clone(),
             libs_indexer: repo.libs_indexer.clone(),
             memory: repo.memory.clone(),
+            delegation_metrics: repo.delegation_metrics.clone(),
         });
     }
     Err(RepoIdError {
@@ -759,6 +763,7 @@ mod repo_context_tests {
         let mut default_indexer: Option<Arc<Indexer>> = None;
         let mut default_repo_id: Option<String> = None;
         let mut default_legacy_id: Option<String> = None;
+        let mut default_delegation_metrics: Option<Arc<crate::metrics::DelegationMetrics>> = None;
 
         for idx in 0..repo_count {
             let repo_root = temp.path().join(format!("repo_{idx}"));
@@ -774,11 +779,13 @@ mod repo_context_tests {
             let indexer = Arc::new(Indexer::with_config(repo_root.clone(), config)?);
             let repo_id = repo_manager::repo_fingerprint_sha256(&repo_root)?;
             let legacy_repo_id = repo_manager::fingerprint::legacy_repo_id_for_root(&repo_root);
+            let delegation_metrics = Arc::new(crate::metrics::DelegationMetrics::default());
 
             if idx == 0 {
                 default_indexer = Some(indexer.clone());
                 default_repo_id = Some(repo_id.clone());
                 default_legacy_id = Some(legacy_repo_id.clone());
+                default_delegation_metrics = Some(delegation_metrics.clone());
             }
 
             if let Some(manager) = manager.as_ref() {
@@ -789,6 +796,7 @@ mod repo_context_tests {
                     indexer,
                     libs_indexer: None,
                     memory: None,
+                    delegation_metrics,
                 });
                 manager.insert_repo(runtime, None);
             }
@@ -813,6 +821,8 @@ mod repo_context_tests {
         let default_indexer = default_indexer.expect("build_state requires at least one repo");
         let default_repo_id = default_repo_id.expect("build_state requires at least one repo");
         let default_legacy_id = default_legacy_id.expect("build_state requires at least one repo");
+        let default_delegation_metrics =
+            default_delegation_metrics.expect("build_state requires at least one repo");
 
         if let Some(manager) = manager.as_ref() {
             manager.pin_repo(default_repo_id.clone());
@@ -827,6 +837,7 @@ mod repo_context_tests {
             access_log: false,
             audit: None,
             metrics: Arc::new(crate::metrics::Metrics::default()),
+            delegation_metrics: default_delegation_metrics,
             memory: None,
             profile_state: None,
             features: crate::config::FeatureFlagsConfig::default(),
@@ -1475,7 +1486,7 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 method: "GET",
                 path: "/v1/telemetry/delegation",
                 description: "Delegation savings telemetry (tokens + USD).",
-                params: &[],
+                params: &["repo_id=<optional>"],
             },
             AiHelpEndpoint {
                 method: "GET",

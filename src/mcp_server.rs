@@ -24,7 +24,7 @@ use crate::llm::local_library::{
     resolve_local_ollama_base_url,
 };
 use crate::memory::{inject_embedding_metadata, repo_state_root_from_state_dir, MemoryStore};
-use crate::metrics;
+use crate::metrics::{self, DelegationMetrics};
 use crate::ollama::OllamaEmbedder;
 use crate::orchestrator::web::{run_web_research, WebResearchResponse};
 use crate::orchestrator::{
@@ -790,6 +790,7 @@ impl McpService {
         rate_limit_per_min: u32,
         rate_limit_burst: u32,
         auth_token: Option<String>,
+        delegation_metrics: Arc<DelegationMetrics>,
     ) -> Result<Self> {
         let repo_root = repo_root
             .canonicalize()
@@ -904,6 +905,7 @@ impl McpService {
             tool_rate_limit,
             auth_token,
             authorized,
+            delegation_metrics,
         };
         Ok(Self { server })
     }
@@ -979,6 +981,7 @@ struct McpServer {
     tool_rate_limit: Option<RateLimiter<()>>,
     auth_token: Option<String>,
     authorized: bool,
+    delegation_metrics: Arc<DelegationMetrics>,
 }
 
 fn annotations_with_priority(priority: f32) -> serde_json::Value {
@@ -3157,6 +3160,8 @@ Produce a phased plan with risks and tests to run."
         if llm_config.delegation.enforce_local && local_target.is_none() && !local_override {
             let metrics = metrics::global();
             metrics.inc_delegate_local_enforced_failure();
+            self.delegation_metrics
+                .inc_delegate_local_enforced_failure();
             return Err(AppError::new(
                 ERR_DELEGATION_LOCAL_REQUIRED,
                 "local delegation required but no local target is configured",
@@ -3182,6 +3187,8 @@ Produce a phased plan with risks and tests to run."
             if err.downcast_ref::<DelegationEnforcementError>().is_some() {
                 let metrics = metrics::global();
                 metrics.inc_delegate_local_enforced_failure();
+                self.delegation_metrics
+                    .inc_delegate_local_enforced_failure();
                 return AppError::new(ERR_DELEGATION_LOCAL_REQUIRED, err.to_string()).into();
             }
             err
@@ -3189,8 +3196,13 @@ Produce a phased plan with risks and tests to run."
 
         let metrics = metrics::global();
         metrics.inc_delegate_request();
+        self.delegation_metrics.inc_delegate_request();
         metrics.record_delegate_latency(started_at.elapsed().as_millis());
+        self.delegation_metrics
+            .record_delegate_latency(started_at.elapsed().as_millis());
         metrics.record_delegate_token_estimate(result.token_estimate);
+        self.delegation_metrics
+            .record_delegate_token_estimate(result.token_estimate);
         let local_cost_per_million = resolve_local_cost_per_million(
             &llm_config,
             local_agent_override.as_deref(),
@@ -3207,20 +3219,34 @@ Produce a phased plan with risks and tests to run."
             compute_cost_micros(result.primary_tokens, primary_cost_per_million);
         if result.local_tokens > 0 {
             metrics.inc_delegate_offloaded();
+            self.delegation_metrics.inc_delegate_offloaded();
         }
         metrics.record_delegate_local_tokens(result.local_tokens);
+        self.delegation_metrics
+            .record_delegate_local_tokens(result.local_tokens);
         metrics.record_delegate_primary_tokens(result.primary_tokens);
+        self.delegation_metrics
+            .record_delegate_primary_tokens(result.primary_tokens);
         metrics.record_delegate_local_cost_micros(local_cost_micros);
+        self.delegation_metrics
+            .record_delegate_local_cost_micros(local_cost_micros);
         metrics.record_delegate_primary_cost_micros(primary_cost_micros);
+        self.delegation_metrics
+            .record_delegate_primary_cost_micros(primary_cost_micros);
         let savings = compute_delegation_savings(
             result.local_tokens,
             local_cost_per_million,
             primary_cost_per_million,
         );
         metrics.record_delegate_token_savings(savings.token_savings);
+        self.delegation_metrics
+            .record_delegate_token_savings(savings.token_savings);
         metrics.record_delegate_cost_savings_micros(savings.cost_savings_micros);
+        self.delegation_metrics
+            .record_delegate_cost_savings_micros(savings.cost_savings_micros);
         if result.fallback_used {
             metrics.inc_delegate_fallback();
+            self.delegation_metrics.inc_delegate_fallback();
         }
 
         Ok(json!({

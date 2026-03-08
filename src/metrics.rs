@@ -6,6 +6,215 @@ use std::sync::Arc;
 
 const HTTP_LATENCY_MAX_MS: u64 = 60_000;
 
+#[derive(Default)]
+pub struct DelegationMetrics {
+    delegate_requests: AtomicU64,
+    delegate_offloaded_total: AtomicU64,
+    delegate_fallbacks: AtomicU64,
+    delegate_latency_ms_total: AtomicU64,
+    delegate_latency_count: AtomicU64,
+    delegate_token_estimate_total: AtomicU64,
+    delegate_local_tokens_total: AtomicU64,
+    delegate_primary_tokens_total: AtomicU64,
+    delegate_token_savings_total: AtomicU64,
+    delegate_local_cost_micros_total: AtomicU64,
+    delegate_primary_cost_micros_total: AtomicU64,
+    delegate_cost_savings_micros_total: AtomicU64,
+    delegate_local_enforced_failures_total: AtomicU64,
+}
+
+impl DelegationMetrics {
+    pub fn inc_delegate_request(&self) {
+        self.delegate_requests.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_delegate_offloaded(&self) {
+        self.delegate_offloaded_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_delegate_fallback(&self) {
+        self.delegate_fallbacks.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_delegate_latency(&self, latency_ms: u128) {
+        self.delegate_latency_ms_total
+            .fetch_add(latency_ms as u64, Ordering::Relaxed);
+        self.delegate_latency_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_delegate_token_estimate(&self, tokens: u64) {
+        self.delegate_token_estimate_total
+            .fetch_add(tokens, Ordering::Relaxed);
+    }
+
+    pub fn record_delegate_local_tokens(&self, tokens: u64) {
+        self.delegate_local_tokens_total
+            .fetch_add(tokens, Ordering::Relaxed);
+    }
+
+    pub fn record_delegate_primary_tokens(&self, tokens: u64) {
+        self.delegate_primary_tokens_total
+            .fetch_add(tokens, Ordering::Relaxed);
+    }
+
+    pub fn record_delegate_token_savings(&self, tokens: u64) {
+        self.delegate_token_savings_total
+            .fetch_add(tokens, Ordering::Relaxed);
+    }
+
+    pub fn record_delegate_local_cost_micros(&self, micros: u64) {
+        self.delegate_local_cost_micros_total
+            .fetch_add(micros, Ordering::Relaxed);
+    }
+
+    pub fn record_delegate_primary_cost_micros(&self, micros: u64) {
+        self.delegate_primary_cost_micros_total
+            .fetch_add(micros, Ordering::Relaxed);
+    }
+
+    pub fn record_delegate_cost_savings_micros(&self, micros: u64) {
+        self.delegate_cost_savings_micros_total
+            .fetch_add(micros, Ordering::Relaxed);
+    }
+
+    pub fn inc_delegate_local_enforced_failure(&self) {
+        self.delegate_local_enforced_failures_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn delegate_requests_total(&self) -> u64 {
+        self.delegate_requests.load(Ordering::Relaxed)
+    }
+
+    pub fn delegate_offloaded_total(&self) -> u64 {
+        self.delegate_offloaded_total.load(Ordering::Relaxed)
+    }
+
+    pub fn delegate_fallbacks_total(&self) -> u64 {
+        self.delegate_fallbacks.load(Ordering::Relaxed)
+    }
+
+    pub fn delegate_token_estimate_total(&self) -> u64 {
+        self.delegate_token_estimate_total.load(Ordering::Relaxed)
+    }
+
+    pub fn delegate_local_tokens_total(&self) -> u64 {
+        self.delegate_local_tokens_total.load(Ordering::Relaxed)
+    }
+
+    pub fn delegate_primary_tokens_total(&self) -> u64 {
+        self.delegate_primary_tokens_total.load(Ordering::Relaxed)
+    }
+
+    pub fn delegate_token_savings_total(&self) -> u64 {
+        self.delegate_token_savings_total.load(Ordering::Relaxed)
+    }
+
+    pub fn delegate_local_cost_micros_total(&self) -> u64 {
+        self.delegate_local_cost_micros_total
+            .load(Ordering::Relaxed)
+    }
+
+    pub fn delegate_primary_cost_micros_total(&self) -> u64 {
+        self.delegate_primary_cost_micros_total
+            .load(Ordering::Relaxed)
+    }
+
+    pub fn delegate_cost_savings_micros_total(&self) -> u64 {
+        self.delegate_cost_savings_micros_total
+            .load(Ordering::Relaxed)
+    }
+
+    pub fn delegate_local_enforced_failures_total(&self) -> u64 {
+        self.delegate_local_enforced_failures_total
+            .load(Ordering::Relaxed)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DelegationTelemetrySnapshot {
+    pub delegate_requests_total: u64,
+    pub delegate_offloaded_total: u64,
+    pub delegate_fallbacks_total: u64,
+    pub delegate_token_estimate_total: u64,
+    pub delegate_local_tokens_total: u64,
+    pub delegate_primary_tokens_total: u64,
+    pub delegate_token_savings_total: u64,
+    pub delegate_local_cost_micros_total: u64,
+    pub delegate_primary_cost_micros_total: u64,
+    pub delegate_cost_savings_micros_total: u64,
+}
+
+impl DelegationTelemetrySnapshot {
+    pub fn from_delegation_metrics(metrics: &DelegationMetrics) -> Self {
+        Self {
+            delegate_requests_total: metrics.delegate_requests_total(),
+            delegate_offloaded_total: metrics.delegate_offloaded_total(),
+            delegate_fallbacks_total: metrics.delegate_fallbacks_total(),
+            delegate_token_estimate_total: metrics.delegate_token_estimate_total(),
+            delegate_local_tokens_total: metrics.delegate_local_tokens_total(),
+            delegate_primary_tokens_total: metrics.delegate_primary_tokens_total(),
+            delegate_token_savings_total: metrics.delegate_token_savings_total(),
+            delegate_local_cost_micros_total: metrics.delegate_local_cost_micros_total(),
+            delegate_primary_cost_micros_total: metrics.delegate_primary_cost_micros_total(),
+            delegate_cost_savings_micros_total: metrics.delegate_cost_savings_micros_total(),
+        }
+    }
+
+    pub fn from_metrics(metrics: &Metrics) -> Self {
+        Self {
+            delegate_requests_total: metrics.delegate_requests_total(),
+            delegate_offloaded_total: metrics.delegate_offloaded_total(),
+            delegate_fallbacks_total: metrics.delegate_fallbacks_total(),
+            delegate_token_estimate_total: metrics.delegate_token_estimate_total(),
+            delegate_local_tokens_total: metrics.delegate_local_tokens_total(),
+            delegate_primary_tokens_total: metrics.delegate_primary_tokens_total(),
+            delegate_token_savings_total: metrics.delegate_token_savings_total(),
+            delegate_local_cost_micros_total: metrics.delegate_local_cost_micros_total(),
+            delegate_primary_cost_micros_total: metrics.delegate_primary_cost_micros_total(),
+            delegate_cost_savings_micros_total: metrics.delegate_cost_savings_micros_total(),
+        }
+    }
+
+    pub fn merge(&mut self, other: Self) {
+        self.delegate_requests_total = self
+            .delegate_requests_total
+            .saturating_add(other.delegate_requests_total);
+        self.delegate_offloaded_total = self
+            .delegate_offloaded_total
+            .saturating_add(other.delegate_offloaded_total);
+        self.delegate_fallbacks_total = self
+            .delegate_fallbacks_total
+            .saturating_add(other.delegate_fallbacks_total);
+        self.delegate_token_estimate_total = self
+            .delegate_token_estimate_total
+            .saturating_add(other.delegate_token_estimate_total);
+        self.delegate_local_tokens_total = self
+            .delegate_local_tokens_total
+            .saturating_add(other.delegate_local_tokens_total);
+        self.delegate_primary_tokens_total = self
+            .delegate_primary_tokens_total
+            .saturating_add(other.delegate_primary_tokens_total);
+        self.delegate_token_savings_total = self
+            .delegate_token_savings_total
+            .saturating_add(other.delegate_token_savings_total);
+        self.delegate_local_cost_micros_total = self
+            .delegate_local_cost_micros_total
+            .saturating_add(other.delegate_local_cost_micros_total);
+        self.delegate_primary_cost_micros_total = self
+            .delegate_primary_cost_micros_total
+            .saturating_add(other.delegate_primary_cost_micros_total);
+        self.delegate_cost_savings_micros_total = self
+            .delegate_cost_savings_micros_total
+            .saturating_add(other.delegate_cost_savings_micros_total);
+    }
+
+    pub fn is_zero(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
 pub struct Metrics {
     rate_limit_denies: AtomicU64,
     auth_denies: AtomicU64,

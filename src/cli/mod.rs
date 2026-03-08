@@ -977,10 +977,19 @@ pub(crate) enum RepoCommand {
 pub(crate) enum DelegationCommand {
     /// Show delegation savings telemetry.
     Savings {
+        #[command(flatten)]
+        repo: RepoArgs,
         #[arg(
             long,
-            default_value_t = true,
-            action = ArgAction::Set,
+            default_value_t = false,
+            action = ArgAction::SetTrue,
+            help = "Show aggregated delegation savings across all repos mounted in the daemon"
+        )]
+        all: bool,
+        #[arg(
+            long,
+            default_value_t = false,
+            action = ArgAction::SetTrue,
             help = "Print JSON output"
         )]
         json: bool,
@@ -1329,6 +1338,16 @@ fn repo_hint_for_command(command: &Command) -> Option<PathBuf> {
         Command::Dag { command } => match command {
             DagCommand::View { repo, .. } => Some(repo.repo_root()),
             DagCommand::Export { repo, .. } => Some(repo.repo_root()),
+        },
+        Command::Delegation { command } => match command {
+            DelegationCommand::Savings { repo, all, .. } => {
+                if *all {
+                    None
+                } else {
+                    Some(repo.repo_root())
+                }
+            }
+            DelegationCommand::Agents { .. } => None,
         },
         Command::SymbolsStatus { repo } => Some(repo.repo_root()),
         Command::ImpactDiagnostics { repo, .. } => Some(repo.repo_root()),

@@ -241,7 +241,7 @@ docdexd search --repo /path/to/repo --query "jwt decode" --include-libs
 
 Delegation helpers:
 ```bash
-docdexd delegation savings
+docdexd delegation savings --repo /path/to/repo
 docdexd delegation agents --json
 ```
 
@@ -361,16 +361,19 @@ Notes:
 - If `primary_agent_id` is empty, Docdex selects a primary model/agent from the local library by task type (preferring mcoda agents) for refinement/fallback.
 - To force an Ollama model, set `local_agent_id`/`primary_agent_id` to `model:<name>` or `ollama:<name>`. Per-request `agent` also accepts model names listed by `docdexd delegation agents`.
 - Use `docdexd delegation agents --json` to inspect mcoda fields (`max_complexity`, `rating`, `cost_per_million`, `usage`, `reasoning_rating`, `health_status`) and pick agents that can handle the task complexity with acceptable cost.
+- mcoda inventory refresh path: Docdex first runs `mcoda agent list --json --refresh-health` for fresh status and falls back to `mcoda agent list --json` for backward compatibility before DB fallback.
+- Supported local CLI adapters for mcoda agent resolution include `codex-cli`, `gemini-cli`, `openai-cli`, `ollama-cli`, and `claude-cli`.
 - Prefer agents whose `usage` matches the task, whose `reasoning_rating` is higher for complex work, and whose `health_status` is `healthy`.
 - Table output shows `USAGE`, `COMPLEXITY`, `RATING`, `REASON`, `COST/$1M`, and `HEALTH` for mcoda agents (`-` means unknown).
 - When `re_evaluate = true`, Docdex reviews successful local mcoda outputs (using the primary agent when available) and updates the mcoda ratings in `~/.mcoda/mcoda.db`. Review failures fall back to a heuristic score and never block delegation responses.
 - `task_allowlist` is optional; an empty list allows all task types.
 - `draft_then_refine` returns a primary-agent refinement when available; otherwise returns the local draft with a warning.
+- If local delegation execution fails at runtime (for example missing local CLI binary), Docdex returns a warning and uses the configured/selected primary target when fallback is enabled.
 - `enforce_local = true` requires a local agent/model to be available; if `allow_fallback_to_primary = false`, primary usage (fallback/refine) is disabled and the local draft is returned.
 - Local model library: `~/.docdex/state/llm/local_model_library.json` (or under `DOCDEX_STATE_DIR`).
 - Env overrides: `DOCDEX_DELEGATION_ENABLED`, `DOCDEX_DELEGATION_AUTO_ENABLE`, `DOCDEX_DELEGATION_ENFORCE_LOCAL`, `DOCDEX_DELEGATION_ALLOW_FALLBACK`, `DOCDEX_DELEGATION_REEVALUATE`, `DOCDEX_DELEGATION_LOCAL_AGENT`, `DOCDEX_DELEGATION_PRIMARY_AGENT`, `DOCDEX_DELEGATION_MODE`, `DOCDEX_DELEGATION_TIMEOUT_MS`, `DOCDEX_DELEGATION_MAX_TOKENS`, `DOCDEX_DELEGATION_PRIMARY_USD_PER_1K_TOKENS`, `DOCDEX_DELEGATION_LOCAL_USD_PER_1K_TOKENS`.
 - Expensive model library: `docs/expensive_models.json`. Agents should match `agent_id`, `agent_slug`, `model`, or adapter type (case-insensitive) to decide whether to delegate.
-- Telemetry: `GET /v1/telemetry/delegation` or `docdexd delegation savings` (JSON). Includes offloaded counts, local/primary token totals, and costs. Savings use mcoda `cost_per_million` when available; Ollama models are treated as free.
+- Telemetry: `GET /v1/telemetry/delegation` or `docdexd delegation savings --repo /path/to/repo`. The CLI renders a table by default; use `--json` for raw JSON. Savings are repo-scoped by default; when the daemon has multiple repos mounted, send `repo_id`/`x-docdex-repo-id` or the CLI `--repo` flag. Use `GET /v1/telemetry/delegation?all=true` or `docdexd delegation savings --all` for daemon-global totals across all mounted repos. Savings use mcoda `cost_per_million` when available; Ollama models are treated as free.
 
 ## Repo memory
 Repo memory stores project facts (notes, decisions, edge cases) and is used during chat/context assembly. Memory is enabled by default; disable with `DOCDEX_ENABLE_MEMORY=0` or `[memory].enabled = false`.

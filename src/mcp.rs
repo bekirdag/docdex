@@ -22,6 +22,8 @@ pub async fn spawn_proxy_for_serve(
     embedding_timeout_ms: u64,
     docdex_http_base_url: Option<String>,
     auth_token: Option<String>,
+    repo_manager: Option<Arc<crate::daemon::multi_repo::RepoManager>>,
+    default_delegation_metrics: Arc<crate::metrics::DelegationMetrics>,
 ) -> Result<Arc<McpProxyRouter>> {
     let config = McpProxyConfig {
         repo,
@@ -34,6 +36,8 @@ pub async fn spawn_proxy_for_serve(
         embedding_timeout_ms,
         docdex_http_base_url,
         auth_token,
+        repo_manager,
+        default_delegation_metrics,
     };
     Ok(McpProxyRouter::new(config))
 }
@@ -56,6 +60,8 @@ pub(crate) struct McpProxyConfig {
     embedding_timeout_ms: u64,
     docdex_http_base_url: Option<String>,
     auth_token: Option<String>,
+    repo_manager: Option<Arc<crate::daemon::multi_repo::RepoManager>>,
+    default_delegation_metrics: Arc<crate::metrics::DelegationMetrics>,
 }
 
 struct RouterSession {
@@ -276,6 +282,7 @@ impl McpProxyRouter {
             embedding_timeout_ms: Some(self.config.embedding_timeout_ms),
             docdex_http_base_url: self.config.docdex_http_base_url.clone(),
             auth_token: self.config.auth_token.clone(),
+            delegation_metrics: self.delegation_metrics_for_repo(&repo_root),
         };
         let child = spawn_mcp_proxy(options).await?;
         let mut children = self.children.write().await;
@@ -284,6 +291,20 @@ impl McpProxyRouter {
         }
         children.insert(repo_root, child.clone());
         Ok(child)
+    }
+
+    fn delegation_metrics_for_repo(
+        &self,
+        repo_root: &Path,
+    ) -> Arc<crate::metrics::DelegationMetrics> {
+        let Some(manager) = self.config.repo_manager.as_ref() else {
+            return self.config.default_delegation_metrics.clone();
+        };
+        let repo_id =
+            crate::repo_manager::repo_fingerprint_sha256(repo_root).unwrap_or_else(|_| {
+                crate::repo_manager::fingerprint::legacy_repo_id_for_root(repo_root)
+            });
+        manager.delegation_metrics_for_repo_id(&repo_id)
     }
 
     async fn evict_child(&self, repo_root: &Path, force: bool) {
@@ -416,6 +437,7 @@ struct McpSpawnOptions {
     embedding_timeout_ms: Option<u64>,
     docdex_http_base_url: Option<String>,
     auth_token: Option<String>,
+    delegation_metrics: Arc<crate::metrics::DelegationMetrics>,
 }
 
 async fn spawn_mcp_proxy(options: McpSpawnOptions) -> Result<Arc<McpProxy>> {
@@ -440,6 +462,7 @@ fn build_mcp_service(options: &McpSpawnOptions) -> Result<crate::mcp_server::Mcp
         options.rate_limit_per_min,
         options.rate_limit_burst,
         options.auth_token.clone(),
+        options.delegation_metrics.clone(),
     )
 }
 

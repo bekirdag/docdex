@@ -7,7 +7,7 @@ use crate::llm::delegation_rating::{
 use crate::llm::local_library::{resolve_local_ollama_base_url, LocalModelLibrary};
 use crate::max_size::truncate_utf8_chars;
 use crate::mcoda::ratings::{apply_agent_rating_default, AgentRunRating};
-use crate::mcoda::registry::McodaRegistry;
+use crate::mcoda::registry::{McodaAgent, McodaRegistry};
 use crate::ollama::OllamaClient;
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
@@ -715,6 +715,9 @@ pub fn select_local_target(
         best = choose_best(best, candidate, score, true);
     }
     for agent in &library.agents {
+        if !mcoda_agent_health_allows(agent.health_status.as_deref()) {
+            continue;
+        }
         let score = score_for_task(task_type, &agent.capabilities);
         if score <= 0 {
             continue;
@@ -732,6 +735,9 @@ pub fn select_primary_target(
 ) -> Option<LocalTarget> {
     let mut candidates: Vec<(LocalTarget, i32, bool)> = Vec::new();
     for agent in &library.agents {
+        if !mcoda_agent_health_allows(agent.health_status.as_deref()) {
+            continue;
+        }
         let score = score_for_task(task_type, &agent.capabilities);
         if score <= 0 {
             continue;
@@ -867,6 +873,63 @@ fn score_for_task(task_type: TaskType, capabilities: &[String]) -> i32 {
     score
 }
 
+fn mcoda_agent_health_allows(status: Option<&str>) -> bool {
+    let Some(status) = status.map(str::trim).filter(|value| !value.is_empty()) else {
+        return true;
+    };
+    status.eq_ignore_ascii_case("healthy")
+        || status.eq_ignore_ascii_case("unknown")
+        || status == "-"
+}
+
+fn available_mcoda_agent_examples(registry: &McodaRegistry) -> String {
+    let mut slugs: Vec<String> = registry
+        .agents
+        .iter()
+        .filter(|agent| mcoda_agent_health_allows(agent.health_status.as_deref()))
+        .map(|agent| agent.slug.clone())
+        .collect();
+    slugs.sort();
+    slugs.dedup();
+    if slugs.is_empty() {
+        return " No healthy/unknown mcoda agents are currently available.".to_string();
+    }
+    let shown: Vec<String> = slugs.into_iter().take(8).collect();
+    format!(" Available mcoda agents: {}", shown.join(", "))
+}
+
+fn ensure_mcoda_agent_available(agent: &McodaAgent, requested_id: &str) -> Result<()> {
+    if mcoda_agent_health_allows(agent.health_status.as_deref()) {
+        return Ok(());
+    }
+    let status = agent
+        .health_status
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("unknown");
+    Err(anyhow!(
+        "mcoda agent unavailable: {requested_id} (health status: {status})"
+    ))
+}
+
+fn resolve_mcoda_agent<'a>(
+    registry: &'a McodaRegistry,
+    requested_id: &str,
+) -> Result<&'a McodaAgent> {
+    let agent = registry
+        .agent_by_id(requested_id)
+        .or_else(|| registry.agent_by_slug(requested_id))
+        .ok_or_else(|| {
+            anyhow!(
+                "mcoda agent not found: {requested_id}.{}",
+                available_mcoda_agent_examples(registry)
+            )
+        })?;
+    ensure_mcoda_agent_available(agent, requested_id)?;
+    Ok(agent)
+}
+
 pub fn resolve_delegation_client(
     llm_config: &LlmConfig,
     local_agent_override: Option<&str>,
@@ -893,10 +956,7 @@ pub fn resolve_delegation_client(
         let registry = McodaRegistry::load_default()
             .context("load mcoda registry")?
             .ok_or_else(|| anyhow!("mcoda registry not found"))?;
-        let agent = registry
-            .agent_by_id(agent_id)
-            .or_else(|| registry.agent_by_slug(agent_id))
-            .ok_or_else(|| anyhow!("mcoda agent not found: {agent_id}"))?;
+        let agent = resolve_mcoda_agent(&registry, agent_id)?;
         let adapter = resolve_agent_adapter(agent)
             .with_context(|| format!("resolve mcoda agent adapter {agent_id}"))?;
         return Ok(Arc::new(adapter));
@@ -908,10 +968,7 @@ pub fn resolve_delegation_client(
                 let registry = McodaRegistry::load_default()
                     .context("load mcoda registry")?
                     .ok_or_else(|| anyhow!("mcoda registry not found"))?;
-                let agent = registry
-                    .agent_by_id(agent_id)
-                    .or_else(|| registry.agent_by_slug(agent_id))
-                    .ok_or_else(|| anyhow!("mcoda agent not found: {agent_id}"))?;
+                let agent = resolve_mcoda_agent(&registry, agent_id)?;
                 let adapter = resolve_agent_adapter(agent)
                     .with_context(|| format!("resolve mcoda agent adapter {agent_id}"))?;
                 return Ok(Arc::new(adapter));
@@ -996,16 +1053,14 @@ pub fn resolve_primary_client(
         }
     };
 
-    let agent = match registry
-        .agent_by_id(agent_id)
-        .or_else(|| registry.agent_by_slug(agent_id))
-    {
-        Some(agent) => agent,
-        None => {
+    let agent = match resolve_mcoda_agent(&registry, agent_id) {
+        Ok(agent) => agent,
+        Err(err) => {
             warn!(
                 target: "docdexd",
                 agent_id = %agent_id,
-                "primary agent not found in mcoda registry"
+                error = ?err,
+                "primary agent unavailable in mcoda registry"
             );
             return resolve_primary_target(llm_config, primary_target);
         }

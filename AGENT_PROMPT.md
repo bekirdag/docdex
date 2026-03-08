@@ -1,4 +1,4 @@
----- START OF DOCDEX INFO V0.2.45 ----
+---- START OF DOCDEX INFO V0.2.46 ----
 Docdex URL: http://127.0.0.1:28491
 Use this base URL for Docdex HTTP endpoints.
 Health check endpoint: `GET /healthz` (not `/v1/health`).
@@ -112,6 +112,8 @@ For mcoda agents, also consider:
 - `usage`: best-fit role (for example `code_writer` or `code_reviewer`); use this for quick matching.
 - `reasoning_rating`: reasoning score out of 10; prefer higher for complex reasoning tasks.
 - `health_status`: only use agents marked `healthy` (treat `-` as unknown).
+- Docdex refreshes mcoda inventory via `mcoda agent list --json --refresh-health`; it retries with legacy `mcoda agent list --json` if the refresh flag is unavailable.
+- Supported mcoda local CLI adapters include `claude-cli` in addition to `codex-cli`/`gemini-cli`/`openai-cli`/`ollama-cli`.
 Table output shows `USAGE`, `COMPLEXITY`, `RATING`, `REASON`, `COST/$1M`, and `HEALTH` for mcoda agents (`-` means unknown).
 - When `llm.delegation.re_evaluate = true` (default), Docdex reviews successful local mcoda runs using the primary agent when available and writes updated ratings to `~/.mcoda/mcoda.db` (disable with `DOCDEX_DELEGATION_REEVALUATE=0`).
 Use `agent: model:<ollama-model>` to force a specific local model (for example, `model:phi3.5:3.8b`).
@@ -165,6 +167,7 @@ Use these only when MCP tools cannot be called (e.g., blocked sandbox networking
 - `docdexd search --repo <path> --query "<q>"`: /search equivalent (HTTP/local).
 - `docdexd delegation savings`: delegation telemetry (JSON: offloaded count, local/primary tokens & costs, savings).
 - `docdexd delegation agents --json`: list local delegation targets and capabilities (mcoda agents include `max_complexity`, `rating`, `cost_per_million`, `usage`, `reasoning_rating`, `health_status`).
+- `mcoda agent list --json --refresh-health`: preferred machine-consumer inventory command for fresh health; fallback to plain `--json` for older mcoda versions.
 - `docdexd open --repo <path> --file <rel>`: safe file slice read (head/start/end/clamp).
 - `docdexd file ensure-newline|write --repo <path> --file <rel>`: minimal file edits.
 - `docdexd test run-node --repo <path> --file <rel> --args "..."`: run Node scripts.
@@ -226,6 +229,7 @@ Common params:
 Notes:
 - `skip_local_search=true` effectively forces web discovery (Tier 2).
 - If DOCDEX_WEB_ENABLED=1, web discovery can be slow; plan timeouts accordingly.
+- Responses include `meta.dag_session_id`; pass it to `/v1/dag/export` or `docdex_dag_export` to export the same trace.
 
 ### 3a) Capabilities (HTTP)
 

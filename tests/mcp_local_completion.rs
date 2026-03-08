@@ -224,7 +224,7 @@ fn mcp_local_completion_tool_returns_output() -> Result<(), Box<dyn Error>> {
     let _guard = ChildGuard(child);
     wait_for_health("127.0.0.1", port)?;
 
-    let client = Client::builder().timeout(Duration::from_secs(5)).build()?;
+    let client = Client::builder().timeout(Duration::from_secs(20)).build()?;
     let payload = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -234,7 +234,8 @@ fn mcp_local_completion_tool_returns_output() -> Result<(), Box<dyn Error>> {
             "arguments": {
                 "task_type": "format_code",
                 "instruction": "Format",
-                "context": "let  a=1;"
+                "context": "let  a=1;",
+                "agent": "model:test-model"
             }
         }
     });
@@ -257,6 +258,42 @@ fn mcp_local_completion_tool_returns_output() -> Result<(), Box<dyn Error>> {
     assert_eq!(
         parsed.get("adapter").and_then(|v| v.as_str()),
         Some("ollama")
+    );
+
+    let repo_telemetry: Value = client
+        .get(format!("http://127.0.0.1:{port}/v1/telemetry/delegation"))
+        .send()?
+        .json()?;
+    assert_eq!(
+        repo_telemetry
+            .get("delegate_requests_total")
+            .and_then(|value| value.as_u64()),
+        Some(1)
+    );
+    assert_eq!(
+        repo_telemetry
+            .get("delegate_offloaded_total")
+            .and_then(|value| value.as_u64()),
+        Some(1)
+    );
+
+    let all_telemetry: Value = client
+        .get(format!(
+            "http://127.0.0.1:{port}/v1/telemetry/delegation?all=true"
+        ))
+        .send()?
+        .json()?;
+    assert_eq!(
+        all_telemetry
+            .get("delegate_requests_total")
+            .and_then(|value| value.as_u64()),
+        Some(1)
+    );
+    assert_eq!(
+        all_telemetry
+            .get("delegate_offloaded_total")
+            .and_then(|value| value.as_u64()),
+        Some(1)
     );
 
     Ok(())

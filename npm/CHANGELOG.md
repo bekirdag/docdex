@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.46
+- Bump release metadata to 0.2.46.
+
 ## 0.2.45
 - Update packaged agent docs with FD-hardening guidance and bump release metadata to 0.2.45.
 

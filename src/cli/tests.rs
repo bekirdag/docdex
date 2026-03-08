@@ -109,8 +109,30 @@ fn ensure_daemon_skips_serve() {
 
 #[test]
 fn ensure_daemon_for_delegation_savings() {
+    let temp = TempDir::new().expect("temp dir");
+    let repo = repo_args(temp.path().to_path_buf());
     let cmd = Command::Delegation {
-        command: super::DelegationCommand::Savings { json: true },
+        command: super::DelegationCommand::Savings {
+            repo: repo.clone(),
+            all: false,
+            json: true,
+        },
+    };
+    assert!(should_ensure_daemon(&cmd));
+    let hint = repo_hint_for_command(&cmd).expect("repo hint");
+    assert_eq!(hint, repo.repo_root());
+}
+
+#[test]
+fn ensure_daemon_for_delegation_savings_all_uses_global_scope() {
+    let temp = TempDir::new().expect("temp dir");
+    let repo = repo_args(temp.path().to_path_buf());
+    let cmd = Command::Delegation {
+        command: super::DelegationCommand::Savings {
+            repo,
+            all: true,
+            json: true,
+        },
     };
     assert!(should_ensure_daemon(&cmd));
     assert!(repo_hint_for_command(&cmd).is_none());
@@ -153,12 +175,47 @@ fn parse_dag_export_alias() {
 }
 
 #[test]
-fn parse_delegation_savings_command() {
-    let cli =
-        Cli::try_parse_from(["docdexd", "delegation", "savings", "--json", "true"]).expect("parse");
+fn parse_delegation_savings_command_defaults_to_table_mode() {
+    let cli = Cli::try_parse_from(["docdexd", "delegation", "savings"]).expect("parse");
     match cli.command {
         Command::Delegation { command } => match command {
-            super::DelegationCommand::Savings { json } => assert!(json),
+            super::DelegationCommand::Savings { repo, all, json } => {
+                assert_eq!(repo.repo, PathBuf::from("."));
+                assert!(!all);
+                assert!(!json);
+            }
+            _ => panic!("expected delegation savings command"),
+        },
+        _ => panic!("expected delegation command"),
+    }
+}
+
+#[test]
+fn parse_delegation_savings_command_with_json_flag() {
+    let cli = Cli::try_parse_from(["docdexd", "delegation", "savings", "--json"]).expect("parse");
+    match cli.command {
+        Command::Delegation { command } => match command {
+            super::DelegationCommand::Savings { repo, all, json } => {
+                assert_eq!(repo.repo, PathBuf::from("."));
+                assert!(!all);
+                assert!(json);
+            }
+            _ => panic!("expected delegation savings command"),
+        },
+        _ => panic!("expected delegation command"),
+    }
+}
+
+#[test]
+fn parse_delegation_savings_command_with_all_flag() {
+    let cli = Cli::try_parse_from(["docdexd", "delegation", "savings", "--all"]).expect("parse");
+    match cli.command {
+        Command::Delegation { command } => match command {
+            super::DelegationCommand::Savings { repo, all, json } => {
+                assert_eq!(repo.repo, PathBuf::from("."));
+                assert!(all);
+                assert!(!json);
+            }
             _ => panic!("expected delegation savings command"),
         },
         _ => panic!("expected delegation command"),

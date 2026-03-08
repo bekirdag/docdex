@@ -225,6 +225,7 @@ fn adapter_falls_back_to_cli_when_secret_missing() -> Result<(), Box<dyn Error>>
         best_usage: None,
         reasoning_rating: None,
         health_status: None,
+        cli_binary: None,
         capabilities: Vec::new(),
         models: Vec::new(),
         auth: None,

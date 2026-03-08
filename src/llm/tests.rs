@@ -19,6 +19,7 @@ use anyhow::anyhow;
 use parking_lot::ReentrantMutexGuard;
 use rusqlite::Connection;
 use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -76,6 +77,59 @@ fn make_profile(total_gb: f64, gpu: bool) -> HardwareProfile {
         total_memory_bytes,
         graphics,
     }
+}
+
+fn seed_mcoda_registry_with_adapter(
+    home: &Path,
+    agent_id: &str,
+    slug: &str,
+    adapter: &str,
+    status: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mcoda_dir = home.join(".mcoda");
+    fs::create_dir_all(&mcoda_dir)?;
+    let db_path = mcoda_dir.join("mcoda.db");
+    let conn = Connection::open(db_path)?;
+    conn.execute_batch(
+        "CREATE TABLE agents (
+            id TEXT PRIMARY KEY,
+            slug TEXT NOT NULL,
+            adapter TEXT NOT NULL,
+            default_model TEXT,
+            config_json TEXT,
+            created_at TEXT,
+            updated_at TEXT
+        );
+        CREATE TABLE agent_health (
+            agent_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL
+        );",
+    )?;
+    conn.execute(
+        "INSERT INTO agents (id, slug, adapter, default_model, config_json, created_at, updated_at)
+         VALUES (?1, ?2, ?3, NULL, NULL, ?4, ?5)",
+        rusqlite::params![
+            agent_id,
+            slug,
+            adapter,
+            "2026-01-01T00:00:00Z",
+            "2026-01-01T00:00:00Z"
+        ],
+    )?;
+    conn.execute(
+        "INSERT INTO agent_health (agent_id, status) VALUES (?1, ?2)",
+        rusqlite::params![agent_id, status],
+    )?;
+    Ok(())
+}
+
+fn seed_mcoda_registry(
+    home: &Path,
+    agent_id: &str,
+    slug: &str,
+    status: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    seed_mcoda_registry_with_adapter(home, agent_id, slug, "ollama-remote", status)
 }
 
 struct StaticClient {
@@ -406,6 +460,67 @@ fn resolve_delegation_client_errors_for_missing_mcoda_agent(
 }
 
 #[test]
+fn resolve_delegation_client_missing_mcoda_agent_includes_available_slugs(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
+    let _profile = EnvGuard::set("USERPROFILE", temp.path().to_string_lossy().as_ref());
+    let _disable_cli = EnvGuard::set("DOCDEX_DISABLE_MCODA_CLI", "1");
+    seed_mcoda_registry(temp.path(), "agent-1", "healthy-agent", "healthy")?;
+
+    let mut config = LlmConfig::default();
+    config.delegation = DelegationConfig::default();
+    let err = resolve_delegation_client(&config, Some("missing-agent"), None)
+        .err()
+        .expect("missing agent error");
+    let message = err.to_string();
+    assert!(message.contains("mcoda agent not found: missing-agent"));
+    assert!(message.contains("healthy-agent"));
+    Ok(())
+}
+
+#[test]
+fn resolve_delegation_client_rejects_unhealthy_mcoda_agent(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
+    let _profile = EnvGuard::set("USERPROFILE", temp.path().to_string_lossy().as_ref());
+    let _disable_cli = EnvGuard::set("DOCDEX_DISABLE_MCODA_CLI", "1");
+    seed_mcoda_registry(temp.path(), "agent-2", "unhealthy-agent", "unhealthy")?;
+
+    let mut config = LlmConfig::default();
+    config.delegation = DelegationConfig::default();
+    let err = resolve_delegation_client(&config, Some("unhealthy-agent"), None)
+        .err()
+        .expect("unavailable agent error");
+    let message = err.to_string();
+    assert!(message.contains("mcoda agent unavailable"));
+    assert!(message.contains("health status: unhealthy"));
+    Ok(())
+}
+
+#[test]
+fn resolve_delegation_client_supports_claude_cli_agent() -> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
+    let _profile = EnvGuard::set("USERPROFILE", temp.path().to_string_lossy().as_ref());
+    let _disable_cli = EnvGuard::set("DOCDEX_DISABLE_MCODA_CLI", "1");
+    seed_mcoda_registry_with_adapter(
+        temp.path(),
+        "agent-3",
+        "claude-agent",
+        "claude-cli",
+        "healthy",
+    )?;
+
+    let mut config = LlmConfig::default();
+    config.delegation = DelegationConfig::default();
+    let result = resolve_delegation_client(&config, Some("claude-agent"), None);
+    assert!(result.is_ok());
+    Ok(())
+}
+
+#[test]
 fn parse_local_target_override_matches_model_name() {
     let mut library = LocalModelLibrary::default();
     library.models.push(LocalModelEntry {
@@ -448,6 +563,51 @@ fn parse_local_target_override_matches_agent_slug() {
     match target {
         LocalTarget::McodaAgent(id) => assert_eq!(id, "agent-1"),
         _ => panic!("expected mcoda agent target"),
+    }
+}
+
+#[test]
+fn delegation_selects_local_healthy_mcoda_agent() {
+    let mut library = LocalModelLibrary::default();
+    library.agents.push(LocalAgentEntry {
+        agent_id: "agent-unhealthy".to_string(),
+        agent_slug: "agent-unhealthy".to_string(),
+        adapter: "ollama-remote".to_string(),
+        default_model: None,
+        max_complexity: None,
+        rating: None,
+        cost_per_million: None,
+        usage: None,
+        reasoning_rating: None,
+        health_status: Some("unhealthy".to_string()),
+        capabilities: vec!["code_writer".to_string()],
+        notes: None,
+        classification_method: "registry".to_string(),
+        last_seen_at_ms: 0,
+        last_classified_at_ms: None,
+    });
+    library.agents.push(LocalAgentEntry {
+        agent_id: "agent-healthy".to_string(),
+        agent_slug: "agent-healthy".to_string(),
+        adapter: "ollama-remote".to_string(),
+        default_model: None,
+        max_complexity: None,
+        rating: None,
+        cost_per_million: None,
+        usage: None,
+        reasoning_rating: None,
+        health_status: Some("healthy".to_string()),
+        capabilities: vec!["code_writer".to_string()],
+        notes: None,
+        classification_method: "registry".to_string(),
+        last_seen_at_ms: 0,
+        last_classified_at_ms: None,
+    });
+
+    let selected = select_local_target(TaskType::GenerateTests, &library).expect("selection");
+    match selected {
+        LocalTarget::McodaAgent(id) => assert_eq!(id, "agent-healthy"),
+        _ => panic!("expected healthy mcoda target"),
     }
 }
 

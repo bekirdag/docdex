@@ -576,11 +576,12 @@ pub async fn serve(
     });
     let shared_state_dir =
         repo_manager::split_scoped_state_dir(indexer.state_dir()).map(|(base_dir, _, _)| base_dir);
-    let repo_manager = if daemon_mode {
+    let (repo_manager, delegation_metrics) = if daemon_mode {
         let manager = Arc::new(crate::daemon::multi_repo::RepoManager::new(
             memory_embedder.clone(),
             shared_state_dir,
         ));
+        let delegation_metrics = manager.delegation_metrics_for_repo_id(&repo_id);
         let default_repo = Arc::new(crate::daemon::multi_repo::RepoRuntime {
             repo_id: repo_id.clone(),
             legacy_repo_id: legacy_repo_id.clone(),
@@ -588,6 +589,7 @@ pub async fn serve(
             indexer: indexer.clone(),
             libs_indexer: libs_indexer.clone(),
             memory: memory.clone(),
+            delegation_metrics: delegation_metrics.clone(),
         });
         manager.pin_repo(repo_id.clone());
         let watcher = match watcher::spawn(indexer.clone()) {
@@ -602,9 +604,9 @@ pub async fn serve(
         };
         manager.insert_repo(default_repo, watcher);
         manager.start_housekeeping();
-        Some(manager)
+        (Some(manager), delegation_metrics)
     } else {
-        None
+        (None, Arc::new(metrics::DelegationMetrics::default()))
     };
 
     let mut mcp_router = None;
@@ -620,6 +622,8 @@ pub async fn serve(
             embedding_timeout_ms,
             Some(mcp_http_base_url.clone()),
             mcp_auth_token.clone(),
+            repo_manager.clone(),
+            delegation_metrics.clone(),
         )
         .await;
         match result {
@@ -667,6 +671,7 @@ pub async fn serve(
         access_log,
         audit,
         metrics: metrics.clone(),
+        delegation_metrics,
         memory,
         profile_state,
         features: feature_flags.clone(),

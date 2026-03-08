@@ -38,7 +38,7 @@ Repo selection rules:
 
 - `GET /healthz` - basic health check.
 - `GET /metrics` - Prometheus counters and timers.
-- `GET /v1/telemetry/delegation` - delegation savings telemetry (JSON).
+- `GET /v1/telemetry/delegation` - delegation savings telemetry (repo-scoped by default; add `?all=true` for daemon-global totals across all mounted repos).
 - `GET /v1/gates/status` - quality gate summary.
 
 ## Repo lifecycle
@@ -273,6 +273,7 @@ Response:
 ```
 
 Notes:
+- The response is repo-scoped. In multi-repo daemon mode, send `repo_id` or `x-docdex-repo-id`; if more than one repo is mounted and no repo is selected, the endpoint returns `missing_repo`.
 - `delegate_offloaded_total` counts requests that produced a local draft.
 - Savings use actual local token usage and mcoda `cost_per_million` when available; Ollama models are treated as $0.
 - `pricing` reflects `[llm.delegation]` defaults and may differ from mcoda agent costs.

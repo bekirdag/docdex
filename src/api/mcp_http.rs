@@ -461,6 +461,8 @@ mod tests {
                 0,
                 None,
                 None,
+                None,
+                Arc::new(crate::metrics::DelegationMetrics::default()),
             )
             .await?,
         );
@@ -473,6 +475,7 @@ mod tests {
             access_log: false,
             audit: None,
             metrics: Arc::new(crate::metrics::Metrics::default()),
+            delegation_metrics: Arc::new(crate::metrics::DelegationMetrics::default()),
             memory: None,
             profile_state: None,
             features: crate::config::FeatureFlagsConfig::default(),

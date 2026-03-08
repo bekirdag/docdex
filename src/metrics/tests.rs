@@ -1,4 +1,4 @@
-use super::Metrics;
+use super::{DelegationMetrics, DelegationTelemetrySnapshot, Metrics};
 
 #[test]
 fn render_prometheus_includes_counters() {
@@ -49,4 +49,30 @@ fn profile_budget_drop_is_saturating() {
     metrics.inc_profile_budget_drop(2);
     let payload = metrics.render_prometheus();
     assert!(payload.contains("docdex_profile_budget_drops_total 2"));
+}
+
+#[test]
+fn delegation_telemetry_snapshot_merges_counters() {
+    let global = Metrics::default();
+    global.inc_delegate_request();
+    global.record_delegate_token_estimate(10);
+    global.record_delegate_local_tokens(8);
+
+    let repo = DelegationMetrics::default();
+    repo.inc_delegate_request();
+    repo.inc_delegate_offloaded();
+    repo.record_delegate_token_estimate(12);
+    repo.record_delegate_local_tokens(9);
+    repo.record_delegate_primary_tokens(3);
+    repo.record_delegate_token_savings(9);
+
+    let mut snapshot = DelegationTelemetrySnapshot::from_metrics(&global);
+    snapshot.merge(DelegationTelemetrySnapshot::from_delegation_metrics(&repo));
+
+    assert_eq!(snapshot.delegate_requests_total, 2);
+    assert_eq!(snapshot.delegate_offloaded_total, 1);
+    assert_eq!(snapshot.delegate_token_estimate_total, 22);
+    assert_eq!(snapshot.delegate_local_tokens_total, 17);
+    assert_eq!(snapshot.delegate_primary_tokens_total, 3);
+    assert_eq!(snapshot.delegate_token_savings_total, 9);
 }

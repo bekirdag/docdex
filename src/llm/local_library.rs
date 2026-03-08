@@ -517,12 +517,21 @@ fn web_classify_ttl() -> Duration {
 }
 
 fn normalize_agent_capabilities(adapter: &str, capabilities: &[String]) -> Vec<String> {
-    let mut tags: Vec<String> = capabilities
-        .iter()
-        .map(|cap| cap.trim().to_ascii_lowercase())
-        .filter(|cap| !cap.is_empty())
-        .collect();
-    if adapter.trim().eq_ignore_ascii_case("ollama") {
+    let mut tags: Vec<String> = Vec::new();
+    for capability in capabilities {
+        let normalized = capability.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            continue;
+        }
+        match normalized.as_str() {
+            "code_write" => tags.push(CAP_CODE_WRITER.to_string()),
+            "code_review" => tags.push(CAP_CODE_REVIEWER.to_string()),
+            "chat" => tags.push(CAP_GENERAL_CHAT.to_string()),
+            _ => tags.push(normalized),
+        }
+    }
+    let adapter_name = adapter.trim().to_ascii_lowercase();
+    if adapter_name == "ollama" || adapter_name.starts_with("ollama-") {
         tags.push("local".to_string());
     }
     tags.sort();
@@ -831,13 +840,20 @@ mod tests {
             best_usage: Some("code_writer".to_string()),
             reasoning_rating: Some(8.5),
             health_status: Some("healthy".to_string()),
-            capabilities: vec!["Code_Writer".to_string()],
+            cli_binary: None,
+            capabilities: vec![
+                "code_write".to_string(),
+                "code_review".to_string(),
+                "chat".to_string(),
+            ],
             models: Vec::new(),
             auth: None,
         };
         let entry = mcoda_agent_entry(&agent, 10);
         assert_eq!(entry.agent_id, "agent-1");
         assert!(entry.capabilities.contains(&"code_writer".to_string()));
+        assert!(entry.capabilities.contains(&"code_reviewer".to_string()));
+        assert!(entry.capabilities.contains(&"general_chat".to_string()));
         assert!(entry.capabilities.contains(&"local".to_string()));
         assert_eq!(entry.rating, Some(7.5));
         assert_eq!(entry.cost_per_million, Some(2.25));

@@ -1,6 +1,7 @@
 use crate::index::{IndexConfig, Indexer};
 use crate::libs;
 use crate::memory::MemoryStore;
+use crate::metrics::{DelegationMetrics, DelegationTelemetrySnapshot};
 use crate::ollama::OllamaEmbedder;
 use crate::repo_manager;
 use crate::search::MemoryState;
@@ -21,6 +22,7 @@ pub struct RepoRuntime {
     pub indexer: Arc<Indexer>,
     pub libs_indexer: Option<Arc<libs::LibsIndexer>>,
     pub memory: Option<MemoryState>,
+    pub delegation_metrics: Arc<DelegationMetrics>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,6 +54,7 @@ struct RepoEntry {
 pub struct RepoManager {
     repos: RwLock<HashMap<String, Arc<Mutex<RepoEntry>>>>,
     legacy_repos: RwLock<HashMap<String, Arc<Mutex<RepoEntry>>>>,
+    delegation_metrics: RwLock<HashMap<String, Arc<DelegationMetrics>>>,
     memory_embedder: Option<OllamaEmbedder>,
     shared_state_dir: Option<PathBuf>,
     pinned_repo_id: RwLock<Option<String>>,
@@ -91,6 +94,7 @@ impl RepoManager {
         Self {
             repos: RwLock::new(HashMap::new()),
             legacy_repos: RwLock::new(HashMap::new()),
+            delegation_metrics: RwLock::new(HashMap::new()),
             memory_embedder,
             shared_state_dir,
             pinned_repo_id: RwLock::new(None),
@@ -111,6 +115,7 @@ impl RepoManager {
         Self {
             repos: RwLock::new(HashMap::new()),
             legacy_repos: RwLock::new(HashMap::new()),
+            delegation_metrics: RwLock::new(HashMap::new()),
             memory_embedder,
             shared_state_dir,
             pinned_repo_id: RwLock::new(None),
@@ -136,6 +141,31 @@ impl RepoManager {
         self.legacy_repos
             .write()
             .insert(repo.legacy_repo_id.clone(), entry);
+        self.delegation_metrics
+            .write()
+            .entry(repo.repo_id.clone())
+            .or_insert_with(|| repo.delegation_metrics.clone());
+    }
+
+    pub fn delegation_metrics_for_repo_id(&self, repo_id: &str) -> Arc<DelegationMetrics> {
+        if let Some(metrics) = self.delegation_metrics.read().get(repo_id).cloned() {
+            return metrics;
+        }
+        let mut guard = self.delegation_metrics.write();
+        guard
+            .entry(repo_id.to_string())
+            .or_insert_with(|| Arc::new(DelegationMetrics::default()))
+            .clone()
+    }
+
+    pub fn delegation_metrics_snapshot(&self) -> DelegationTelemetrySnapshot {
+        let mut snapshot = DelegationTelemetrySnapshot::default();
+        for metrics in self.delegation_metrics.read().values() {
+            snapshot.merge(DelegationTelemetrySnapshot::from_delegation_metrics(
+                metrics.as_ref(),
+            ));
+        }
+        snapshot
     }
 
     fn get_entry(&self, repo_id: &str) -> Option<Arc<Mutex<RepoEntry>>> {
@@ -289,6 +319,7 @@ impl RepoManager {
             embedder,
             repo_id: repo_id.clone(),
         });
+        let delegation_metrics = self.delegation_metrics_for_repo_id(&repo_id);
         let repo = Arc::new(RepoRuntime {
             repo_id: repo_id.clone(),
             legacy_repo_id,
@@ -296,6 +327,7 @@ impl RepoManager {
             indexer: indexer.clone(),
             libs_indexer,
             memory,
+            delegation_metrics,
         });
         let watcher = if read_only {
             None

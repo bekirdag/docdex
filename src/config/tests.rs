@@ -47,6 +47,7 @@ fn apply_defaults_fills_core_fields() -> Result<(), Box<dyn std::error::Error>> 
             provider: "".to_string(),
             base_url: "".to_string(),
             default_model: "".to_string(),
+            agent_id: "".to_string(),
             embedding_model: "".to_string(),
             max_answer_tokens: 0,
             delegation: DelegationConfig::default(),
@@ -102,6 +103,11 @@ fn apply_defaults_sets_delegation_defaults() -> Result<(), Box<dyn std::error::E
     assert!(!config.llm.delegation.enforce_local);
     assert!(!config.llm.delegation.allow_fallback_to_primary);
     assert!(config.llm.delegation.re_evaluate);
+    assert_eq!(
+        config.llm.delegation.local_selection_policy,
+        "task_capability"
+    );
+    assert!(config.llm.delegation.use_cached_local_decision);
     assert_eq!(config.llm.delegation.mode, DEFAULT_DELEGATION_MODE);
     assert_eq!(
         config.llm.delegation.timeout_ms,
@@ -152,6 +158,11 @@ fn load_config_applies_delegation_env_overrides() -> Result<(), Box<dyn std::err
     let _local = EnvGuard::set("DOCDEX_DELEGATION_LOCAL_AGENT", "local-agent");
     let _primary = EnvGuard::set("DOCDEX_DELEGATION_PRIMARY_AGENT", "primary-agent");
     let _mode = EnvGuard::set("DOCDEX_DELEGATION_MODE", "draft_then_refine");
+    let _policy = EnvGuard::set(
+        "DOCDEX_DELEGATION_LOCAL_SELECTION_POLICY",
+        "mcoda_zero_cost_most_capable",
+    );
+    let _cached = EnvGuard::set("DOCDEX_DELEGATION_USE_CACHED_LOCAL_DECISION", "0");
     let _timeout = EnvGuard::set("DOCDEX_DELEGATION_TIMEOUT_MS", "42000");
     let _max_tokens = EnvGuard::set("DOCDEX_DELEGATION_MAX_TOKENS", "777");
     let _primary_rate = EnvGuard::set("DOCDEX_DELEGATION_PRIMARY_USD_PER_1K_TOKENS", "1.25");
@@ -165,11 +176,27 @@ fn load_config_applies_delegation_env_overrides() -> Result<(), Box<dyn std::err
     assert!(!config.llm.delegation.re_evaluate);
     assert_eq!(config.llm.delegation.local_agent_id, "local-agent");
     assert_eq!(config.llm.delegation.primary_agent_id, "primary-agent");
+    assert_eq!(
+        config.llm.delegation.local_selection_policy,
+        "mcoda_zero_cost_most_capable"
+    );
+    assert!(!config.llm.delegation.use_cached_local_decision);
     assert_eq!(config.llm.delegation.mode, "draft_then_refine");
     assert_eq!(config.llm.delegation.timeout_ms, 42000);
     assert_eq!(config.llm.delegation.max_tokens, 777);
     assert!((config.llm.delegation.primary_usd_per_1k_tokens - 1.25).abs() < 1e-6);
     assert!((config.llm.delegation.local_usd_per_1k_tokens - 0.05).abs() < 1e-6);
+    Ok(())
+}
+
+#[test]
+fn load_config_applies_main_llm_agent_env_override() -> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let config_path = temp.path().join("config.toml");
+    let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
+    let _agent = EnvGuard::set("DOCDEX_LLM_AGENT", "mcoda-main");
+    let config = load_config_from_path(&config_path)?;
+    assert_eq!(config.llm.agent_id, "mcoda-main");
     Ok(())
 }
 

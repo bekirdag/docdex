@@ -452,7 +452,14 @@ pub(crate) async fn build_report(options: CheckOptions) -> Result<CheckReport> {
 
         let provider = config.llm.provider.trim();
         let provider_is_ollama = provider.eq_ignore_ascii_case("ollama");
-        let agent_override = env_agent_override();
+        let agent_override = env_agent_override().or_else(|| {
+            let trimmed = config.llm.agent_id.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
         let memory_enabled = env_boolish("DOCDEX_ENABLE_MEMORY").unwrap_or(config.memory.enabled);
         let allow_non_ollama = agent_override.is_some();
         let max_answer_tokens = config.llm.max_answer_tokens;
@@ -482,7 +489,7 @@ pub(crate) async fn build_report(options: CheckOptions) -> Result<CheckReport> {
             message: if provider_is_ollama {
                 "llm provider is ollama".to_string()
             } else if let Some(agent) = agent_override.as_deref() {
-                format!("llm provider `{provider}` allowed via agent override `{agent}`")
+                format!("llm provider `{provider}` allowed via main llm agent `{agent}`")
             } else {
                 format!("unsupported llm provider `{provider}`; only ollama is supported")
             },

@@ -42,6 +42,17 @@ pub struct LocalModelLibrary {
     pub models: Vec<LocalModelEntry>,
     #[serde(default)]
     pub agents: Vec<LocalAgentEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_local_agent_selection: Option<CachedLocalAgentSelection>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedLocalAgentSelection {
+    pub policy: String,
+    pub agent_id: String,
+    pub agent_slug: String,
+    #[serde(default)]
+    pub selected_at_ms: u128,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -344,11 +355,66 @@ pub(crate) async fn refresh_local_library_if_stale(
     .await
 }
 
+pub(crate) async fn refresh_local_library(
+    state_dir_override: Option<&Path>,
+    llm_config: &LlmConfig,
+    allow_start_ollama: bool,
+) -> Result<LocalModelLibrary> {
+    refresh_local_library_with_web::<fn(String) -> NoWebFuture, NoWebFuture>(
+        state_dir_override,
+        llm_config,
+        allow_start_ollama,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn refresh_local_library_with_web<F, Fut>(
+    state_dir_override: Option<&Path>,
+    llm_config: &LlmConfig,
+    allow_start_ollama: bool,
+    web_fetcher: Option<&mut F>,
+) -> Result<LocalModelLibrary>
+where
+    F: FnMut(String) -> Fut,
+    Fut: Future<Output = Result<String>>,
+{
+    refresh_local_library_inner(
+        state_dir_override,
+        llm_config,
+        allow_start_ollama,
+        web_fetcher,
+        true,
+    )
+    .await
+}
+
 pub(crate) async fn refresh_local_library_if_stale_with_web<F, Fut>(
     state_dir_override: Option<&Path>,
     llm_config: &LlmConfig,
     allow_start_ollama: bool,
+    web_fetcher: Option<&mut F>,
+) -> Result<LocalModelLibrary>
+where
+    F: FnMut(String) -> Fut,
+    Fut: Future<Output = Result<String>>,
+{
+    refresh_local_library_inner(
+        state_dir_override,
+        llm_config,
+        allow_start_ollama,
+        web_fetcher,
+        false,
+    )
+    .await
+}
+
+async fn refresh_local_library_inner<F, Fut>(
+    state_dir_override: Option<&Path>,
+    llm_config: &LlmConfig,
+    allow_start_ollama: bool,
     mut web_fetcher: Option<&mut F>,
+    force_refresh: bool,
 ) -> Result<LocalModelLibrary>
 where
     F: FnMut(String) -> Fut,
@@ -356,7 +422,7 @@ where
 {
     let mut library = load_local_library(state_dir_override)?;
     let now = now_ms();
-    if library.updated_at_ms > 0 {
+    if !force_refresh && library.updated_at_ms > 0 {
         let elapsed_ms = now.saturating_sub(library.updated_at_ms);
         if elapsed_ms < library_ttl().as_millis() as u128 {
             return Ok(library);
@@ -760,6 +826,12 @@ mod tests {
                 last_seen_at_ms: 3,
                 last_classified_at_ms: None,
             }],
+            cached_local_agent_selection: Some(CachedLocalAgentSelection {
+                policy: "mcoda_zero_cost_most_capable".to_string(),
+                agent_id: "agent-1".to_string(),
+                agent_slug: "agent-one".to_string(),
+                selected_at_ms: 4,
+            }),
             ..LocalModelLibrary::default()
         };
         save_local_library(None, &library)?;
@@ -768,6 +840,12 @@ mod tests {
         assert_eq!(loaded.updated_at_ms, 42);
         assert_eq!(loaded.models.len(), 1);
         assert_eq!(loaded.agents.len(), 1);
+        let cached = loaded
+            .cached_local_agent_selection
+            .as_ref()
+            .expect("cached selection");
+        assert_eq!(cached.agent_id, "agent-1");
+        assert_eq!(cached.agent_slug, "agent-one");
         Ok(())
     }
 

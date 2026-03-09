@@ -10,7 +10,11 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus, Stdio};
+use std::sync::{Mutex, OnceLock};
+use std::thread;
+use std::time::{Duration, Instant};
+use tempfile::NamedTempFile;
 use tracing::warn;
 use url::Url;
 
@@ -20,6 +24,10 @@ const MCODA_KEY: &str = "mcoda.key";
 const MCODA_AGENT_LIST_JSON_REFRESH_ARGS: [&str; 4] =
     ["agent", "list", "--json", "--refresh-health"];
 const MCODA_AGENT_LIST_JSON_ARGS: [&str; 3] = ["agent", "list", "--json"];
+const DOCDEX_MCODA_CLI_TIMEOUT_MS: &str = "DOCDEX_MCODA_CLI_TIMEOUT_MS";
+const DEFAULT_MCODA_CLI_TIMEOUT_MS: u64 = 5_000;
+const DEFAULT_MCODA_CLI_BACKOFF_MS: u64 = 60_000;
+const MCODA_CLI_POLL_INTERVAL_MS: u64 = 50;
 const AUTH_IV_LEN: usize = 12;
 const AUTH_TAG_LEN: usize = 16;
 const KEY_LEN: usize = 32;
@@ -124,11 +132,33 @@ struct McodaCliHealthRecord {
     details: Option<Value>,
 }
 
+struct McodaCliOutput {
+    status: ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum McodaCliAttemptKind {
+    Refresh,
+    Plain,
+}
+
+#[derive(Default)]
+struct McodaCliBackoffState {
+    refresh_until: Option<Instant>,
+    plain_until: Option<Instant>,
+}
+
 impl McodaRegistry {
     pub fn load_default() -> Result<Option<Self>> {
         if let Some(registry) = Self::load_from_cli()? {
             return Ok(Some(registry));
         }
+        Self::load_default_db_only()
+    }
+
+    pub fn load_default_db_only() -> Result<Option<Self>> {
         let db_path = default_db_path()?;
         if !db_path.exists() {
             return Ok(None);
@@ -260,17 +290,22 @@ fn run_mcoda_agent_list_json() -> Result<Option<String>> {
         return Ok(None);
     }
 
+    let timeout = mcoda_cli_timeout();
     let attempts: [&[&str]; 2] = [
         &MCODA_AGENT_LIST_JSON_REFRESH_ARGS,
         &MCODA_AGENT_LIST_JSON_ARGS,
     ];
     for args in attempts {
-        let output = match Command::new("mcoda").args(args).output() {
-            Ok(output) => output,
-            Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
-            Err(err) => return Err(err).context("spawn mcoda agent list --json"),
+        if should_skip_mcoda_cli_attempt(args) {
+            continue;
+        }
+        let output = match run_mcoda_command(args, timeout) {
+            Ok(Some(output)) => output,
+            Ok(None) => continue,
+            Err(err) => return Err(err),
         };
         if !output.status.success() {
+            note_mcoda_cli_failure(args);
             let stderr = String::from_utf8_lossy(&output.stderr);
             warn!(
                 target: "docdexd",
@@ -283,11 +318,142 @@ fn run_mcoda_agent_list_json() -> Result<Option<String>> {
         }
         let stdout = String::from_utf8(output.stdout).context("decode mcoda agent list --json")?;
         if stdout.trim().is_empty() {
+            note_mcoda_cli_failure(args);
             continue;
         }
+        clear_mcoda_cli_failure(args);
         return Ok(Some(stdout));
     }
     Ok(None)
+}
+
+fn mcoda_cli_timeout() -> Duration {
+    std::env::var(DOCDEX_MCODA_CLI_TIMEOUT_MS)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| Duration::from_millis(DEFAULT_MCODA_CLI_TIMEOUT_MS))
+}
+
+fn mcoda_cli_backoff() -> Duration {
+    Duration::from_millis(DEFAULT_MCODA_CLI_BACKOFF_MS)
+}
+
+fn mcoda_cli_backoff_state() -> &'static Mutex<McodaCliBackoffState> {
+    static STATE: OnceLock<Mutex<McodaCliBackoffState>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(McodaCliBackoffState::default()))
+}
+
+fn mcoda_cli_attempt_kind(args: &[&str]) -> McodaCliAttemptKind {
+    if args.len() == MCODA_AGENT_LIST_JSON_REFRESH_ARGS.len()
+        && args
+            .iter()
+            .copied()
+            .eq(MCODA_AGENT_LIST_JSON_REFRESH_ARGS.iter().copied())
+    {
+        McodaCliAttemptKind::Refresh
+    } else {
+        McodaCliAttemptKind::Plain
+    }
+}
+
+fn should_skip_mcoda_cli_attempt(args: &[&str]) -> bool {
+    let kind = mcoda_cli_attempt_kind(args);
+    let now = Instant::now();
+    let Ok(state) = mcoda_cli_backoff_state().lock() else {
+        return false;
+    };
+    let until = match kind {
+        McodaCliAttemptKind::Refresh => state.refresh_until,
+        McodaCliAttemptKind::Plain => state.plain_until,
+    };
+    until.is_some_and(|deadline| deadline > now)
+}
+
+fn note_mcoda_cli_failure(args: &[&str]) {
+    let kind = mcoda_cli_attempt_kind(args);
+    let deadline = Instant::now() + mcoda_cli_backoff();
+    if let Ok(mut state) = mcoda_cli_backoff_state().lock() {
+        match kind {
+            McodaCliAttemptKind::Refresh => state.refresh_until = Some(deadline),
+            McodaCliAttemptKind::Plain => state.plain_until = Some(deadline),
+        }
+    }
+}
+
+fn clear_mcoda_cli_failure(args: &[&str]) {
+    let kind = mcoda_cli_attempt_kind(args);
+    if let Ok(mut state) = mcoda_cli_backoff_state().lock() {
+        match kind {
+            McodaCliAttemptKind::Refresh => state.refresh_until = None,
+            McodaCliAttemptKind::Plain => state.plain_until = None,
+        }
+    }
+}
+
+#[cfg(test)]
+fn reset_mcoda_cli_backoff() {
+    if let Ok(mut state) = mcoda_cli_backoff_state().lock() {
+        *state = McodaCliBackoffState::default();
+    }
+}
+
+fn run_mcoda_command(args: &[&str], timeout: Duration) -> Result<Option<McodaCliOutput>> {
+    let stdout_file = NamedTempFile::new().context("create mcoda stdout temp file")?;
+    let stderr_file = NamedTempFile::new().context("create mcoda stderr temp file")?;
+    let stdout_writer = stdout_file
+        .reopen()
+        .context("open mcoda stdout temp file")?;
+    let stderr_writer = stderr_file
+        .reopen()
+        .context("open mcoda stderr temp file")?;
+
+    let mut child = match Command::new("mcoda")
+        .args(args)
+        .stdout(Stdio::from(stdout_writer))
+        .stderr(Stdio::from(stderr_writer))
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).context("spawn mcoda agent list --json"),
+    };
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait().context("poll mcoda agent list --json")? {
+            Some(status) => {
+                let stdout = fs::read(stdout_file.path()).context("read mcoda stdout temp file")?;
+                let stderr = fs::read(stderr_file.path()).context("read mcoda stderr temp file")?;
+                return Ok(Some(McodaCliOutput {
+                    status,
+                    stdout,
+                    stderr,
+                }));
+            }
+            None if Instant::now() >= deadline => {
+                note_mcoda_cli_failure(args);
+                if let Err(err) = child.kill() {
+                    warn!(
+                        target: "docdexd",
+                        args = ?args,
+                        error = ?err,
+                        "failed to kill timed out mcoda agent list process"
+                    );
+                }
+                let _ = child.wait();
+                warn!(
+                    target: "docdexd",
+                    args = ?args,
+                    timeout_ms = timeout.as_millis(),
+                    "mcoda agent list timed out"
+                );
+                return Ok(None);
+            }
+            None => thread::sleep(Duration::from_millis(MCODA_CLI_POLL_INTERVAL_MS)),
+        }
+    }
 }
 
 fn parse_mcoda_cli_agents(raw: &str) -> Result<Vec<McodaAgent>> {
@@ -770,6 +936,35 @@ fn decrypt_secret(payload: &str, key: &[u8]) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::setup::test_support::ENV_LOCK;
+    use std::ffi::OsString;
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    use tempfile::TempDir;
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.take() {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
 
     #[test]
     fn parse_mcoda_cli_agents_maps_health_and_models() -> Result<()> {
@@ -820,6 +1015,92 @@ mod tests {
         assert_eq!(agents[1].health_status.as_deref(), Some("unhealthy"));
         assert_eq!(agents[1].default_model.as_deref(), Some("gpt-5.2-codex"));
         assert_eq!(agents[1].cli_binary, None);
+        Ok(())
+    }
+
+    #[test]
+    fn load_from_cli_falls_back_when_refresh_hangs() -> Result<()> {
+        let _guard = ENV_LOCK.lock();
+        reset_mcoda_cli_backoff();
+        let temp = TempDir::new()?;
+        let script_path = temp.path().join("mcoda");
+        fs::write(
+            &script_path,
+            r#"#!/bin/sh
+if [ "$4" = "--refresh-health" ]; then
+  sleep 2
+  exit 0
+fi
+printf '%s' '[{"id":"agent-1","slug":"qwen-3.5-27b","adapter":"ollama-remote","defaultModel":"qwen3.5:27b","capabilities":["code_write"],"health":{"status":"healthy"}}]'
+"#,
+        )?;
+        #[cfg(unix)]
+        {
+            let mut permissions = fs::metadata(&script_path)?.permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&script_path, permissions)?;
+        }
+
+        let existing_paths = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .collect::<Vec<_>>();
+        let joined_path = std::env::join_paths(
+            std::iter::once(temp.path().to_path_buf()).chain(existing_paths.into_iter()),
+        )?;
+        let _path_guard = EnvVarGuard::set("PATH", joined_path);
+        let _timeout_guard = EnvVarGuard::set(DOCDEX_MCODA_CLI_TIMEOUT_MS, "1000");
+        let _disable_guard = EnvVarGuard::set("DOCDEX_DISABLE_MCODA_CLI", "0");
+
+        let registry = McodaRegistry::load_from_cli()?.expect("registry");
+        let agent = registry.agent_by_slug("qwen-3.5-27b").expect("agent");
+        assert_eq!(agent.default_model.as_deref(), Some("qwen3.5:27b"));
+        assert_eq!(agent.health_status.as_deref(), Some("healthy"));
+        Ok(())
+    }
+
+    #[test]
+    fn load_from_cli_skips_repeated_refresh_timeouts_during_backoff() -> Result<()> {
+        let _guard = ENV_LOCK.lock();
+        reset_mcoda_cli_backoff();
+        let temp = TempDir::new()?;
+        let counter_path = temp.path().join("mcoda-count.txt");
+        let script_path = temp.path().join("mcoda");
+        fs::write(
+            &script_path,
+            format!(
+                r#"#!/bin/sh
+COUNT_FILE="{}"
+count=$(cat "$COUNT_FILE" 2>/dev/null || echo 0)
+count=$((count + 1))
+printf '%s' "$count" > "$COUNT_FILE"
+if [ "$4" = "--refresh-health" ]; then
+  sleep 1
+  exit 0
+fi
+printf '%s' '[{{"id":"agent-1","slug":"claude-sonnet","adapter":"claude-cli","defaultModel":"sonnet","capabilities":["code_write"],"health":{{"status":"healthy"}}}}]'
+"#,
+                counter_path.display()
+            ),
+        )?;
+        #[cfg(unix)]
+        {
+            let mut permissions = fs::metadata(&script_path)?.permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&script_path, permissions)?;
+        }
+
+        let existing_paths = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .collect::<Vec<_>>();
+        let joined_path = std::env::join_paths(
+            std::iter::once(temp.path().to_path_buf()).chain(existing_paths.into_iter()),
+        )?;
+        let _path_guard = EnvVarGuard::set("PATH", joined_path);
+        let _timeout_guard = EnvVarGuard::set(DOCDEX_MCODA_CLI_TIMEOUT_MS, "200");
+        let _disable_guard = EnvVarGuard::set("DOCDEX_DISABLE_MCODA_CLI", "0");
+
+        let _first = McodaRegistry::load_from_cli()?.expect("first registry");
+        let _second = McodaRegistry::load_from_cli()?.expect("second registry");
+        let count = fs::read_to_string(&counter_path)?.trim().parse::<u32>()?;
+        assert_eq!(count, 3, "expected refresh to be skipped during backoff");
         Ok(())
     }
 }

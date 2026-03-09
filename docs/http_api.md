@@ -217,10 +217,10 @@ Request body:
   "instruction": "Format this code",
   "context": "let  a=1;",
   "agent": "ollama-local",
-  "max_tokens": 512,
-  "timeout_ms": 30000,
+  "max_tokens": 500000,
+  "timeout_ms": 300000,
   "mode": "draft_only",
-  "max_context_chars": 12000,
+  "max_context_chars": 250000,
   "repo_id": "<optional>"
 }
 ```

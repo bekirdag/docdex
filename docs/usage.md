@@ -318,11 +318,28 @@ ollama pull nomic-embed-text
 Change the default chat model later:
 - Run the wizard again: `docdexd setup` (alias: `docdexd llm-setup`).
 - Or edit `~/.docdex/config.toml`:
+  - `[llm].agent_id` (optional mcoda agent id/slug for main chat generation)
   - `[llm].default_model` (chat model)
   - `[llm].embedding_model`
   - `[llm].base_url` (Ollama base URL)
-  - `[llm].provider` (must be `ollama` for built-in features)
+  - `[llm].provider` (keep `ollama` for built-in fallback and embeddings)
 Restart the daemon after changing config so it reloads the new defaults.
+
+Main LLM config example:
+```toml
+[llm]
+provider = "ollama"
+base_url = "http://127.0.0.1:11434"
+default_model = "phi3.5:3.8b"
+agent_id = "" # optional mcoda agent id/slug for main chat/search generation
+embedding_model = "nomic-embed-text:latest"
+max_answer_tokens = 1024
+```
+
+Notes:
+- When `[llm].agent_id` is set, Docdex tries that mcoda agent first for main LLM work.
+- If that mcoda agent is missing or cannot be resolved, Docdex falls back to `[llm].default_model`.
+- A per-request chat `agent` still overrides `[llm].agent_id`, and a per-request `model` overrides the configured Ollama fallback model.
 
 Enable Ollama later (if skipped during install):
 - Install Ollama for your OS.
@@ -346,10 +363,12 @@ allow_fallback_to_primary = false
 re_evaluate = true
 local_agent_id = "ollama-local" # mcoda agent id/slug (optional)
 primary_agent_id = "claude-code" # optional, used for refinement/fallback
+local_selection_policy = "task_capability" # or "mcoda_zero_cost_most_capable"
+use_cached_local_decision = true
 mode = "draft_only" # or "draft_then_refine"
-timeout_ms = 30000
-max_tokens = 512
-max_context_chars = 12000
+timeout_ms = 300000
+max_tokens = 500000
+max_context_chars = 250000
 primary_usd_per_1k_tokens = 0.0
 local_usd_per_1k_tokens = 0.0
 task_allowlist = ["generate_tests", "write_docstring", "scaffold_boilerplate", "refactor_simple", "format_code"]
@@ -357,10 +376,12 @@ task_allowlist = ["generate_tests", "write_docstring", "scaffold_boilerplate", "
 
 Notes:
 - `auto_enable` defaults to true; delegation auto-enables when local models or mcoda agents are present (opt out with `auto_enable = false`).
-- If `local_agent_id` is empty, Docdex selects a local model/agent from the library by task type; fallback is the configured Ollama model.
+- If `local_agent_id` is empty, Docdex defaults to selecting a local model/agent from the library by task type; fallback is the configured Ollama model.
+- Set `local_selection_policy = "mcoda_zero_cost_most_capable"` to prefer mcoda when it is installed, inspect the mcoda inventory, find healthy zero-cost agents, choose the most capable one by delegation capabilities plus `max_complexity`/`reasoning_rating`/`rating`, and delegate local jobs to that agent.
+- When `use_cached_local_decision = true`, Docdex stores the chosen mcoda agent in `~/.docdex/state/llm/local_model_library.json` and reuses it on later runs. If the cached agent disappears, becomes unhealthy, or is no longer zero-cost, Docdex refreshes the mcoda inventory and chooses a new one automatically.
 - If `primary_agent_id` is empty, Docdex selects a primary model/agent from the local library by task type (preferring mcoda agents) for refinement/fallback.
 - To force an Ollama model, set `local_agent_id`/`primary_agent_id` to `model:<name>` or `ollama:<name>`. Per-request `agent` also accepts model names listed by `docdexd delegation agents`.
-- Use `docdexd delegation agents --json` to inspect mcoda fields (`max_complexity`, `rating`, `cost_per_million`, `usage`, `reasoning_rating`, `health_status`) and pick agents that can handle the task complexity with acceptable cost.
+- Use `docdexd delegation agents --json` to verify whether mcoda is installed, list mcoda agents, and inspect `cost_per_million` alongside `max_complexity`, `rating`, `usage`, `reasoning_rating`, and `health_status`.
 - mcoda inventory refresh path: Docdex first runs `mcoda agent list --json --refresh-health` for fresh status and falls back to `mcoda agent list --json` for backward compatibility before DB fallback.
 - Supported local CLI adapters for mcoda agent resolution include `codex-cli`, `gemini-cli`, `openai-cli`, `ollama-cli`, and `claude-cli`.
 - Prefer agents whose `usage` matches the task, whose `reasoning_rating` is higher for complex work, and whose `health_status` is `healthy`.
@@ -371,7 +392,7 @@ Notes:
 - If local delegation execution fails at runtime (for example missing local CLI binary), Docdex returns a warning and uses the configured/selected primary target when fallback is enabled.
 - `enforce_local = true` requires a local agent/model to be available; if `allow_fallback_to_primary = false`, primary usage (fallback/refine) is disabled and the local draft is returned.
 - Local model library: `~/.docdex/state/llm/local_model_library.json` (or under `DOCDEX_STATE_DIR`).
-- Env overrides: `DOCDEX_DELEGATION_ENABLED`, `DOCDEX_DELEGATION_AUTO_ENABLE`, `DOCDEX_DELEGATION_ENFORCE_LOCAL`, `DOCDEX_DELEGATION_ALLOW_FALLBACK`, `DOCDEX_DELEGATION_REEVALUATE`, `DOCDEX_DELEGATION_LOCAL_AGENT`, `DOCDEX_DELEGATION_PRIMARY_AGENT`, `DOCDEX_DELEGATION_MODE`, `DOCDEX_DELEGATION_TIMEOUT_MS`, `DOCDEX_DELEGATION_MAX_TOKENS`, `DOCDEX_DELEGATION_PRIMARY_USD_PER_1K_TOKENS`, `DOCDEX_DELEGATION_LOCAL_USD_PER_1K_TOKENS`.
+- Env overrides: `DOCDEX_DELEGATION_ENABLED`, `DOCDEX_DELEGATION_AUTO_ENABLE`, `DOCDEX_DELEGATION_ENFORCE_LOCAL`, `DOCDEX_DELEGATION_ALLOW_FALLBACK`, `DOCDEX_DELEGATION_REEVALUATE`, `DOCDEX_DELEGATION_LOCAL_AGENT`, `DOCDEX_DELEGATION_PRIMARY_AGENT`, `DOCDEX_DELEGATION_LOCAL_SELECTION_POLICY`, `DOCDEX_DELEGATION_USE_CACHED_LOCAL_DECISION`, `DOCDEX_DELEGATION_MODE`, `DOCDEX_DELEGATION_TIMEOUT_MS`, `DOCDEX_DELEGATION_MAX_TOKENS`, `DOCDEX_DELEGATION_PRIMARY_USD_PER_1K_TOKENS`, `DOCDEX_DELEGATION_LOCAL_USD_PER_1K_TOKENS`.
 - Expensive model library: `docs/expensive_models.json`. Agents should match `agent_id`, `agent_slug`, `model`, or adapter type (case-insensitive) to decide whether to delegate.
 - Telemetry: `GET /v1/telemetry/delegation` or `docdexd delegation savings --repo /path/to/repo`. The CLI renders a table by default; use `--json` for raw JSON. Savings are repo-scoped by default; when the daemon has multiple repos mounted, send `repo_id`/`x-docdex-repo-id` or the CLI `--repo` flag. Use `GET /v1/telemetry/delegation?all=true` or `docdexd delegation savings --all` for daemon-global totals across all mounted repos. Savings use mcoda `cost_per_million` when available; Ollama models are treated as free.
 
@@ -505,7 +526,7 @@ socket_path = "/absolute/path/to/mcp.sock"
 - `--embedding-base-url` / `DOCDEX_EMBEDDING_BASE_URL`.
 - `--ollama-base-url` / `DOCDEX_OLLAMA_BASE_URL`.
 - `--embedding-model` / `DOCDEX_EMBEDDING_MODEL` (default `nomic-embed-text`).
-- `DOCDEX_LLM_AGENT` / `DOCDEX_AGENT` for default chat agent.
+- `DOCDEX_LLM_AGENT` / `DOCDEX_AGENT` to override `[llm].agent_id` for the main chat agent.
 
 ### Web discovery (Tier 2)
 - `DOCDEX_WEB_ENABLED=1` to enable (daemon sets this by default unless overridden).

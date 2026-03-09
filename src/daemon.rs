@@ -327,7 +327,14 @@ pub async fn serve(
     }
     let repo_display = repo.display().to_string();
     let provider = llm_provider.trim();
-    let agent_override = env_agent_override();
+    let agent_override = env_agent_override().or_else(|| {
+        let trimmed = llm_config.agent_id.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
     let mcp_http_base_url = mcp_http_base_url(&host, port);
     if daemon_mode && enable_mcp {
         let enable_web = std::env::var("DOCDEX_WEB_ENABLED")
@@ -342,7 +349,7 @@ pub async fn serve(
         if provider.is_empty() {
             warn!("llm provider is empty; LLM features will be disabled");
         } else if let Some(agent) = agent_override.as_deref() {
-            warn!("llm provider `{provider}` allowed via agent override `{agent}`");
+            warn!("llm provider `{provider}` allowed via main llm agent `{agent}`");
         } else {
             warn!("llm provider `{provider}` is not supported; LLM features will be disabled");
         }

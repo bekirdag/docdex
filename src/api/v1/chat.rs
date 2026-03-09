@@ -20,8 +20,7 @@ use crate::dag::logging as dag_logging;
 use crate::diff;
 use crate::error::{AppError, ERR_INTERNAL_ERROR};
 use crate::memory::repo_state_root_from_state_dir;
-use crate::ollama::OllamaClient;
-use crate::orchestrator::web::web_context_from_status;
+use crate::orchestrator::web::{resolve_llm_client_from_config, web_context_from_status};
 use crate::orchestrator::{
     memory_budget_from_max_answer_tokens, run_waterfall, ProfileBudget, SymbolContextAssembly,
     WaterfallPlan, WaterfallRequest, WebGateConfig,
@@ -37,6 +36,39 @@ const CHAT_GENERATION_TIMEOUT_SECS: u64 = 30;
 const CHAT_SYSTEM_PROMPT: &str = "You are Docdex, a local-first assistant. Use the provided context when relevant. If the answer is not in the context, say so.";
 const PROJECT_MAP_TOKEN_CAP: usize = 500;
 const DAG_SESSION_HEADER: &str = "x-docdex-dag-session";
+
+fn preferred_llm_response_label(
+    llm_config: &crate::config::LlmConfig,
+    requested_model: Option<&str>,
+    requested_agent: Option<&str>,
+) -> String {
+    requested_agent
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            requested_model
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
+        .or_else(|| {
+            let configured_agent = llm_config.agent_id.trim();
+            if configured_agent.is_empty() {
+                None
+            } else {
+                Some(configured_agent)
+            }
+        })
+        .or_else(|| {
+            let model = llm_config.default_model.trim();
+            if model.is_empty() {
+                None
+            } else {
+                Some(model)
+            }
+        })
+        .unwrap_or("docdex")
+        .to_string()
+}
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct ChatCompletionRequest {
@@ -384,10 +416,11 @@ pub(crate) async fn chat_completions_handler(
             let budgets = chat_context_budgets(state.max_answer_tokens);
             let web_context = web_context_from_status(&result.tier2.status);
             let created = now_epoch_seconds();
-            let mut model = payload
-                .model
-                .clone()
-                .unwrap_or_else(|| state.llm_default_model.clone());
+            let mut model = preferred_llm_response_label(
+                &state.llm_config,
+                payload.model.as_deref(),
+                payload.agent.as_deref(),
+            );
             let project_map = if compress_results || !state.features.project_map {
                 None
             } else {
@@ -546,14 +579,6 @@ pub(crate) async fn chat_completions_handler(
                     reasoning_trace: reasoning_trace.clone(),
                 }
             } else {
-                if model.trim().is_empty() {
-                    return error_response(
-                        StatusCode::BAD_REQUEST,
-                        "invalid_request_error",
-                        "missing_model",
-                        "model must be specified when no default_model is configured",
-                    );
-                }
                 let (context, context_trace) = build_context_summary(
                     &query,
                     &result.search_response.hits,
@@ -577,20 +602,25 @@ pub(crate) async fn chat_completions_handler(
                     history_budget,
                     &budgets,
                 );
-                let client = match OllamaClient::new(state.llm_base_url.clone()) {
-                    Ok(client) => client,
-                    Err(err) => {
+                let resolved = match resolve_llm_client_from_config(
+                    &state.llm_config,
+                    payload.model.as_deref(),
+                    payload.agent.as_deref(),
+                ) {
+                    Some(resolved) => resolved,
+                    None => {
                         return error_response(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "server_error",
-                            "ollama_config_error",
-                            &err.to_string(),
+                            StatusCode::BAD_REQUEST,
+                            "invalid_request_error",
+                            "llm_unavailable",
+                            "no chat LLM is configured; set [llm].agent_id or configure [llm].provider = \"ollama\" with [llm].default_model",
                         );
                     }
                 };
-                let completion = match client
+                model = resolved.label;
+                let completion = match resolved
+                    .client
                     .generate(
-                        &model,
                         &prompt,
                         state.max_answer_tokens,
                         Duration::from_secs(CHAT_GENERATION_TIMEOUT_SECS),
@@ -607,8 +637,16 @@ pub(crate) async fn chat_completions_handler(
                         );
                     }
                 };
+                if let Some(actual_model) = completion
+                    .model
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    model = actual_model.to_string();
+                }
                 let prompt_tokens = estimate_tokens(&prompt);
-                let completion_tokens = estimate_tokens(&completion);
+                let completion_tokens = estimate_tokens(&completion.output);
                 let usage = Usage {
                     prompt_tokens,
                     completion_tokens,
@@ -621,12 +659,12 @@ pub(crate) async fn chat_completions_handler(
                     json!({
                         "model": model.clone(),
                         "compressed": false,
-                        "response_chars": completion.len(),
+                        "response_chars": completion.output.len(),
                     }),
                 );
                 if payload.stream {
                     let id = format!("chatcmpl-{}", request_id);
-                    let mut content_chunks = chunk_text(&completion, STREAM_CHUNK_CHARS);
+                    let mut content_chunks = chunk_text(&completion.output, STREAM_CHUNK_CHARS);
                     if content_chunks.is_empty() {
                         content_chunks.push(String::new());
                     }
@@ -680,7 +718,7 @@ pub(crate) async fn chat_completions_handler(
                         index: 0,
                         message: ChatMessageResponse {
                             role: "assistant",
-                            content: completion,
+                            content: completion.output,
                         },
                         finish_reason: "stop",
                     }],

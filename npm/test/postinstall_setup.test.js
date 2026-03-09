@@ -28,7 +28,8 @@ const {
   launchSetupWizard,
   applyAgentInstructions,
   buildDaemonEnv,
-  buildLaunchAgentPlist
+  buildLaunchAgentPlist,
+  startDaemonWithHealthCheck
 } = require("../lib/postinstall_setup");
 
 test("upsertServerConfig adds server section when missing", () => {
@@ -298,6 +299,77 @@ test("resolveDaemonPortState reports busy when port in use by non-docdex", async
   });
   assert.equal(state.available, false);
   assert.equal(state.reuseExisting, false);
+});
+
+test("startDaemonWithHealthCheck relies on registerStartup for startNow", async () => {
+  const calls = [];
+  const result = await startDaemonWithHealthCheck({
+    binaryPath: "/tmp/docdexd",
+    host: "127.0.0.1",
+    port: 28491,
+    deps: {
+      registerStartup: (options) => {
+        calls.push({ type: "registerStartup", options });
+        return { ok: true };
+      },
+      waitForDaemonHealthy: async (options) => {
+        calls.push({ type: "waitForDaemonHealthy", options });
+        return true;
+      },
+      stopDaemonService: () => {
+        calls.push({ type: "stopDaemonService" });
+      },
+      stopDaemonFromLock: () => {
+        calls.push({ type: "stopDaemonFromLock" });
+      },
+      stopDaemonByName: () => {
+        calls.push({ type: "stopDaemonByName" });
+      },
+      clearDaemonLocks: () => {
+        calls.push({ type: "clearDaemonLocks" });
+      }
+    }
+  });
+  assert.deepEqual(
+    calls.map((entry) => entry.type),
+    ["registerStartup", "waitForDaemonHealthy"]
+  );
+  assert.equal(calls[0].options.startNow, true);
+  assert.equal(result.ok, true);
+  assert.equal(result.reason, "healthy");
+});
+
+test("startDaemonWithHealthCheck cleans up after health failure", async () => {
+  const calls = [];
+  const result = await startDaemonWithHealthCheck({
+    binaryPath: "/tmp/docdexd",
+    host: "127.0.0.1",
+    port: 28491,
+    deps: {
+      registerStartup: () => ({ ok: true }),
+      waitForDaemonHealthy: async () => false,
+      stopDaemonService: () => {
+        calls.push("stopDaemonService");
+      },
+      stopDaemonFromLock: () => {
+        calls.push("stopDaemonFromLock");
+      },
+      stopDaemonByName: () => {
+        calls.push("stopDaemonByName");
+      },
+      clearDaemonLocks: () => {
+        calls.push("clearDaemonLocks");
+      }
+    }
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "health_failed");
+  assert.deepEqual(calls, [
+    "stopDaemonService",
+    "stopDaemonFromLock",
+    "stopDaemonByName",
+    "clearDaemonLocks"
+  ]);
 });
 
 test("normalizeVersion strips v prefix and trims whitespace", () => {

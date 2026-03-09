@@ -14,14 +14,17 @@ use crate::impact::{build_impact_diagnostics_response, ImpactDiagnosticsEntry, I
 use crate::index::{IndexConfig, Indexer};
 use crate::libs;
 use crate::llm::delegation::{
-    allowlist_allows, compute_cost_micros, compute_delegation_savings, mode_from_config,
-    parse_local_target_override, resolve_local_cost_per_million, resolve_primary_cost_per_million,
-    run_delegation_flow, select_local_target, select_primary_target, DelegationEnforcementError,
-    DelegationMode, LocalTarget, TaskType,
+    allowlist_allows, build_local_target_candidates_with_config, build_primary_target_candidates,
+    compute_cost_micros, compute_delegation_savings, local_selection_policy_requires_fresh_library,
+    mode_from_config, parse_local_target_override, resolve_local_cost_per_million,
+    resolve_primary_cost_per_million, run_delegation_flow,
+    update_cached_local_selection_from_completion, DelegationEnforcementError, DelegationMode,
+    LocalTarget, TaskType,
 };
 use crate::llm::local_library::{
-    delegation_is_enabled, refresh_local_library_if_stale, refresh_local_library_if_stale_with_web,
-    resolve_local_ollama_base_url,
+    delegation_is_enabled, load_local_library, refresh_local_library,
+    refresh_local_library_if_stale, refresh_local_library_if_stale_with_web,
+    refresh_local_library_with_web, resolve_local_ollama_base_url,
 };
 use crate::memory::{inject_embedding_metadata, repo_state_root_from_state_dir, MemoryStore};
 use crate::metrics::{self, DelegationMetrics};
@@ -3082,18 +3085,32 @@ Produce a phased plan with risks and tests to run."
                     Ok(format_web_text(&response))
                 }
             };
-            refresh_local_library_if_stale_with_web(
-                self.global_state_dir.as_deref(),
-                &llm_config,
-                true,
-                Some(&mut fetcher),
-            )
-            .await
-        } else {
-            refresh_local_library_if_stale(self.global_state_dir.as_deref(), &llm_config, true)
+            if local_selection_policy_requires_fresh_library(&llm_config) {
+                refresh_local_library_with_web(
+                    self.global_state_dir.as_deref(),
+                    &llm_config,
+                    true,
+                    Some(&mut fetcher),
+                )
                 .await
+            } else {
+                refresh_local_library_if_stale_with_web(
+                    self.global_state_dir.as_deref(),
+                    &llm_config,
+                    true,
+                    Some(&mut fetcher),
+                )
+                .await
+            }
+        } else {
+            if local_selection_policy_requires_fresh_library(&llm_config) {
+                refresh_local_library(self.global_state_dir.as_deref(), &llm_config, true).await
+            } else {
+                refresh_local_library_if_stale(self.global_state_dir.as_deref(), &llm_config, true)
+                    .await
+            }
         };
-        let library = match library_result {
+        let mut library = match library_result {
             Ok(library) => Some(library),
             Err(err) => {
                 warn!(
@@ -3101,7 +3118,7 @@ Produce a phased plan with risks and tests to run."
                     error = ?err,
                     "local model library refresh failed"
                 );
-                None
+                load_local_library(self.global_state_dir.as_deref()).ok()
             }
         };
         if !delegation_is_enabled(&llm_config.delegation, library.as_ref()) {
@@ -3130,22 +3147,39 @@ Produce a phased plan with risks and tests to run."
             .filter(|value| !value.is_empty());
         let override_target =
             agent_override.and_then(|value| parse_local_target_override(value, library.as_ref()));
-        let local_target = override_target.clone().or_else(|| {
-            library
-                .as_ref()
-                .and_then(|library| select_local_target(task_type, library))
-        });
-        let local_target = local_target.or_else(|| {
+        let mut local_targets: Vec<LocalTarget> = override_target.clone().into_iter().collect();
+        if local_targets.is_empty() {
+            if !llm_config.delegation.local_agent_id.trim().is_empty() {
+                local_targets.clear();
+            } else if let Some(library) = library.as_ref() {
+                let mut library = library.clone();
+                local_targets = build_local_target_candidates_with_config(
+                    self.global_state_dir.as_deref(),
+                    &llm_config,
+                    task_type,
+                    &mut library,
+                );
+            }
+        }
+        if local_targets.is_empty() {
             let model = llm_config.default_model.trim();
             if model.is_empty() {
-                return None;
+                local_targets.clear();
+            } else if resolve_local_ollama_base_url(&llm_config).is_some() {
+                local_targets.push(LocalTarget::OllamaModel(model.to_string()));
             }
-            resolve_local_ollama_base_url(&llm_config)
-                .map(|_| LocalTarget::OllamaModel(model.to_string()))
-        });
-        let primary_target = library
+        }
+        let primary_targets = library
             .as_ref()
-            .and_then(|library| select_primary_target(task_type, library, local_target.as_ref()));
+            .map(|library| {
+                build_primary_target_candidates(
+                    &llm_config,
+                    task_type,
+                    library,
+                    local_targets.first(),
+                )
+            })
+            .unwrap_or_default();
         let local_agent_override = match (&override_target, agent_override) {
             (Some(LocalTarget::OllamaModel(model)), _) => Some(format!("model:{model}")),
             (Some(LocalTarget::McodaAgent(_)), Some(value)) => Some(value.to_string()),
@@ -3157,7 +3191,7 @@ Produce a phased plan with risks and tests to run."
             .map(|value| !value.trim().is_empty())
             .unwrap_or(false)
             || !llm_config.delegation.local_agent_id.trim().is_empty();
-        if llm_config.delegation.enforce_local && local_target.is_none() && !local_override {
+        if llm_config.delegation.enforce_local && local_targets.is_empty() && !local_override {
             let metrics = metrics::global();
             metrics.inc_delegate_local_enforced_failure();
             self.delegation_metrics
@@ -3172,8 +3206,8 @@ Produce a phased plan with risks and tests to run."
         let result = run_delegation_flow(
             &llm_config,
             local_agent_override.as_deref(),
-            local_target.as_ref(),
-            primary_target.as_ref(),
+            &local_targets,
+            &primary_targets,
             task_type,
             &args.instruction,
             &args.context,
@@ -3194,6 +3228,17 @@ Produce a phased plan with risks and tests to run."
             err
         })?;
 
+        if !result.primary_used {
+            if let Some(library) = library.as_mut() {
+                update_cached_local_selection_from_completion(
+                    self.global_state_dir.as_deref(),
+                    &llm_config,
+                    library,
+                    &result.completion,
+                );
+            }
+        }
+
         let metrics = metrics::global();
         metrics.inc_delegate_request();
         self.delegation_metrics.inc_delegate_request();
@@ -3206,12 +3251,12 @@ Produce a phased plan with risks and tests to run."
         let local_cost_per_million = resolve_local_cost_per_million(
             &llm_config,
             local_agent_override.as_deref(),
-            local_target.as_ref(),
+            local_targets.first(),
             library.as_ref(),
         );
         let primary_cost_per_million = resolve_primary_cost_per_million(
             &llm_config,
-            primary_target.as_ref(),
+            primary_targets.first(),
             library.as_ref(),
         );
         let local_cost_micros = compute_cost_micros(result.local_tokens, local_cost_per_million);

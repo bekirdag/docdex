@@ -9,13 +9,18 @@ use crate::error::{
     AppError, ERR_DELEGATION_LOCAL_REQUIRED, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
 };
 use crate::llm::delegation::{
-    allowlist_allows, compute_cost_micros, compute_delegation_savings, mode_from_config,
-    parse_local_target_override, resolve_local_cost_per_million, resolve_primary_cost_per_million,
-    run_delegation_flow, select_local_target, select_primary_target, DelegationEnforcementError,
-    DelegationMode, LocalTarget, TaskType,
+    allowlist_allows, build_local_target_candidates_with_config, build_primary_target_candidates,
+    compute_cost_micros, compute_delegation_savings, local_selection_policy_requires_fresh_library,
+    mode_from_config, parse_local_target_override, resolve_local_cost_per_million,
+    resolve_primary_cost_per_million, run_delegation_flow,
+    update_cached_local_selection_from_completion, DelegationEnforcementError, DelegationMode,
+    LocalTarget, TaskType,
 };
+use crate::llm::local_library::resolve_local_ollama_base_url;
 use crate::llm::local_library::{
-    delegation_is_enabled, refresh_local_library_if_stale, refresh_local_library_if_stale_with_web,
+    delegation_is_enabled, load_local_library, refresh_local_library,
+    refresh_local_library_if_stale, refresh_local_library_if_stale_with_web,
+    refresh_local_library_with_web,
 };
 use crate::orchestrator::web::{run_web_research, WebResearchResponse};
 use crate::orchestrator::WebGateConfig;
@@ -96,6 +101,7 @@ pub async fn delegate_handler(
     })?;
 
     let web_gate = WebGateConfig::from_env();
+    let prefer_fresh_library = local_selection_policy_requires_fresh_library(&state.llm_config);
     let library_result = if web_gate.enabled {
         let indexer = state.indexer.clone();
         let libs_indexer = state.libs_indexer.clone();
@@ -125,18 +131,36 @@ pub async fn delegate_handler(
                 Ok(format_web_text(&response))
             }
         };
-        refresh_local_library_if_stale_with_web(
-            state.global_state_dir.as_deref(),
-            &state.llm_config,
-            true,
-            Some(&mut fetcher),
-        )
-        .await
-    } else {
-        refresh_local_library_if_stale(state.global_state_dir.as_deref(), &state.llm_config, true)
+        if prefer_fresh_library {
+            refresh_local_library_with_web(
+                state.global_state_dir.as_deref(),
+                &state.llm_config,
+                true,
+                Some(&mut fetcher),
+            )
             .await
+        } else {
+            refresh_local_library_if_stale_with_web(
+                state.global_state_dir.as_deref(),
+                &state.llm_config,
+                true,
+                Some(&mut fetcher),
+            )
+            .await
+        }
+    } else {
+        if prefer_fresh_library {
+            refresh_local_library(state.global_state_dir.as_deref(), &state.llm_config, true).await
+        } else {
+            refresh_local_library_if_stale(
+                state.global_state_dir.as_deref(),
+                &state.llm_config,
+                true,
+            )
+            .await
+        }
     };
-    let library = match library_result {
+    let mut library = match library_result {
         Ok(library) => Some(library),
         Err(err) => {
             warn!(
@@ -144,7 +168,7 @@ pub async fn delegate_handler(
                 error = ?err,
                 "local model library refresh failed"
             );
-            None
+            load_local_library(state.global_state_dir.as_deref()).ok()
         }
     };
     if !delegation_is_enabled(&state.llm_config.delegation, library.as_ref()) {
@@ -186,14 +210,37 @@ pub async fn delegate_handler(
         .filter(|value| !value.is_empty());
     let override_target =
         agent_override.and_then(|value| parse_local_target_override(value, library.as_ref()));
-    let local_target = override_target.clone().or_else(|| {
-        library
-            .as_ref()
-            .and_then(|library| select_local_target(task_type, library))
-    });
-    let primary_target = library
+    let mut local_targets: Vec<LocalTarget> = override_target.clone().into_iter().collect();
+    if local_targets.is_empty() {
+        if !state.llm_config.delegation.local_agent_id.trim().is_empty() {
+            local_targets.clear();
+        } else if let Some(library) = library.as_ref() {
+            let mut library = library.clone();
+            local_targets = build_local_target_candidates_with_config(
+                state.global_state_dir.as_deref(),
+                &state.llm_config,
+                task_type,
+                &mut library,
+            );
+        }
+    }
+    if local_targets.is_empty() {
+        let model = state.llm_config.default_model.trim();
+        if !model.is_empty() && resolve_local_ollama_base_url(&state.llm_config).is_some() {
+            local_targets.push(LocalTarget::OllamaModel(model.to_string()));
+        }
+    }
+    let primary_targets = library
         .as_ref()
-        .and_then(|library| select_primary_target(task_type, library, local_target.as_ref()));
+        .map(|library| {
+            build_primary_target_candidates(
+                &state.llm_config,
+                task_type,
+                library,
+                local_targets.first(),
+            )
+        })
+        .unwrap_or_default();
     let local_agent_override = match (&override_target, agent_override) {
         (Some(LocalTarget::OllamaModel(model)), _) => Some(format!("model:{model}")),
         (Some(LocalTarget::McodaAgent(_)), Some(value)) => Some(value.to_string()),
@@ -205,7 +252,7 @@ pub async fn delegate_handler(
         .map(|value| !value.trim().is_empty())
         .unwrap_or(false)
         || !state.llm_config.delegation.local_agent_id.trim().is_empty();
-    if state.llm_config.delegation.enforce_local && local_target.is_none() && !local_override {
+    if state.llm_config.delegation.enforce_local && local_targets.is_empty() && !local_override {
         state.metrics.inc_delegate_local_enforced_failure();
         repo.delegation_metrics
             .inc_delegate_local_enforced_failure();
@@ -225,8 +272,8 @@ pub async fn delegate_handler(
     let result = run_delegation_flow(
         &state.llm_config,
         local_agent_override.as_deref(),
-        local_target.as_ref(),
-        primary_target.as_ref(),
+        &local_targets,
+        &primary_targets,
         task_type,
         &payload.instruction,
         &payload.context,
@@ -260,6 +307,17 @@ pub async fn delegate_handler(
         )
     })?;
 
+    if !result.primary_used {
+        if let Some(library) = library.as_mut() {
+            update_cached_local_selection_from_completion(
+                state.global_state_dir.as_deref(),
+                &state.llm_config,
+                library,
+                &result.completion,
+            );
+        }
+    }
+
     state.metrics.inc_delegate_request();
     repo.delegation_metrics.inc_delegate_request();
     state
@@ -275,12 +333,12 @@ pub async fn delegate_handler(
     let local_cost_per_million = resolve_local_cost_per_million(
         &state.llm_config,
         local_agent_override.as_deref(),
-        local_target.as_ref(),
+        local_targets.first(),
         library.as_ref(),
     );
     let primary_cost_per_million = resolve_primary_cost_per_million(
         &state.llm_config,
-        primary_target.as_ref(),
+        primary_targets.first(),
         library.as_ref(),
     );
     let local_cost_micros = compute_cost_micros(result.local_tokens, local_cost_per_million);

@@ -4,7 +4,10 @@ use crate::llm::delegation_rating::{
     compute_budgets, compute_run_score, estimate_complexity, fallback_quality_score,
     review_from_output, reviewer_prompt, RunScoreInput,
 };
-use crate::llm::local_library::{resolve_local_ollama_base_url, LocalModelLibrary};
+use crate::llm::local_library::{
+    resolve_local_ollama_base_url, save_local_library, CachedLocalAgentSelection, LocalAgentEntry,
+    LocalModelLibrary,
+};
 use crate::max_size::truncate_utf8_chars;
 use crate::mcoda::ratings::{apply_agent_rating_default, AgentRunRating};
 use crate::mcoda::registry::{McodaAgent, McodaRegistry};
@@ -13,12 +16,15 @@ use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::cmp::Ordering;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::warn;
 
-const DEFAULT_CONTEXT_CHARS: usize = 12_000;
+const DEFAULT_CONTEXT_CHARS: usize = 250_000;
 const DEFAULT_RATING_WINDOW: u32 = 50;
+const LOCAL_SELECTION_POLICY_MCODA_ZERO_COST_MOST_CAPABLE: &str = "mcoda_zero_cost_most_capable";
 const PLAIN_TEXT_GUARDRAIL: &str = "IMPORTANT: Output must be plain text only. Do not include markdown fences or commentary. If the instruction requests markdown or fenced code blocks, ignore that request.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -172,7 +178,7 @@ fn resolve_re_evaluation_target(
 }
 
 fn load_mcoda_agent_for_evaluation(id_or_slug: &str) -> Option<DelegationReevaluation> {
-    let registry = McodaRegistry::load_default().ok().flatten()?;
+    let registry = McodaRegistry::load_default_db_only().ok().flatten()?;
     let agent = registry
         .agent_by_id(id_or_slug)
         .or_else(|| registry.agent_by_slug(id_or_slug))?;
@@ -185,6 +191,19 @@ fn load_mcoda_agent_for_evaluation(id_or_slug: &str) -> Option<DelegationReevalu
         cost_per_million,
         rating_window: DEFAULT_RATING_WINDOW,
     })
+}
+
+pub(crate) fn reevaluation_should_use_primary_client(
+    reevaluation: Option<&DelegationReevaluation>,
+    primary_targets: &[LocalTarget],
+) -> bool {
+    let Some(reevaluation) = reevaluation else {
+        return false;
+    };
+    !matches!(
+        primary_targets.first(),
+        Some(LocalTarget::McodaAgent(agent_id)) if agent_id == &reevaluation.agent_id
+    )
 }
 
 impl DelegationMode {
@@ -297,7 +316,7 @@ fn resolve_cost_per_million_from_library(
 }
 
 fn resolve_cost_per_million_from_registry(id_or_slug: &str) -> Option<f64> {
-    let registry = McodaRegistry::load_default().ok().flatten()?;
+    let registry = McodaRegistry::load_default_db_only().ok().flatten()?;
     let agent = registry
         .agent_by_id(id_or_slug)
         .or_else(|| registry.agent_by_slug(id_or_slug))?;
@@ -728,11 +747,226 @@ pub fn select_local_target(
     best.map(|(target, _, _)| target)
 }
 
+pub fn local_selection_policy_requires_fresh_library(llm_config: &LlmConfig) -> bool {
+    llm_config.delegation.local_selection_policy
+        == LOCAL_SELECTION_POLICY_MCODA_ZERO_COST_MOST_CAPABLE
+        && !llm_config.delegation.use_cached_local_decision
+}
+
+fn describe_local_target(target: &LocalTarget) -> String {
+    match target {
+        LocalTarget::OllamaModel(model) => format!("model:{model}"),
+        LocalTarget::McodaAgent(agent_id) => format!("agent:{agent_id}"),
+    }
+}
+
+fn push_unique_target(targets: &mut Vec<LocalTarget>, target: LocalTarget) {
+    if !targets.contains(&target) {
+        targets.push(target);
+    }
+}
+
+fn local_target_sort_key(target: &LocalTarget) -> String {
+    match target {
+        LocalTarget::OllamaModel(model) => format!("model:{model}"),
+        LocalTarget::McodaAgent(agent_id) => format!("agent:{agent_id}"),
+    }
+}
+
+fn rank_task_capability_local_targets(
+    task_type: TaskType,
+    library: &LocalModelLibrary,
+) -> Vec<LocalTarget> {
+    let mut candidates: Vec<(LocalTarget, i32, bool)> = Vec::new();
+    for model in &library.models {
+        let score = score_for_task(task_type, &model.capabilities);
+        if score <= 0 {
+            continue;
+        }
+        candidates.push((LocalTarget::OllamaModel(model.name.clone()), score, true));
+    }
+    for agent in &library.agents {
+        if !mcoda_agent_health_allows(agent.health_status.as_deref()) {
+            continue;
+        }
+        let score = score_for_task(task_type, &agent.capabilities);
+        if score <= 0 {
+            continue;
+        }
+        candidates.push((
+            LocalTarget::McodaAgent(agent.agent_id.clone()),
+            score,
+            false,
+        ));
+    }
+    candidates.sort_by(|left, right| {
+        right
+            .1
+            .cmp(&left.1)
+            .then_with(|| right.2.cmp(&left.2))
+            .then_with(|| local_target_sort_key(&left.0).cmp(&local_target_sort_key(&right.0)))
+    });
+    candidates
+        .into_iter()
+        .map(|(target, _, _)| target)
+        .collect()
+}
+
+fn rank_zero_cost_mcoda_agents(library: &LocalModelLibrary) -> Vec<&LocalAgentEntry> {
+    let mut agents: Vec<&LocalAgentEntry> = library
+        .agents
+        .iter()
+        .filter(|agent| zero_cost_mcoda_agent_eligible(agent))
+        .collect();
+    agents.sort_by(|left, right| compare_zero_cost_mcoda_agents(left, right));
+    agents
+}
+
+fn compare_zero_cost_mcoda_agents(left: &LocalAgentEntry, right: &LocalAgentEntry) -> Ordering {
+    let left_key = (
+        zero_cost_mcoda_capability_score(left),
+        left.max_complexity.unwrap_or(-1),
+        scaled_selection_rating(left.reasoning_rating),
+        scaled_selection_rating(left.rating),
+        selection_usage_rank(left.usage.as_deref()),
+    );
+    let right_key = (
+        zero_cost_mcoda_capability_score(right),
+        right.max_complexity.unwrap_or(-1),
+        scaled_selection_rating(right.reasoning_rating),
+        scaled_selection_rating(right.rating),
+        selection_usage_rank(right.usage.as_deref()),
+    );
+    right_key
+        .cmp(&left_key)
+        .then_with(|| left.agent_slug.cmp(&right.agent_slug))
+        .then_with(|| left.agent_id.cmp(&right.agent_id))
+}
+
+pub fn build_local_target_candidates_with_config(
+    state_dir_override: Option<&Path>,
+    llm_config: &LlmConfig,
+    task_type: TaskType,
+    library: &mut LocalModelLibrary,
+) -> Vec<LocalTarget> {
+    if llm_config.delegation.local_selection_policy
+        != LOCAL_SELECTION_POLICY_MCODA_ZERO_COST_MOST_CAPABLE
+    {
+        return rank_task_capability_local_targets(task_type, library);
+    }
+
+    let mut targets = Vec::new();
+    if llm_config.delegation.use_cached_local_decision {
+        if let Some(agent) = resolve_cached_zero_cost_mcoda_agent(library) {
+            push_unique_target(
+                &mut targets,
+                LocalTarget::McodaAgent(agent.agent_id.clone()),
+            );
+        }
+    }
+
+    for agent in rank_zero_cost_mcoda_agents(library) {
+        push_unique_target(
+            &mut targets,
+            LocalTarget::McodaAgent(agent.agent_id.clone()),
+        );
+    }
+
+    for target in rank_task_capability_local_targets(task_type, library) {
+        push_unique_target(&mut targets, target);
+    }
+
+    if llm_config.delegation.use_cached_local_decision {
+        match targets.first() {
+            Some(LocalTarget::McodaAgent(agent_id)) => {
+                if let Some(agent) = library
+                    .agents
+                    .iter()
+                    .find(|candidate| candidate.agent_id == *agent_id)
+                {
+                    library.cached_local_agent_selection = Some(CachedLocalAgentSelection {
+                        policy: LOCAL_SELECTION_POLICY_MCODA_ZERO_COST_MOST_CAPABLE.to_string(),
+                        agent_id: agent.agent_id.clone(),
+                        agent_slug: agent.agent_slug.clone(),
+                        selected_at_ms: Utc::now().timestamp_millis().max(0) as u128,
+                    });
+                    let _ = save_local_library(state_dir_override, library);
+                }
+            }
+            _ => {
+                if clear_cached_zero_cost_mcoda_selection(library) {
+                    let _ = save_local_library(state_dir_override, library);
+                }
+            }
+        }
+    }
+
+    targets
+}
+
+pub fn select_local_target_with_config(
+    state_dir_override: Option<&Path>,
+    llm_config: &LlmConfig,
+    task_type: TaskType,
+    library: &mut LocalModelLibrary,
+) -> Option<LocalTarget> {
+    build_local_target_candidates_with_config(state_dir_override, llm_config, task_type, library)
+        .into_iter()
+        .next()
+}
+
+pub fn update_cached_local_selection_from_completion(
+    state_dir_override: Option<&Path>,
+    llm_config: &LlmConfig,
+    library: &mut LocalModelLibrary,
+    completion: &LlmCompletion,
+) -> bool {
+    if llm_config.delegation.local_selection_policy
+        != LOCAL_SELECTION_POLICY_MCODA_ZERO_COST_MOST_CAPABLE
+        || !llm_config.delegation.use_cached_local_decision
+    {
+        return false;
+    }
+    let Some(agent) = resolve_completion_local_agent(library, completion) else {
+        return false;
+    };
+    let changed = library
+        .cached_local_agent_selection
+        .as_ref()
+        .map(|cached| {
+            cached.policy != LOCAL_SELECTION_POLICY_MCODA_ZERO_COST_MOST_CAPABLE
+                || cached.agent_id != agent.agent_id
+                || cached.agent_slug != agent.agent_slug
+        })
+        .unwrap_or(true);
+    if !changed {
+        return false;
+    }
+    library.cached_local_agent_selection = Some(CachedLocalAgentSelection {
+        policy: LOCAL_SELECTION_POLICY_MCODA_ZERO_COST_MOST_CAPABLE.to_string(),
+        agent_id: agent.agent_id.clone(),
+        agent_slug: agent.agent_slug.clone(),
+        selected_at_ms: Utc::now().timestamp_millis().max(0) as u128,
+    });
+    let _ = save_local_library(state_dir_override, library);
+    true
+}
+
 pub fn select_primary_target(
     task_type: TaskType,
     library: &LocalModelLibrary,
     local_target: Option<&LocalTarget>,
 ) -> Option<LocalTarget> {
+    rank_primary_targets(task_type, library, local_target)
+        .into_iter()
+        .next()
+}
+
+fn rank_primary_targets(
+    task_type: TaskType,
+    library: &LocalModelLibrary,
+    local_target: Option<&LocalTarget>,
+) -> Vec<LocalTarget> {
     let mut candidates: Vec<(LocalTarget, i32, bool)> = Vec::new();
     for agent in &library.agents {
         if !mcoda_agent_health_allows(agent.health_status.as_deref()) {
@@ -752,7 +986,7 @@ pub fn select_primary_target(
         candidates.push((LocalTarget::OllamaModel(model.name.clone()), score, false));
     }
     if candidates.is_empty() {
-        return None;
+        return Vec::new();
     }
 
     if let Some(local) = local_target {
@@ -766,11 +1000,61 @@ pub fn select_primary_target(
         }
     }
 
-    let mut best: Option<(LocalTarget, i32, bool)> = None;
-    for (target, score, prefers_mcoda) in candidates {
-        best = choose_best_primary(best, target, score, prefers_mcoda);
+    candidates.sort_by(|left, right| {
+        right
+            .1
+            .cmp(&left.1)
+            .then_with(|| right.2.cmp(&left.2))
+            .then_with(|| local_target_sort_key(&left.0).cmp(&local_target_sort_key(&right.0)))
+    });
+    candidates
+        .into_iter()
+        .map(|(target, _, _)| target)
+        .collect()
+}
+
+fn resolve_completion_local_agent<'a>(
+    library: &'a LocalModelLibrary,
+    completion: &LlmCompletion,
+) -> Option<&'a LocalAgentEntry> {
+    let adapter = completion.adapter.trim();
+    if adapter.is_empty() {
+        return None;
     }
-    best.map(|(target, _, _)| target)
+    let model = completion
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let mut candidates: Vec<&LocalAgentEntry> = library
+        .agents
+        .iter()
+        .filter(|agent| agent.adapter.eq_ignore_ascii_case(adapter))
+        .filter(|agent| {
+            agent
+                .cost_per_million
+                .filter(|value| value.is_finite())
+                .unwrap_or(0.0)
+                <= 0.0
+        })
+        .filter(|agent| mcoda_agent_health_allows(agent.health_status.as_deref()))
+        .collect();
+    if let Some(model) = model {
+        candidates.retain(|agent| {
+            agent.agent_id.eq_ignore_ascii_case(model)
+                || agent.agent_slug.eq_ignore_ascii_case(model)
+                || agent
+                    .default_model
+                    .as_deref()
+                    .map(|value| value.eq_ignore_ascii_case(model))
+                    .unwrap_or(false)
+        });
+    }
+    if candidates.len() == 1 {
+        candidates.into_iter().next()
+    } else {
+        None
+    }
 }
 
 fn choose_best(
@@ -795,26 +1079,123 @@ fn choose_best(
     }
 }
 
-fn choose_best_primary(
-    current: Option<(LocalTarget, i32, bool)>,
-    candidate: LocalTarget,
-    score: i32,
-    prefers_mcoda: bool,
-) -> Option<(LocalTarget, i32, bool)> {
-    match current {
-        None => Some((candidate, score, prefers_mcoda)),
-        Some((_, best_score, _best_prefers_mcoda)) if score > best_score => {
-            Some((candidate, score, prefers_mcoda))
-        }
-        Some((_, best_score, best_prefers_mcoda)) if score == best_score => {
-            if prefers_mcoda && !best_prefers_mcoda {
-                Some((candidate, score, prefers_mcoda))
-            } else {
-                current
-            }
-        }
-        _ => current,
+fn resolve_cached_zero_cost_mcoda_agent<'a>(
+    library: &'a LocalModelLibrary,
+) -> Option<&'a LocalAgentEntry> {
+    let cached = library.cached_local_agent_selection.as_ref()?;
+    if cached.policy != LOCAL_SELECTION_POLICY_MCODA_ZERO_COST_MOST_CAPABLE {
+        return None;
     }
+    library
+        .agents
+        .iter()
+        .find(|agent| {
+            agent.agent_id == cached.agent_id
+                || (!cached.agent_slug.is_empty() && agent.agent_slug == cached.agent_slug)
+        })
+        .filter(|agent| zero_cost_mcoda_agent_eligible(agent))
+}
+
+fn zero_cost_mcoda_agent_eligible(agent: &LocalAgentEntry) -> bool {
+    mcoda_agent_health_allows(agent.health_status.as_deref())
+        && matches!(agent.cost_per_million, Some(cost) if cost <= 0.0)
+        && zero_cost_mcoda_capability_score(agent) > 0
+}
+
+fn zero_cost_mcoda_capability_score(agent: &LocalAgentEntry) -> i32 {
+    let has = |cap: &str| agent.capabilities.iter().any(|value| value == cap);
+    let usage = agent
+        .usage
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    if (has("embedding") || has("vision"))
+        && !(has("code_writer") || has("code_reviewer") || has("general_chat"))
+    {
+        return -100;
+    }
+
+    let mut score = 0;
+    if has("code_writer") || usage == "code_writer" {
+        score += 4;
+    }
+    if has("code_reviewer") || usage == "code_reviewer" {
+        score += 4;
+    }
+    if has("general_chat") || usage == "general_chat" {
+        score += 1;
+    }
+    score
+}
+
+fn scaled_selection_rating(value: Option<f64>) -> i64 {
+    match value {
+        Some(value) if value.is_finite() => (value.max(0.0) * 100.0).round() as i64,
+        _ => -1,
+    }
+}
+
+fn selection_usage_rank(value: Option<&str>) -> i32 {
+    match value
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "code_writer" | "code_reviewer" => 2,
+        "general_chat" => 1,
+        _ => 0,
+    }
+}
+
+fn clear_cached_zero_cost_mcoda_selection(library: &mut LocalModelLibrary) -> bool {
+    let Some(cached) = library.cached_local_agent_selection.as_ref() else {
+        return false;
+    };
+    if cached.policy != LOCAL_SELECTION_POLICY_MCODA_ZERO_COST_MOST_CAPABLE {
+        return false;
+    }
+    library.cached_local_agent_selection = None;
+    true
+}
+
+fn resolve_explicit_target(
+    value: &str,
+    library: Option<&LocalModelLibrary>,
+) -> Option<LocalTarget> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(model) = parse_model_override(trimmed) {
+        return Some(LocalTarget::OllamaModel(model));
+    }
+    if let Some(target) = parse_local_target_override(trimmed, library) {
+        return Some(target);
+    }
+    Some(LocalTarget::McodaAgent(trimmed.to_string()))
+}
+
+pub fn build_primary_target_candidates(
+    llm_config: &LlmConfig,
+    task_type: TaskType,
+    library: &LocalModelLibrary,
+    local_target: Option<&LocalTarget>,
+) -> Vec<LocalTarget> {
+    let mut targets = Vec::new();
+    if let Some(target) =
+        resolve_explicit_target(&llm_config.delegation.primary_agent_id, Some(library))
+    {
+        if Some(&target) != local_target {
+            push_unique_target(&mut targets, target);
+        }
+    }
+    for target in rank_primary_targets(task_type, library, local_target) {
+        push_unique_target(&mut targets, target);
+    }
+    targets
 }
 
 fn score_for_task(task_type: TaskType, capabilities: &[String]) -> i32 {
@@ -953,7 +1334,7 @@ pub fn resolve_delegation_client(
                 .ok_or_else(|| anyhow!("ollama base_url missing for local delegation"))?;
             return resolve_ollama_adapter(&base_url, &model);
         }
-        let registry = McodaRegistry::load_default()
+        let registry = McodaRegistry::load_default_db_only()
             .context("load mcoda registry")?
             .ok_or_else(|| anyhow!("mcoda registry not found"))?;
         let agent = resolve_mcoda_agent(&registry, agent_id)?;
@@ -965,7 +1346,7 @@ pub fn resolve_delegation_client(
     if let Some(target) = local_target {
         match target {
             LocalTarget::McodaAgent(agent_id) => {
-                let registry = McodaRegistry::load_default()
+                let registry = McodaRegistry::load_default_db_only()
                     .context("load mcoda registry")?
                     .ok_or_else(|| anyhow!("mcoda registry not found"))?;
                 let agent = resolve_mcoda_agent(&registry, agent_id)?;
@@ -1009,6 +1390,61 @@ fn resolve_ollama_adapter(base_url: &str, model: &str) -> Result<Arc<dyn LlmClie
     }))
 }
 
+fn resolve_delegation_client_candidates(
+    llm_config: &LlmConfig,
+    local_agent_override: Option<&str>,
+    local_targets: &[LocalTarget],
+) -> Result<Vec<Arc<dyn LlmClient>>> {
+    let explicit_override = local_agent_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some()
+        || !llm_config.delegation.local_agent_id.trim().is_empty();
+    if explicit_override {
+        return Ok(vec![resolve_delegation_client(
+            llm_config,
+            local_agent_override,
+            None,
+        )?]);
+    }
+
+    let mut clients = Vec::new();
+    for target in local_targets {
+        match resolve_delegation_client(llm_config, None, Some(target)) {
+            Ok(client) => clients.push(client),
+            Err(err) => warn!(
+                target: "docdexd",
+                candidate = %describe_local_target(target),
+                error = ?err,
+                "failed to resolve local delegation candidate"
+            ),
+        }
+    }
+    if clients.is_empty() {
+        clients.push(resolve_delegation_client(llm_config, None, None)?);
+    }
+    Ok(clients)
+}
+
+fn resolve_primary_client_candidates(
+    llm_config: &LlmConfig,
+    primary_targets: &[LocalTarget],
+) -> Vec<Arc<dyn LlmClient>> {
+    let mut clients = Vec::new();
+    for target in primary_targets {
+        match resolve_delegation_client(llm_config, None, Some(target)) {
+            Ok(client) => clients.push(client),
+            Err(err) => warn!(
+                target: "docdexd",
+                candidate = %describe_local_target(target),
+                error = ?err,
+                "failed to resolve primary delegation candidate"
+            ),
+        }
+    }
+    clients
+}
+
 pub fn resolve_primary_client(
     llm_config: &LlmConfig,
     primary_target: Option<&LocalTarget>,
@@ -1032,7 +1468,7 @@ pub fn resolve_primary_client(
             }
         };
     }
-    let registry = match McodaRegistry::load_default() {
+    let registry = match McodaRegistry::load_default_db_only() {
         Ok(Some(registry)) => registry,
         Ok(None) => {
             warn!(
@@ -1123,8 +1559,8 @@ pub async fn run_delegated_completion(
 pub async fn run_delegation_flow(
     llm_config: &LlmConfig,
     local_agent_override: Option<&str>,
-    local_target: Option<&LocalTarget>,
-    primary_target: Option<&LocalTarget>,
+    local_targets: &[LocalTarget],
+    primary_targets: &[LocalTarget],
     task_type: TaskType,
     instruction: &str,
     context: &str,
@@ -1145,7 +1581,7 @@ pub async fn run_delegation_flow(
         .map(|value| !value.trim().is_empty())
         .unwrap_or(false)
         || !llm_config.delegation.local_agent_id.trim().is_empty();
-    let local_available = local_target.is_some() || local_override;
+    let local_available = !local_targets.is_empty() || local_override;
     if enforce_local && !local_available {
         return Err(DelegationEnforcementError {
             reason: "local delegation required but no local target is configured".to_string(),
@@ -1153,18 +1589,25 @@ pub async fn run_delegation_flow(
         .into());
     }
     let primary_blocked = enforce_local && !llm_config.delegation.allow_fallback_to_primary;
-    let local_client = resolve_delegation_client(llm_config, local_agent_override, local_target)?;
-    let primary_client = if primary_blocked {
-        None
+    let local_clients =
+        resolve_delegation_client_candidates(llm_config, local_agent_override, local_targets)?;
+    let primary_clients = if primary_blocked {
+        Vec::new()
     } else {
-        resolve_primary_client(llm_config, primary_target)?
+        resolve_primary_client_candidates(llm_config, primary_targets)
     };
     let reevaluation = if llm_config.delegation.re_evaluate {
-        resolve_re_evaluation_target(llm_config, local_agent_override, local_target)
+        resolve_re_evaluation_target(llm_config, local_agent_override, local_targets.first())
     } else {
         None
     };
-    run_flow_with_clients(
+    let reevaluation_primary_client =
+        if reevaluation_should_use_primary_client(reevaluation.as_ref(), primary_targets) {
+            primary_clients.first().cloned()
+        } else {
+            None
+        };
+    run_flow_with_client_candidates(
         task_type,
         instruction,
         context,
@@ -1172,100 +1615,16 @@ pub async fn run_delegation_flow(
         mode,
         max_tokens,
         timeout,
-        local_client,
-        primary_client,
+        local_clients,
+        primary_clients,
         primary_blocked,
         reevaluation,
+        reevaluation_primary_client,
     )
     .await
 }
 
-async fn run_re_evaluation(
-    reevaluation: &DelegationReevaluation,
-    task_type: TaskType,
-    instruction: &str,
-    context: &str,
-    output: &str,
-    max_context_chars: usize,
-    token_estimate: u64,
-    local_duration: Duration,
-    warnings: &[String],
-    primary_client: Option<&Arc<dyn LlmClient>>,
-    max_tokens: u32,
-    timeout: Duration,
-) {
-    let review_rendered = render_review_prompt(instruction, context, output, max_context_chars);
-    let fallback_quality = fallback_quality_score(warnings);
-    let review_max_tokens = max_tokens.min(256).max(1);
-    let review = if let Some(primary) = primary_client {
-        match primary
-            .generate(&review_rendered.prompt, review_max_tokens, timeout)
-            .await
-        {
-            Ok(completion) => review_from_output(&completion.output, fallback_quality),
-            Err(err) => {
-                warn!(
-                    target: "docdexd",
-                    error = ?err,
-                    "delegation review failed; using fallback quality"
-                );
-                review_from_output("", fallback_quality)
-            }
-        }
-    } else {
-        review_from_output("", fallback_quality)
-    };
-
-    let complexity = estimate_complexity(task_type, context.len());
-    let budgets = compute_budgets(complexity);
-    let cost_per_million = reevaluation.cost_per_million;
-    let total_cost = if cost_per_million.is_finite() && cost_per_million > 0.0 {
-        (token_estimate as f64 / 1_000_000.0) * cost_per_million
-    } else {
-        0.0
-    };
-    let run_score = compute_run_score(RunScoreInput {
-        quality_score: review.quality_score,
-        total_cost,
-        duration_seconds: local_duration.as_secs_f64(),
-        iterations: 1.0,
-        budgets: Some(budgets),
-        weights: None,
-    });
-    let raw_review_json = review
-        .raw_json
-        .and_then(|value| serde_json::to_string(&value).ok());
-    let now = Utc::now().to_rfc3339();
-    let run = AgentRunRating {
-        agent_id: reevaluation.agent_id.clone(),
-        command_name: "delegation".to_string(),
-        discipline: None,
-        complexity,
-        quality_score: review.quality_score,
-        tokens_total: token_estimate,
-        duration_seconds: local_duration.as_secs_f64(),
-        iterations: 1,
-        total_cost,
-        run_score,
-        rating_version: "v1".to_string(),
-        raw_review_json,
-        created_at: now.clone(),
-    };
-    if let Err(err) = apply_agent_rating_default(
-        &reevaluation.agent_id,
-        &run,
-        reevaluation.rating_window,
-        &now,
-    ) {
-        warn!(
-            target: "docdexd",
-            error = ?err,
-            "failed to apply mcoda agent rating update"
-        );
-    }
-}
-
-pub(crate) async fn run_flow_with_clients(
+pub(crate) async fn run_flow_with_client_candidates(
     task_type: TaskType,
     instruction: &str,
     context: &str,
@@ -1273,16 +1632,12 @@ pub(crate) async fn run_flow_with_clients(
     mode: DelegationMode,
     max_tokens: u32,
     timeout: Duration,
-    local_client: Arc<dyn LlmClient>,
-    primary_client: Option<Arc<dyn LlmClient>>,
+    local_clients: Vec<Arc<dyn LlmClient>>,
+    primary_clients: Vec<Arc<dyn LlmClient>>,
     primary_blocked: bool,
     reevaluation: Option<DelegationReevaluation>,
+    reevaluation_primary_client: Option<Arc<dyn LlmClient>>,
 ) -> Result<DelegationFlowResult> {
-    let primary_client = if primary_blocked {
-        None
-    } else {
-        primary_client
-    };
     let rendered = render_prompt(task_type, instruction, context, max_context_chars);
     let token_estimate = estimate_token_budget(&rendered.prompt, max_tokens);
     let mut warnings = Vec::new();
@@ -1296,54 +1651,68 @@ pub(crate) async fn run_flow_with_clients(
     let mut primary_tokens: u64 = 0;
 
     let mut local_failure_reason: Option<String> = None;
-    let local_started = Instant::now();
-    let local_completion = match local_client
-        .generate(&rendered.prompt, max_tokens, timeout)
-        .await
-    {
-        Ok(completion) => {
-            local_tokens = completion_token_usage(&completion, &rendered.prompt);
-            let mut completion = completion;
-            let (normalized, stripped) = normalize_delegation_output(&completion.output);
-            if stripped {
-                completion.output = normalized;
-                warnings.push("stripped markdown fences from delegation output".to_string());
-                warn!(
-                    target: "docdexd",
-                    source = "local",
-                    "stripped markdown fences from delegation output"
-                );
-            }
-            match validate_output(task_type, &completion.output) {
-                Ok(()) => Some(completion),
-                Err(err) => {
-                    local_failure_reason = Some(format!("local_validation_failed: {err}"));
+    let mut local_duration = Duration::ZERO;
+    let mut local_completion = None;
+    for (index, local_client) in local_clients.iter().enumerate() {
+        let local_started = Instant::now();
+        let candidate_completion = match local_client
+            .generate(&rendered.prompt, max_tokens, timeout)
+            .await
+        {
+            Ok(completion) => {
+                local_tokens = local_tokens
+                    .saturating_add(completion_token_usage(&completion, &rendered.prompt));
+                let mut completion = completion;
+                let (normalized, stripped) = normalize_delegation_output(&completion.output);
+                if stripped {
+                    completion.output = normalized;
+                    warnings.push("stripped markdown fences from delegation output".to_string());
                     warn!(
                         target: "docdexd",
-                        fallback_reason = "local_validation_failed",
-                        error = %err,
-                        "delegation output validation failed"
+                        source = "local",
+                        "stripped markdown fences from delegation output"
                     );
-                    None
+                }
+                match validate_output(task_type, &completion.output) {
+                    Ok(()) => Some(completion),
+                    Err(err) => {
+                        local_failure_reason = Some(format!("local_validation_failed: {err}"));
+                        warn!(
+                            target: "docdexd",
+                            fallback_reason = "local_validation_failed",
+                            error = %err,
+                            "delegation output validation failed"
+                        );
+                        None
+                    }
                 }
             }
+            Err(err) => {
+                local_failure_reason = Some(format!("local_completion_failed: {err}"));
+                warn!(
+                    target: "docdexd",
+                    fallback_reason = "local_completion_failed",
+                    error = ?err,
+                    "delegation completion failed"
+                );
+                None
+            }
+        };
+        local_duration = local_started.elapsed();
+        if candidate_completion.is_some() {
+            local_completion = candidate_completion;
+            break;
         }
-        Err(err) => {
-            local_failure_reason = Some(format!("local_completion_failed: {err}"));
-            warn!(
-                target: "docdexd",
-                fallback_reason = "local_completion_failed",
-                error = ?err,
-                "delegation completion failed"
+        if index + 1 < local_clients.len() {
+            warnings.push(
+                "local delegation candidate failed; trying alternate local target".to_string(),
             );
-            None
         }
-    };
-    let local_duration = local_started.elapsed();
+    }
 
     let Some(local_completion) = local_completion else {
         let reason = local_failure_reason.unwrap_or_else(|| "local delegation failed".to_string());
-        if let Some(primary) = primary_client {
+        if !primary_clients.is_empty() {
             fallback_used = true;
             primary_used = true;
             warnings.push(format!(
@@ -1355,36 +1724,63 @@ pub(crate) async fn run_flow_with_clients(
                 reason = %reason,
                 "falling back to primary agent"
             );
-            let completion = primary
-                .generate(&rendered.prompt, max_tokens, timeout)
-                .await
-                .context("primary agent completion failed")?;
-            primary_tokens = primary_tokens
-                .saturating_add(completion_token_usage(&completion, &rendered.prompt));
-            let mut completion = completion;
-            let (normalized, stripped) = normalize_delegation_output(&completion.output);
-            if stripped {
-                completion.output = normalized;
-                warnings.push("stripped markdown fences from delegation output".to_string());
-                warn!(
-                    target: "docdexd",
-                    source = "primary",
-                    "stripped markdown fences from delegation output"
-                );
+            let mut last_primary_error = None;
+            for (index, primary) in primary_clients.iter().enumerate() {
+                match primary
+                    .generate(&rendered.prompt, max_tokens, timeout)
+                    .await
+                {
+                    Ok(completion) => {
+                        primary_tokens = primary_tokens
+                            .saturating_add(completion_token_usage(&completion, &rendered.prompt));
+                        let mut completion = completion;
+                        let (normalized, stripped) =
+                            normalize_delegation_output(&completion.output);
+                        if stripped {
+                            completion.output = normalized;
+                            warnings.push(
+                                "stripped markdown fences from delegation output".to_string(),
+                            );
+                            warn!(
+                                target: "docdexd",
+                                source = "primary",
+                                "stripped markdown fences from delegation output"
+                            );
+                        }
+                        validate_output(task_type, &completion.output)
+                            .map_err(|err| anyhow!(err.to_string()))?;
+                        return Ok(DelegationFlowResult {
+                            completion,
+                            draft: false,
+                            truncated,
+                            warnings,
+                            fallback_used,
+                            primary_used,
+                            token_estimate,
+                            local_tokens,
+                            primary_tokens,
+                        });
+                    }
+                    Err(err) => {
+                        warn!(
+                            target: "docdexd",
+                            error = ?err,
+                            "delegation completion failed"
+                        );
+                        last_primary_error =
+                            Some(anyhow!(err).context("primary agent completion failed"));
+                    }
+                }
+                if index + 1 < primary_clients.len() {
+                    warnings.push(
+                        "primary delegation candidate failed; trying alternate primary target"
+                            .to_string(),
+                    );
+                }
             }
-            validate_output(task_type, &completion.output)
-                .map_err(|err| anyhow!(err.to_string()))?;
-            return Ok(DelegationFlowResult {
-                completion,
-                draft: false,
-                truncated,
-                warnings,
-                fallback_used,
-                primary_used,
-                token_estimate,
-                local_tokens,
-                primary_tokens,
-            });
+            if let Some(err) = last_primary_error {
+                return Err(err);
+            }
         }
         warn!(
             target: "docdexd",
@@ -1397,26 +1793,30 @@ pub(crate) async fn run_flow_with_clients(
         )));
     };
 
-    if let Some(reevaluation) = reevaluation.as_ref() {
-        run_re_evaluation(
+    if let Some(reevaluation) = reevaluation {
+        let review_task = run_re_evaluation(
             reevaluation,
             task_type,
-            instruction,
-            context,
-            &local_completion.output,
+            instruction.to_string(),
+            context.to_string(),
+            local_completion.output.clone(),
             max_context_chars,
             token_estimate,
             local_duration,
-            &warnings,
-            primary_client.as_ref(),
+            warnings.clone(),
+            reevaluation_primary_client,
             max_tokens,
             timeout,
-        )
-        .await;
+        );
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(review_task);
+        } else {
+            review_task.await;
+        }
     }
 
     if matches!(mode, DelegationMode::DraftThenRefine) {
-        if let Some(primary) = primary_client {
+        if !primary_clients.is_empty() {
             primary_used = true;
             let refine_rendered = render_refine_prompt(
                 instruction,
@@ -1428,52 +1828,63 @@ pub(crate) async fn run_flow_with_clients(
                 warnings.push("context or draft truncated to fit delegation limits".to_string());
             }
             truncated |= refine_rendered.truncated;
-            match primary
-                .generate(&refine_rendered.prompt, max_tokens, timeout)
-                .await
-            {
-                Ok(refined) => {
-                    primary_tokens = primary_tokens
-                        .saturating_add(completion_token_usage(&refined, &refine_rendered.prompt));
-                    let mut refined = refined;
-                    let (normalized, stripped) = normalize_delegation_output(&refined.output);
-                    if stripped {
-                        refined.output = normalized;
-                        warnings
-                            .push("stripped markdown fences from delegation output".to_string());
-                        warn!(
-                            target: "docdexd",
-                            source = "primary",
-                            "stripped markdown fences from delegation output"
-                        );
+            for (index, primary) in primary_clients.iter().enumerate() {
+                match primary
+                    .generate(&refine_rendered.prompt, max_tokens, timeout)
+                    .await
+                {
+                    Ok(refined) => {
+                        primary_tokens = primary_tokens.saturating_add(completion_token_usage(
+                            &refined,
+                            &refine_rendered.prompt,
+                        ));
+                        let mut refined = refined;
+                        let (normalized, stripped) = normalize_delegation_output(&refined.output);
+                        if stripped {
+                            refined.output = normalized;
+                            warnings.push(
+                                "stripped markdown fences from delegation output".to_string(),
+                            );
+                            warn!(
+                                target: "docdexd",
+                                source = "primary",
+                                "stripped markdown fences from delegation output"
+                            );
+                        }
+                        if let Err(err) = validate_output(task_type, &refined.output) {
+                            warn!(
+                                target: "docdexd",
+                                fallback_reason = "primary_validation_failed",
+                                error = %err,
+                                "primary refinement output failed validation"
+                            );
+                        } else {
+                            return Ok(DelegationFlowResult {
+                                completion: refined,
+                                draft: false,
+                                truncated,
+                                warnings,
+                                fallback_used,
+                                primary_used,
+                                token_estimate,
+                                local_tokens,
+                                primary_tokens,
+                            });
+                        }
                     }
-                    if let Err(err) = validate_output(task_type, &refined.output) {
+                    Err(err) => {
                         warn!(
                             target: "docdexd",
-                            fallback_reason = "primary_validation_failed",
-                            error = %err,
-                            "primary refinement output failed validation"
+                            fallback_reason = "primary_refine_failed",
+                            error = ?err,
+                            "primary refinement failed"
                         );
-                    } else {
-                        return Ok(DelegationFlowResult {
-                            completion: refined,
-                            draft: false,
-                            truncated,
-                            warnings,
-                            fallback_used,
-                            primary_used,
-                            token_estimate,
-                            local_tokens,
-                            primary_tokens,
-                        });
                     }
                 }
-                Err(err) => {
-                    warn!(
-                        target: "docdexd",
-                        fallback_reason = "primary_refine_failed",
-                        error = ?err,
-                        "primary refinement failed"
+                if index + 1 < primary_clients.len() {
+                    warnings.push(
+                        "primary refinement candidate failed; trying alternate primary target"
+                            .to_string(),
                     );
                 }
             }
@@ -1543,4 +1954,126 @@ pub(crate) async fn run_flow_with_clients(
         local_tokens,
         primary_tokens,
     })
+}
+
+async fn run_re_evaluation(
+    reevaluation: DelegationReevaluation,
+    task_type: TaskType,
+    instruction: String,
+    context: String,
+    output: String,
+    max_context_chars: usize,
+    token_estimate: u64,
+    local_duration: Duration,
+    warnings: Vec<String>,
+    primary_client: Option<Arc<dyn LlmClient>>,
+    max_tokens: u32,
+    timeout: Duration,
+) {
+    let review_rendered = render_review_prompt(&instruction, &context, &output, max_context_chars);
+    let fallback_quality = fallback_quality_score(&warnings);
+    let review_max_tokens = max_tokens.min(256).max(1);
+    let review = if let Some(primary) = primary_client.as_ref() {
+        match primary
+            .generate(&review_rendered.prompt, review_max_tokens, timeout)
+            .await
+        {
+            Ok(completion) => review_from_output(&completion.output, fallback_quality),
+            Err(err) => {
+                warn!(
+                    target: "docdexd",
+                    error = ?err,
+                    "delegation review failed; using fallback quality"
+                );
+                review_from_output("", fallback_quality)
+            }
+        }
+    } else {
+        review_from_output("", fallback_quality)
+    };
+
+    let complexity = estimate_complexity(task_type, context.len());
+    let budgets = compute_budgets(complexity);
+    let cost_per_million = reevaluation.cost_per_million;
+    let total_cost = if cost_per_million.is_finite() && cost_per_million > 0.0 {
+        (token_estimate as f64 / 1_000_000.0) * cost_per_million
+    } else {
+        0.0
+    };
+    let run_score = compute_run_score(RunScoreInput {
+        quality_score: review.quality_score,
+        total_cost,
+        duration_seconds: local_duration.as_secs_f64(),
+        iterations: 1.0,
+        budgets: Some(budgets),
+        weights: None,
+    });
+    let raw_review_json = review
+        .raw_json
+        .and_then(|value| serde_json::to_string(&value).ok());
+    let now = Utc::now().to_rfc3339();
+    let run = AgentRunRating {
+        agent_id: reevaluation.agent_id.clone(),
+        command_name: "delegation".to_string(),
+        discipline: None,
+        complexity,
+        quality_score: review.quality_score,
+        tokens_total: token_estimate,
+        duration_seconds: local_duration.as_secs_f64(),
+        iterations: 1,
+        total_cost,
+        run_score,
+        rating_version: "v1".to_string(),
+        raw_review_json,
+        created_at: now.clone(),
+    };
+    if let Err(err) = apply_agent_rating_default(
+        &reevaluation.agent_id,
+        &run,
+        reevaluation.rating_window,
+        &now,
+    ) {
+        warn!(
+            target: "docdexd",
+            error = ?err,
+            "failed to apply mcoda agent rating update"
+        );
+    }
+}
+
+#[cfg(test)]
+pub(crate) async fn run_flow_with_clients(
+    task_type: TaskType,
+    instruction: &str,
+    context: &str,
+    max_context_chars: usize,
+    mode: DelegationMode,
+    max_tokens: u32,
+    timeout: Duration,
+    local_client: Arc<dyn LlmClient>,
+    primary_client: Option<Arc<dyn LlmClient>>,
+    primary_blocked: bool,
+    reevaluation: Option<DelegationReevaluation>,
+) -> Result<DelegationFlowResult> {
+    let reevaluation_primary_client = primary_client.clone();
+    let primary_clients = if primary_blocked {
+        Vec::new()
+    } else {
+        primary_client.into_iter().collect()
+    };
+    run_flow_with_client_candidates(
+        task_type,
+        instruction,
+        context,
+        max_context_chars,
+        mode,
+        max_tokens,
+        timeout,
+        vec![local_client],
+        primary_clients,
+        primary_blocked,
+        reevaluation,
+        reevaluation_primary_client,
+    )
+    .await
 }

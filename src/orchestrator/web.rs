@@ -525,6 +525,11 @@ struct LocalRelevanceClient {
     timeout: Duration,
 }
 
+pub(crate) struct ResolvedLlmClient {
+    pub client: Arc<dyn LlmClient>,
+    pub label: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct LocalRelevanceResponse {
     relevant: bool,
@@ -721,42 +726,50 @@ fn load_llm_config(model_override: Option<&str>) -> Option<config::LlmConfig> {
     Some(config.llm)
 }
 
-fn load_llm_client(
-    model_override: Option<&str>,
-    llm_agent: Option<&str>,
-) -> Option<Arc<dyn LlmClient>> {
-    if let Some(agent_id) = llm_agent {
-        let registry = match McodaRegistry::load_default() {
-            Ok(Some(registry)) => registry,
-            Ok(None) => {
-                warn!("mcoda registry not found; skipping agent {agent_id}");
-                return None;
-            }
-            Err(err) => {
-                warn!("failed to load mcoda registry: {err}");
-                return None;
-            }
-        };
-        let agent = registry
-            .agent_by_id(agent_id)
-            .or_else(|| registry.agent_by_slug(agent_id));
-        let agent = match agent {
-            Some(agent) => agent,
-            None => {
-                warn!("mcoda agent not found: {agent_id}");
-                return None;
-            }
-        };
-        match resolve_agent_adapter(agent) {
-            Ok(adapter) => return Some(Arc::new(adapter)),
-            Err(err) => {
-                warn!("failed to resolve mcoda agent {agent_id}: {err}");
-                return None;
-            }
+fn resolve_mcoda_agent_client(agent_id: &str) -> Option<ResolvedLlmClient> {
+    let agent_id = agent_id.trim();
+    if agent_id.is_empty() {
+        return None;
+    }
+    let registry = match McodaRegistry::load_default_db_only() {
+        Ok(Some(registry)) => registry,
+        Ok(None) => {
+            warn!("mcoda registry not found; skipping agent {agent_id}");
+            return None;
+        }
+        Err(err) => {
+            warn!("failed to load mcoda registry: {err}");
+            return None;
+        }
+    };
+    let agent = registry
+        .agent_by_id(agent_id)
+        .or_else(|| registry.agent_by_slug(agent_id));
+    let agent = match agent {
+        Some(agent) => agent,
+        None => {
+            warn!("mcoda agent not found: {agent_id}");
+            return None;
+        }
+    };
+    let label = if agent.slug.trim().is_empty() {
+        agent.id.clone()
+    } else {
+        agent.slug.clone()
+    };
+    match resolve_agent_adapter(agent) {
+        Ok(adapter) => Some(ResolvedLlmClient {
+            client: Arc::new(adapter),
+            label,
+        }),
+        Err(err) => {
+            warn!("failed to resolve mcoda agent {agent_id}: {err}");
+            None
         }
     }
+}
 
-    let config = load_llm_config(model_override)?;
+fn resolve_ollama_prompt_client(config: &config::LlmConfig) -> Option<ResolvedLlmClient> {
     if !config.provider.trim().eq_ignore_ascii_case("ollama") {
         return None;
     }
@@ -771,7 +784,55 @@ fn load_llm_client(
         model: model.to_string(),
         adapter: "ollama".to_string(),
     };
-    Some(Arc::new(adapter))
+    Some(ResolvedLlmClient {
+        client: Arc::new(adapter),
+        label: model.to_string(),
+    })
+}
+
+pub(crate) fn resolve_llm_client_from_config(
+    base_config: &config::LlmConfig,
+    model_override: Option<&str>,
+    llm_agent: Option<&str>,
+) -> Option<ResolvedLlmClient> {
+    let mut config = base_config.clone();
+    let model_override = model_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
+    if let Some(model_override) = model_override.as_deref() {
+        config.default_model = model_override.to_string();
+    }
+
+    if let Some(agent_id) = llm_agent.map(str::trim).filter(|value| !value.is_empty()) {
+        if let Some(resolved) = resolve_mcoda_agent_client(agent_id) {
+            return Some(resolved);
+        }
+        warn!(
+            "requested main llm agent `{agent_id}` unavailable; falling back to configured model"
+        );
+    } else if model_override.is_none() {
+        let configured_agent = config.agent_id.trim();
+        if !configured_agent.is_empty() {
+            if let Some(resolved) = resolve_mcoda_agent_client(configured_agent) {
+                return Some(resolved);
+            }
+            warn!(
+                "configured main llm agent `{configured_agent}` unavailable; falling back to configured model"
+            );
+        }
+    }
+
+    resolve_ollama_prompt_client(&config)
+}
+
+fn load_llm_client(
+    model_override: Option<&str>,
+    llm_agent: Option<&str>,
+) -> Option<Arc<dyn LlmClient>> {
+    let config = load_llm_config(model_override)?;
+    resolve_llm_client_from_config(&config, model_override, llm_agent)
+        .map(|resolved| resolved.client)
 }
 
 fn build_summary_prompt(
@@ -5038,6 +5099,38 @@ fn should_keep_category_token(token: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::setup::test_support::ENV_LOCK;
+    use parking_lot::ReentrantMutexGuard;
+    use tempfile::TempDir;
+
+    struct EnvGuard {
+        key: &'static str,
+        prev: Option<String>,
+        _lock: ReentrantMutexGuard<'static, ()>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let lock = ENV_LOCK.lock();
+            let prev = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self {
+                key,
+                prev,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(ref value) = self.prev {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
 
     #[test]
     fn should_attempt_accounts_for_threshold_and_force_web() {
@@ -5097,6 +5190,32 @@ mod tests {
     fn detect_query_category_heuristic_troubleshooting() {
         let category = detect_query_category_heuristic("timeout error fix");
         assert_eq!(category, QueryCategory::Troubleshooting);
+    }
+
+    #[test]
+    fn resolve_llm_client_from_config_falls_back_to_ollama_when_configured_agent_missing() {
+        let temp = TempDir::new().expect("temp dir");
+        let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
+        let mut config = config::LlmConfig::default();
+        config.agent_id = "__missing_main_chat_agent__".to_string();
+        config.base_url = "http://127.0.0.1:11434".to_string();
+        config.default_model = "phi3.5:3.8b".to_string();
+
+        let resolved =
+            resolve_llm_client_from_config(&config, None, None).expect("ollama fallback");
+        assert_eq!(resolved.label, "phi3.5:3.8b");
+    }
+
+    #[test]
+    fn resolve_llm_client_from_config_ignores_configured_agent_when_model_override_present() {
+        let mut config = config::LlmConfig::default();
+        config.agent_id = "mcoda-main".to_string();
+        config.base_url = "http://127.0.0.1:11434".to_string();
+        config.default_model = "phi3.5:3.8b".to_string();
+
+        let resolved = resolve_llm_client_from_config(&config, Some("qwen2.5-coder:latest"), None)
+            .expect("model override client");
+        assert_eq!(resolved.label, "qwen2.5-coder:latest");
     }
 }
 

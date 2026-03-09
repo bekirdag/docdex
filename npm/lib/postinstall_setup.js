@@ -2475,8 +2475,27 @@ function registerStartup({ binaryPath, port, repoRoot, logger, distBaseDir, star
   return { ok: false, reason: "unsupported_platform" };
 }
 
-async function startDaemonWithHealthCheck({ binaryPath, port, host, logger, distBaseDir, startNow = true }) {
-  const startup = registerStartup({
+async function startDaemonWithHealthCheck({
+  binaryPath,
+  port,
+  host,
+  logger,
+  distBaseDir,
+  startNow = true,
+  deps
+}) {
+  const helpers = {
+    registerStartup,
+    waitForDaemonHealthy,
+    stopDaemonService,
+    stopDaemonFromLock,
+    stopDaemonByName,
+    clearDaemonLocks
+  };
+  if (deps && typeof deps === "object") {
+    Object.assign(helpers, deps);
+  }
+  const startup = helpers.registerStartup({
     binaryPath,
     port,
     repoRoot: daemonRootPath(),
@@ -2491,16 +2510,18 @@ async function startDaemonWithHealthCheck({ binaryPath, port, host, logger, dist
   if (!startNow) {
     return { ok: true, reason: "registered" };
   }
-  startDaemonService({ logger });
-  const healthy = await waitForDaemonHealthy({ host, port });
+  // `registerStartup(..., startNow: true)` already starts the service on all
+  // supported platforms. Starting it again here can interrupt the first boot
+  // and leave the daemon stuck behind its own lock file.
+  const healthy = await helpers.waitForDaemonHealthy({ host, port });
   if (healthy) {
     return { ok: true, reason: "healthy" };
   }
   logger?.warn?.(`[docdex] daemon failed health check on ${host}:${port}`);
-  stopDaemonService({ logger });
-  stopDaemonFromLock({ logger });
-  stopDaemonByName({ logger });
-  clearDaemonLocks();
+  helpers.stopDaemonService({ logger });
+  helpers.stopDaemonFromLock({ logger });
+  helpers.stopDaemonByName({ logger });
+  helpers.clearDaemonLocks();
   return { ok: false, reason: "health_failed" };
 }
 
@@ -2858,6 +2879,7 @@ module.exports = {
   applyAgentInstructions,
   buildDaemonEnv,
   buildLaunchAgentPlist,
+  startDaemonWithHealthCheck,
   resolveDaemonPortState,
   normalizeVersion
 };

@@ -18,9 +18,10 @@ const DEFAULT_LLM_BASE_URL: &str = "http://127.0.0.1:11434";
 const DEFAULT_LLM_MODEL: &str = "phi3.5:3.8b";
 const DEFAULT_EMBED_MODEL: &str = "nomic-embed-text";
 const DEFAULT_DELEGATION_MODE: &str = "draft_only";
-const DEFAULT_DELEGATION_TIMEOUT_MS: u64 = 30_000;
-const DEFAULT_DELEGATION_MAX_TOKENS: u32 = 512;
-const DEFAULT_DELEGATION_MAX_CONTEXT_CHARS: usize = 12_000;
+const DEFAULT_DELEGATION_LOCAL_SELECTION_POLICY: &str = "task_capability";
+const DEFAULT_DELEGATION_TIMEOUT_MS: u64 = 300_000;
+const DEFAULT_DELEGATION_MAX_TOKENS: u32 = 500_000;
+const DEFAULT_DELEGATION_MAX_CONTEXT_CHARS: usize = 250_000;
 const DEFAULT_PROFILE_EMBED_MODEL: &str = "nomic-embed-text-v1.5";
 const DEFAULT_PROFILE_EMBED_DIM: usize = 768;
 const DEFAULT_MEMORY_BACKEND: &str = "sqlite";
@@ -182,6 +183,8 @@ pub struct LlmConfig {
     pub base_url: String,
     #[serde(default = "default_llm_model")]
     pub default_model: String,
+    #[serde(default)]
+    pub agent_id: String,
     #[serde(default = "default_embed_model")]
     pub embedding_model: String,
     #[serde(default = "default_max_answer_tokens")]
@@ -196,6 +199,7 @@ impl Default for LlmConfig {
             provider: default_llm_provider(),
             base_url: default_llm_base_url(),
             default_model: default_llm_model(),
+            agent_id: String::new(),
             embedding_model: default_embed_model(),
             max_answer_tokens: default_max_answer_tokens(),
             delegation: DelegationConfig::default(),
@@ -219,6 +223,10 @@ pub struct DelegationConfig {
     pub local_agent_id: String,
     #[serde(default)]
     pub primary_agent_id: String,
+    #[serde(default = "default_delegation_local_selection_policy")]
+    pub local_selection_policy: String,
+    #[serde(default = "default_delegation_use_cached_local_decision")]
+    pub use_cached_local_decision: bool,
     #[serde(default = "default_delegation_mode")]
     pub mode: String,
     #[serde(default = "default_delegation_timeout_ms")]
@@ -245,6 +253,8 @@ impl Default for DelegationConfig {
             re_evaluate: default_delegation_re_evaluate(),
             local_agent_id: String::new(),
             primary_agent_id: String::new(),
+            local_selection_policy: default_delegation_local_selection_policy(),
+            use_cached_local_decision: default_delegation_use_cached_local_decision(),
             mode: default_delegation_mode(),
             timeout_ms: default_delegation_timeout_ms(),
             max_tokens: default_delegation_max_tokens(),
@@ -258,6 +268,8 @@ impl Default for DelegationConfig {
 
 impl DelegationConfig {
     fn apply_defaults(&mut self) {
+        self.local_selection_policy =
+            normalize_delegation_local_selection_policy(&self.local_selection_policy);
         if self.mode.trim().is_empty() {
             self.mode = default_delegation_mode();
         }
@@ -602,6 +614,9 @@ fn default_config_with_paths() -> Result<AppConfig> {
 }
 
 fn apply_env_overrides(config: &mut AppConfig) {
+    if let Some(value) = env_trimmed("DOCDEX_LLM_AGENT").or_else(|| env_trimmed("DOCDEX_AGENT")) {
+        config.llm.agent_id = value;
+    }
     if let Some(value) = env_bool("DOCDEX_DELEGATION_ENABLED") {
         config.llm.delegation.enabled = value;
     }
@@ -622,6 +637,13 @@ fn apply_env_overrides(config: &mut AppConfig) {
     }
     if let Some(value) = env_trimmed("DOCDEX_DELEGATION_PRIMARY_AGENT") {
         config.llm.delegation.primary_agent_id = value;
+    }
+    if let Some(value) = env_trimmed("DOCDEX_DELEGATION_LOCAL_SELECTION_POLICY") {
+        config.llm.delegation.local_selection_policy =
+            normalize_delegation_local_selection_policy(&value);
+    }
+    if let Some(value) = env_bool("DOCDEX_DELEGATION_USE_CACHED_LOCAL_DECISION") {
+        config.llm.delegation.use_cached_local_decision = value;
     }
     if let Some(value) = env_trimmed("DOCDEX_DELEGATION_MODE") {
         let normalized = value.to_lowercase();
@@ -765,6 +787,14 @@ fn default_delegation_mode() -> String {
     DEFAULT_DELEGATION_MODE.to_string()
 }
 
+fn default_delegation_local_selection_policy() -> String {
+    DEFAULT_DELEGATION_LOCAL_SELECTION_POLICY.to_string()
+}
+
+fn default_delegation_use_cached_local_decision() -> bool {
+    true
+}
+
 fn default_delegation_timeout_ms() -> u64 {
     DEFAULT_DELEGATION_TIMEOUT_MS
 }
@@ -783,6 +813,27 @@ fn default_delegation_primary_usd_per_1k_tokens() -> f64 {
 
 fn default_delegation_local_usd_per_1k_tokens() -> f64 {
     0.0
+}
+
+fn normalize_delegation_local_selection_policy(value: &str) -> String {
+    let normalized = value.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "" | "task_capability" | "task-capability" => {
+            DEFAULT_DELEGATION_LOCAL_SELECTION_POLICY.to_string()
+        }
+        "mcoda_zero_cost_most_capable"
+        | "mcoda-zero-cost-most-capable"
+        | "zero_cost_mcoda_most_capable"
+        | "zero-cost-mcoda-most-capable" => "mcoda_zero_cost_most_capable".to_string(),
+        _ => {
+            warn!(
+                target: "docdexd",
+                value = %value,
+                "invalid delegation local selection policy; falling back to task_capability"
+            );
+            DEFAULT_DELEGATION_LOCAL_SELECTION_POLICY.to_string()
+        }
+    }
 }
 
 fn sanitize_non_negative_f64(value: f64) -> f64 {

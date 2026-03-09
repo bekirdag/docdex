@@ -1,8 +1,10 @@
 use super::delegation::{
-    allowlist_allows, compute_delegation_savings, mode_from_config, parse_local_target_override,
-    render_prompt, resolve_delegation_client, run_flow_with_clients, select_local_target,
-    select_primary_target, validate_output, DelegationEnforcementError, DelegationMode,
-    DelegationReevaluation, LocalTarget, TaskType,
+    allowlist_allows, compute_delegation_savings, local_selection_policy_requires_fresh_library,
+    mode_from_config, parse_local_target_override, reevaluation_should_use_primary_client,
+    render_prompt, resolve_delegation_client, run_flow_with_client_candidates,
+    run_flow_with_clients, select_local_target, select_local_target_with_config,
+    select_primary_target, update_cached_local_selection_from_completion, validate_output,
+    DelegationEnforcementError, DelegationMode, DelegationReevaluation, LocalTarget, TaskType,
 };
 use super::delegation_rating::{
     compute_alpha, compute_run_score, estimate_complexity, fallback_quality_score,
@@ -20,6 +22,7 @@ use parking_lot::ReentrantMutexGuard;
 use rusqlite::Connection;
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -132,6 +135,47 @@ fn seed_mcoda_registry(
     seed_mcoda_registry_with_adapter(home, agent_id, slug, "ollama-remote", status)
 }
 
+fn make_local_agent(
+    agent_id: &str,
+    agent_slug: &str,
+    cost_per_million: Option<f64>,
+    max_complexity: Option<i64>,
+    rating: Option<f64>,
+    reasoning_rating: Option<f64>,
+    usage: Option<&str>,
+    health_status: Option<&str>,
+    capabilities: &[&str],
+) -> LocalAgentEntry {
+    LocalAgentEntry {
+        agent_id: agent_id.to_string(),
+        agent_slug: agent_slug.to_string(),
+        adapter: "ollama-remote".to_string(),
+        default_model: None,
+        max_complexity,
+        rating,
+        cost_per_million,
+        usage: usage.map(|value| value.to_string()),
+        reasoning_rating,
+        health_status: health_status.map(|value| value.to_string()),
+        capabilities: capabilities
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect(),
+        notes: None,
+        classification_method: "registry".to_string(),
+        last_seen_at_ms: 0,
+        last_classified_at_ms: None,
+    }
+}
+
+fn zero_cost_policy_config() -> LlmConfig {
+    let mut config = LlmConfig::default();
+    config.delegation = DelegationConfig::default();
+    config.delegation.local_selection_policy = "mcoda_zero_cost_most_capable".to_string();
+    config.delegation.use_cached_local_decision = true;
+    config
+}
+
 struct StaticClient {
     output: String,
     adapter: String,
@@ -179,6 +223,82 @@ impl LlmClient for ErrorClient {
         _timeout: Duration,
     ) -> LlmFuture<'a> {
         Box::pin(async move { Err(anyhow!("boom")) })
+    }
+}
+
+struct SlowClient {
+    delay: Duration,
+    output: String,
+    adapter: String,
+}
+
+impl SlowClient {
+    fn new(delay: Duration, output: &str, adapter: &str) -> Self {
+        Self {
+            delay,
+            output: output.to_string(),
+            adapter: adapter.to_string(),
+        }
+    }
+}
+
+struct CountingClient {
+    calls: Arc<AtomicUsize>,
+    output: String,
+    adapter: String,
+}
+
+impl CountingClient {
+    fn new(calls: Arc<AtomicUsize>, output: &str, adapter: &str) -> Self {
+        Self {
+            calls,
+            output: output.to_string(),
+            adapter: adapter.to_string(),
+        }
+    }
+}
+
+impl LlmClient for CountingClient {
+    fn generate<'a>(
+        &'a self,
+        _prompt: &'a str,
+        _max_tokens: u32,
+        _timeout: Duration,
+    ) -> LlmFuture<'a> {
+        let calls = Arc::clone(&self.calls);
+        let output = self.output.clone();
+        let adapter = self.adapter.clone();
+        Box::pin(async move {
+            calls.fetch_add(1, AtomicOrdering::SeqCst);
+            Ok(LlmCompletion {
+                output,
+                adapter,
+                model: None,
+                metadata: None,
+            })
+        })
+    }
+}
+
+impl LlmClient for SlowClient {
+    fn generate<'a>(
+        &'a self,
+        _prompt: &'a str,
+        _max_tokens: u32,
+        _timeout: Duration,
+    ) -> LlmFuture<'a> {
+        let delay = self.delay;
+        let output = self.output.clone();
+        let adapter = self.adapter.clone();
+        Box::pin(async move {
+            tokio::time::sleep(delay).await;
+            Ok(LlmCompletion {
+                output,
+                adapter,
+                model: None,
+                metadata: None,
+            })
+        })
     }
 }
 
@@ -612,6 +732,296 @@ fn delegation_selects_local_healthy_mcoda_agent() {
 }
 
 #[test]
+fn delegation_zero_cost_policy_selects_most_capable_mcoda_agent_and_caches_it(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let config = zero_cost_policy_config();
+    let mut library = LocalModelLibrary::default();
+    library.agents.push(make_local_agent(
+        "agent-basic",
+        "agent-basic",
+        Some(0.0),
+        Some(4),
+        Some(7.0),
+        Some(6.0),
+        Some("code_writer"),
+        Some("healthy"),
+        &["code_writer"],
+    ));
+    library.agents.push(make_local_agent(
+        "agent-best",
+        "agent-best",
+        Some(0.0),
+        Some(8),
+        Some(9.3),
+        Some(9.7),
+        Some("code_reviewer"),
+        Some("healthy"),
+        &["code_writer", "code_reviewer", "general_chat"],
+    ));
+    library.agents.push(make_local_agent(
+        "agent-paid",
+        "agent-paid",
+        Some(2.5),
+        Some(10),
+        Some(10.0),
+        Some(10.0),
+        Some("code_reviewer"),
+        Some("healthy"),
+        &["code_writer", "code_reviewer", "general_chat"],
+    ));
+
+    let selected = select_local_target_with_config(
+        Some(temp.path()),
+        &config,
+        TaskType::GenerateTests,
+        &mut library,
+    )
+    .expect("selection");
+
+    match selected {
+        LocalTarget::McodaAgent(id) => assert_eq!(id, "agent-best"),
+        _ => panic!("expected mcoda target"),
+    }
+    let cached = library
+        .cached_local_agent_selection
+        .as_ref()
+        .expect("cached selection");
+    assert_eq!(cached.agent_id, "agent-best");
+    assert_eq!(cached.policy, "mcoda_zero_cost_most_capable");
+    Ok(())
+}
+
+#[test]
+fn delegation_zero_cost_policy_reuses_cached_agent_when_still_available(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let config = zero_cost_policy_config();
+    let mut library = LocalModelLibrary::default();
+    library.agents.push(make_local_agent(
+        "agent-cached",
+        "agent-cached",
+        Some(0.0),
+        Some(5),
+        Some(7.0),
+        Some(7.0),
+        Some("code_writer"),
+        Some("healthy"),
+        &["code_writer"],
+    ));
+
+    let first = select_local_target_with_config(
+        Some(temp.path()),
+        &config,
+        TaskType::GenerateTests,
+        &mut library,
+    )
+    .expect("first selection");
+    match first {
+        LocalTarget::McodaAgent(id) => assert_eq!(id, "agent-cached"),
+        _ => panic!("expected mcoda target"),
+    }
+
+    library.agents.push(make_local_agent(
+        "agent-better",
+        "agent-better",
+        Some(0.0),
+        Some(9),
+        Some(9.8),
+        Some(9.9),
+        Some("code_reviewer"),
+        Some("healthy"),
+        &["code_writer", "code_reviewer", "general_chat"],
+    ));
+
+    let second = select_local_target_with_config(
+        Some(temp.path()),
+        &config,
+        TaskType::GenerateTests,
+        &mut library,
+    )
+    .expect("second selection");
+    match second {
+        LocalTarget::McodaAgent(id) => assert_eq!(id, "agent-cached"),
+        _ => panic!("expected cached mcoda target"),
+    }
+    Ok(())
+}
+
+#[test]
+fn delegation_zero_cost_policy_reselects_when_cached_agent_becomes_invalid(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let config = zero_cost_policy_config();
+    let mut library = LocalModelLibrary::default();
+    library.agents.push(make_local_agent(
+        "agent-old",
+        "agent-old",
+        Some(0.0),
+        Some(5),
+        Some(7.0),
+        Some(7.0),
+        Some("code_writer"),
+        Some("healthy"),
+        &["code_writer"],
+    ));
+
+    let _ = select_local_target_with_config(
+        Some(temp.path()),
+        &config,
+        TaskType::GenerateTests,
+        &mut library,
+    )
+    .expect("initial selection");
+
+    library.agents[0].health_status = Some("unhealthy".to_string());
+    library.agents.push(make_local_agent(
+        "agent-new",
+        "agent-new",
+        Some(0.0),
+        Some(8),
+        Some(8.8),
+        Some(9.1),
+        Some("code_reviewer"),
+        Some("healthy"),
+        &["code_writer", "code_reviewer"],
+    ));
+
+    let selected = select_local_target_with_config(
+        Some(temp.path()),
+        &config,
+        TaskType::GenerateTests,
+        &mut library,
+    )
+    .expect("reselection");
+
+    match selected {
+        LocalTarget::McodaAgent(id) => assert_eq!(id, "agent-new"),
+        _ => panic!("expected replacement mcoda target"),
+    }
+    let cached = library
+        .cached_local_agent_selection
+        .as_ref()
+        .expect("cached selection");
+    assert_eq!(cached.agent_id, "agent-new");
+    Ok(())
+}
+
+#[test]
+fn delegation_zero_cost_policy_falls_back_when_no_zero_cost_mcoda_agent(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let config = zero_cost_policy_config();
+    let mut library = LocalModelLibrary::default();
+    library.models.push(LocalModelEntry {
+        name: "code-model".to_string(),
+        source: "ollama".to_string(),
+        capabilities: vec!["code_writer".to_string()],
+        notes: None,
+        classification_method: "heuristic".to_string(),
+        last_seen_at_ms: 0,
+        last_classified_at_ms: None,
+    });
+
+    let selected = select_local_target_with_config(
+        Some(temp.path()),
+        &config,
+        TaskType::GenerateTests,
+        &mut library,
+    )
+    .expect("fallback selection");
+
+    match selected {
+        LocalTarget::OllamaModel(name) => assert_eq!(name, "code-model"),
+        _ => panic!("expected ollama fallback"),
+    }
+    assert!(library.cached_local_agent_selection.is_none());
+    Ok(())
+}
+
+#[test]
+fn zero_cost_policy_uses_cache_without_forcing_fresh_library() {
+    let config = zero_cost_policy_config();
+    assert!(!local_selection_policy_requires_fresh_library(&config));
+
+    let mut uncached = zero_cost_policy_config();
+    uncached.delegation.use_cached_local_decision = false;
+    assert!(local_selection_policy_requires_fresh_library(&uncached));
+}
+
+#[test]
+fn delegation_updates_cached_zero_cost_agent_after_successful_alternate_completion(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let config = zero_cost_policy_config();
+    let mut library = LocalModelLibrary::default();
+    library.agents.push(LocalAgentEntry {
+        agent_id: "agent-qwen".to_string(),
+        agent_slug: "qwen-3.5-27b".to_string(),
+        adapter: "ollama-remote".to_string(),
+        default_model: Some("qwen3.5:27b".to_string()),
+        max_complexity: Some(7),
+        rating: Some(6.8),
+        cost_per_million: Some(0.0),
+        usage: Some("code_write".to_string()),
+        reasoning_rating: Some(7.2),
+        health_status: Some("healthy".to_string()),
+        capabilities: vec!["code_write".to_string()],
+        notes: None,
+        classification_method: "mcoda".to_string(),
+        last_seen_at_ms: 0,
+        last_classified_at_ms: None,
+    });
+    library.agents.push(LocalAgentEntry {
+        agent_id: "agent-claude".to_string(),
+        agent_slug: "claude-sonnet".to_string(),
+        adapter: "claude-cli".to_string(),
+        default_model: Some("sonnet".to_string()),
+        max_complexity: Some(6),
+        rating: Some(7.1),
+        cost_per_million: Some(0.0),
+        usage: Some("code_write".to_string()),
+        reasoning_rating: Some(7.3),
+        health_status: Some("healthy".to_string()),
+        capabilities: vec!["code_write".to_string()],
+        notes: None,
+        classification_method: "mcoda".to_string(),
+        last_seen_at_ms: 0,
+        last_classified_at_ms: None,
+    });
+    library.cached_local_agent_selection =
+        Some(crate::llm::local_library::CachedLocalAgentSelection {
+            policy: "mcoda_zero_cost_most_capable".to_string(),
+            agent_id: "agent-qwen".to_string(),
+            agent_slug: "qwen-3.5-27b".to_string(),
+            selected_at_ms: 0,
+        });
+
+    let completion = LlmCompletion {
+        output: "/// doc".to_string(),
+        adapter: "claude-cli".to_string(),
+        model: Some("sonnet".to_string()),
+        metadata: None,
+    };
+
+    let updated = update_cached_local_selection_from_completion(
+        Some(temp.path()),
+        &config,
+        &mut library,
+        &completion,
+    );
+
+    assert!(updated);
+    let cached = library
+        .cached_local_agent_selection
+        .as_ref()
+        .expect("cached selection");
+    assert_eq!(cached.agent_id, "agent-claude");
+    assert_eq!(cached.agent_slug, "claude-sonnet");
+    Ok(())
+}
+
+#[test]
 fn delegation_selects_code_writer() {
     let mut library = LocalModelLibrary::default();
     library.models.push(LocalModelEntry {
@@ -850,6 +1260,71 @@ async fn delegation_flow_returns_draft_when_refine_fails() {
 }
 
 #[tokio::test]
+async fn delegation_flow_tries_alternate_local_candidates_before_primary() {
+    let local_clients: Vec<Arc<dyn LlmClient>> = vec![
+        Arc::new(ErrorClient),
+        Arc::new(StaticClient::new("alternate", "local")),
+    ];
+    let primary_clients: Vec<Arc<dyn LlmClient>> =
+        vec![Arc::new(StaticClient::new("primary", "primary"))];
+    let result = run_flow_with_client_candidates(
+        TaskType::FormatCode,
+        "Format this code",
+        "let  a=1;",
+        200,
+        DelegationMode::DraftOnly,
+        16,
+        Duration::from_secs(1),
+        local_clients,
+        primary_clients,
+        false,
+        None,
+        None,
+    )
+    .await
+    .expect("delegation flow");
+    assert_eq!(result.completion.output, "alternate");
+    assert!(result.draft);
+    assert!(!result.fallback_used);
+    assert!(result
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("alternate local target")));
+}
+
+#[tokio::test]
+async fn delegation_flow_tries_alternate_primary_candidates_after_local_failure() {
+    let local_clients: Vec<Arc<dyn LlmClient>> = vec![Arc::new(ErrorClient)];
+    let primary_clients: Vec<Arc<dyn LlmClient>> = vec![
+        Arc::new(ErrorClient),
+        Arc::new(StaticClient::new("primary", "primary")),
+    ];
+    let result = run_flow_with_client_candidates(
+        TaskType::FormatCode,
+        "Format this code",
+        "let  a=1;",
+        200,
+        DelegationMode::DraftOnly,
+        16,
+        Duration::from_secs(1),
+        local_clients,
+        primary_clients,
+        false,
+        None,
+        None,
+    )
+    .await
+    .expect("delegation flow");
+    assert_eq!(result.completion.output, "primary");
+    assert!(!result.draft);
+    assert!(result.fallback_used);
+    assert!(result
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("alternate primary target")));
+}
+
+#[tokio::test]
 async fn delegation_flow_code_sample_returns_expected_output() {
     let sample = "export function sum(a: number, b: number) {\n  return a + b;\n}\n";
     let local = Arc::new(StaticClient::new(sample, "local"));
@@ -959,18 +1434,180 @@ async fn delegation_flow_re_evaluates_mcoda_agent() -> Result<(), Box<dyn std::e
     .await?;
     assert_eq!(result.completion.output, "ok");
 
-    let conn = Connection::open(&db_path)?;
-    let rating_samples: i64 = conn.query_row(
-        "SELECT rating_samples FROM agents WHERE id = ?1",
-        rusqlite::params!["agent-1"],
-        |row| row.get(0),
-    )?;
-    assert_eq!(rating_samples, 1);
-    let count: i64 = conn.query_row("SELECT COUNT(*) FROM agent_run_ratings", [], |row| {
-        row.get(0)
-    })?;
-    assert_eq!(count, 1);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let conn = Connection::open(&db_path).expect("open mcoda db");
+            let rating_samples: i64 = conn
+                .query_row(
+                    "SELECT rating_samples FROM agents WHERE id = ?1",
+                    rusqlite::params!["agent-1"],
+                    |row| row.get(0),
+                )
+                .expect("load rating samples");
+            let count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM agent_run_ratings", [], |row| {
+                    row.get(0)
+                })
+                .expect("count run ratings");
+            if rating_samples == 1 && count == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("re-evaluation should complete in background");
     Ok(())
+}
+
+#[tokio::test]
+async fn delegation_flow_re_evaluation_does_not_block_response(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let home = temp.path().to_str().ok_or("temp path is not valid utf-8")?;
+    let _guard = EnvGuard::set("HOME", home);
+    let mcoda_dir = temp.path().join(".mcoda");
+    fs::create_dir_all(&mcoda_dir)?;
+    let db_path = mcoda_dir.join("mcoda.db");
+    let conn = Connection::open(&db_path)?;
+    conn.execute_batch(
+        "CREATE TABLE agents (
+            id TEXT PRIMARY KEY,
+            slug TEXT,
+            adapter TEXT,
+            rating REAL,
+            reasoning_rating REAL,
+            max_complexity INTEGER,
+            rating_samples INTEGER,
+            rating_last_score REAL,
+            rating_updated_at TEXT,
+            complexity_samples INTEGER,
+            complexity_updated_at TEXT
+        );
+        CREATE TABLE agent_run_ratings (
+            id TEXT PRIMARY KEY,
+            agent_id TEXT,
+            job_id TEXT,
+            command_run_id TEXT,
+            task_id TEXT,
+            task_key TEXT,
+            command_name TEXT,
+            discipline TEXT,
+            complexity INTEGER,
+            quality_score REAL,
+            tokens_total INTEGER,
+            duration_seconds REAL,
+            iterations INTEGER,
+            total_cost REAL,
+            run_score REAL,
+            rating_version TEXT,
+            raw_review_json TEXT,
+            created_at TEXT
+        );",
+    )?;
+    conn.execute(
+        "INSERT INTO agents (id, slug, adapter, rating, reasoning_rating, max_complexity, rating_samples, rating_last_score, rating_updated_at, complexity_samples, complexity_updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        rusqlite::params![
+            "agent-1",
+            "agent-1",
+            "local",
+            6.0,
+            6.0,
+            5,
+            0,
+            6.0,
+            "2024-01-01T00:00:00Z",
+            0,
+            "2024-01-01T00:00:00Z"
+        ],
+    )?;
+    drop(conn);
+
+    let result = tokio::time::timeout(
+        Duration::from_millis(50),
+        run_flow_with_client_candidates(
+            TaskType::FormatCode,
+            "Format this code",
+            "let  a=1;",
+            200,
+            DelegationMode::DraftOnly,
+            16,
+            Duration::from_secs(1),
+            vec![Arc::new(StaticClient::new("ok", "local"))],
+            vec![Arc::new(SlowClient::new(
+                Duration::from_millis(200),
+                "{\"quality_score\":8}",
+                "primary",
+            ))],
+            false,
+            Some(DelegationReevaluation {
+                agent_id: "agent-1".to_string(),
+                cost_per_million: 0.01,
+                rating_window: 50,
+            }),
+            Some(Arc::new(SlowClient::new(
+                Duration::from_millis(200),
+                "{\"quality_score\":8}",
+                "primary",
+            ))),
+        ),
+    )
+    .await
+    .expect("re-evaluation should not block")
+    .expect("delegation flow");
+
+    assert_eq!(result.completion.output, "ok");
+    assert!(result.draft);
+    Ok(())
+}
+
+#[test]
+fn reevaluation_primary_client_is_skipped_for_same_mcoda_agent() {
+    let reevaluation = DelegationReevaluation {
+        agent_id: "agent-1".to_string(),
+        cost_per_million: 0.0,
+        rating_window: 50,
+    };
+    let primary_targets = vec![LocalTarget::McodaAgent("agent-1".to_string())];
+    assert!(!reevaluation_should_use_primary_client(
+        Some(&reevaluation),
+        &primary_targets,
+    ));
+}
+
+#[tokio::test]
+async fn delegation_flow_does_not_review_with_same_primary_agent() {
+    let primary_calls = Arc::new(AtomicUsize::new(0));
+    let result = run_flow_with_client_candidates(
+        TaskType::FormatCode,
+        "Format this code",
+        "let  a=1;",
+        200,
+        DelegationMode::DraftOnly,
+        16,
+        Duration::from_secs(1),
+        vec![Arc::new(StaticClient::new("ok", "local"))],
+        vec![Arc::new(CountingClient::new(
+            Arc::clone(&primary_calls),
+            "{\"quality_score\":8}",
+            "primary",
+        ))],
+        false,
+        Some(DelegationReevaluation {
+            agent_id: "agent-1".to_string(),
+            cost_per_million: 0.0,
+            rating_window: 50,
+        }),
+        None,
+    )
+    .await
+    .expect("delegation flow");
+
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    assert_eq!(result.completion.output, "ok");
+    assert_eq!(primary_calls.load(AtomicOrdering::SeqCst), 0);
 }
 
 #[tokio::test]

@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.47
+- Bump release metadata to 0.2.47.
+
 ## 0.2.46
 - Bump release metadata to 0.2.46.
 

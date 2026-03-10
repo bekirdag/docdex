@@ -123,7 +123,7 @@ If you need to configure your client manually:
 {
   "mcpServers": {
     "docdex": {
-      "url": "http://localhost:28491/v1/mcp/sse"
+      "url": "http://127.0.0.1:28491/v1/mcp/sse"
     }
   }
 }
@@ -137,7 +137,7 @@ If you need to configure your client manually:
   "mcpServers": {
     "docdex": {
       "type": "http",
-      "url": "http://localhost:28491/v1/mcp"
+      "url": "http://127.0.0.1:28491/v1/mcp"
     }
   }
 }
@@ -148,7 +148,7 @@ If you need to configure your client manually:
 
 ```toml
 [mcp_servers]
-docdex = { url = "http://localhost:28491/v1/mcp" }
+docdex = { url = "http://127.0.0.1:28491/v1/mcp" }
 
 ```
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.49
+- Generate installer-managed MCP URLs with `127.0.0.1` so client configs match the daemon bind default.
+- Update packaged MCP examples and add regression coverage for the postinstall URL helpers.
+
 ## 0.2.48
 - Exclude paid or expensive mcoda agents from automatic local delegation target selection.
 - Document the zero-cost local delegation rule in the packaged agent guidance.

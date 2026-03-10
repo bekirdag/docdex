@@ -38,7 +38,7 @@ Installer notes:
 
 Postinstall behavior:
 - The installer downloads/repairs `docdexd` into the Docdex data directory (`DOCDEX_DIST_DIR` override).
-- It writes MCP client config pointing to `http://localhost:28491/v1/mcp/sse` (Codex uses `http://localhost:28491/v1/mcp`) and updates known client config files when present.
+- It writes MCP client config pointing to `http://127.0.0.1:28491/v1/mcp/sse` (Codex uses `http://127.0.0.1:28491/v1/mcp`) and updates known client config files when present.
 - Auto-configured clients (when config files are present): Claude Desktop, Cursor, Windsurf, Cline, Roo Code, Continue, VS Code, PearAI, Void, Zed, Codex. Restart clients after install.
 - It registers OS startup (LaunchAgent/systemd user/Task Scheduler) so the daemon starts after reboot/login, and attempts to start it immediately when safe.
 - Startup registration now applies conservative FD-pressure controls by default: `DOCDEX_REPO_IDLE_SECONDS=300`, `DOCDEX_REPO_HIBERNATE_SECONDS=1800`, `DOCDEX_REPO_CLEANUP_INTERVAL_SECONDS=60`, `DOCDEX_WEB_MAX_CONCURRENT_BROWSER_FETCHES=1`, and `DOCDEX_WEB_MAX_CONCURRENT_LLM=1` (plus `DOCDEX_BROWSER_AUTO_INSTALL=0`).
@@ -116,14 +116,14 @@ Supported auto-detected MCP clients (installation adds config when the file exis
 - Codex
 
 ### Shared MCP (daemon, HTTP/SSE)
-Start the daemon (`docdex start`) and point clients at `http://localhost:28491/v1/mcp/sse`.
+Start the daemon (`docdex start`) and point clients at `http://127.0.0.1:28491/v1/mcp/sse`.
 
 JSON config example (Cursor, Continue, Cline, Claude Desktop devtools):
 ```json
 {
   "mcpServers": {
     "docdex": {
-      "url": "http://localhost:28491/v1/mcp/sse"
+      "url": "http://127.0.0.1:28491/v1/mcp/sse"
     }
   }
 }
@@ -135,7 +135,7 @@ Claude Code (CLI) config (user/local scope in `~/.claude.json`, project scope in
   "mcpServers": {
     "docdex": {
       "type": "http",
-      "url": "http://localhost:28491/v1/mcp"
+      "url": "http://127.0.0.1:28491/v1/mcp"
     }
   }
 }
@@ -144,7 +144,7 @@ Claude Code (CLI) config (user/local scope in `~/.claude.json`, project scope in
 Codex config example (TOML):
 ```toml
 [mcp_servers]
-docdex = { url = "http://localhost:28491/v1/mcp" }
+docdex = { url = "http://127.0.0.1:28491/v1/mcp" }
 ```
 
 ## HTTP API

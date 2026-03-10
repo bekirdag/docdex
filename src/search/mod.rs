@@ -1779,7 +1779,7 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
             "When building prompts, keep rel_path + summary + trimmed snippet; drop score/token_estimate/doc_id and normalize whitespace.",
             "Trim noisy content up front with --exclude-dir/--exclude-prefix so snippets stay relevant and short.",
             "Cache doc_id/rel_path/summary client-side to avoid repeat snippet fetches; only call /snippet for new doc_ids.",
-            "For MCP-aware agents, use the daemon HTTP MCP endpoint (e.g., http://localhost:28491/v1/mcp) and call docdex_search/docdex_web_research/docdex_index as needed.",
+            "For MCP-aware agents, use the daemon HTTP MCP endpoint (e.g., http://127.0.0.1:28491/v1/mcp) and call docdex_search/docdex_web_research/docdex_index as needed.",
         ],
         limits: AiHelpLimits {
             max_limit: state.security.max_limit,

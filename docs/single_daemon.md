@@ -81,7 +81,7 @@ with multi-repo mounting, shared MCP transport, and automated config injection.
 ## Client Config Paths (Auto-Injection Targets)
 
 To achieve install-and-forget behavior, the installer should look for these files and
-append the docdex HTTP entry (`http://localhost:28491/v1/mcp/sse`) where `mcpServers` is supported (Codex uses `http://localhost:28491/v1/mcp`).
+append the docdex HTTP entry (`http://127.0.0.1:28491/v1/mcp/sse`) where `mcpServers` is supported (Codex uses `http://127.0.0.1:28491/v1/mcp`).
 
 ### Windows
 
@@ -127,7 +127,7 @@ append the docdex HTTP entry (`http://localhost:28491/v1/mcp/sse`) where `mcpSer
 - Check OS via `process.platform`.
 - Locate candidate config files from the lists above.
 - Read and parse JSON/TOML/YAML.
-- Inject `mcpServers.docdex = { url: "http://localhost:28491/v1/mcp/sse" }` if missing. For Codex, inject `http://localhost:28491/v1/mcp`.
+- Inject `mcpServers.docdex = { url: "http://127.0.0.1:28491/v1/mcp/sse" }` if missing. For Codex, inject `http://127.0.0.1:28491/v1/mcp`.
 - Write back to disk without duplicating entries.
 
 Note: the daemon binds to `127.0.0.1:28491` by default; if you change it, update client configs to match.

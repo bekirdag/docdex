@@ -44,6 +44,11 @@ test("parseServerBind reads existing http_bind_addr", () => {
   assert.equal(parseServerBind(contents), "127.0.0.1:28491");
 });
 
+test("config helpers use loopback ip to match the default daemon bind", () => {
+  assert.equal(configUrlForPort(3000), "http://127.0.0.1:3000/sse");
+  assert.equal(configStreamableUrlForPort(3000), "http://127.0.0.1:3000/v1/mcp");
+});
+
 test("upsertMcpServerJson sets docdex url", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-json-"));
   const file = path.join(dir, "config.json");

@@ -75,11 +75,11 @@ function daemonLockPaths() {
 }
 
 function configUrlForPort(port) {
-  return `http://localhost:${port}/sse`;
+  return `http://${DEFAULT_HOST}:${port}/sse`;
 }
 
 function configStreamableUrlForPort(port) {
-  return `http://localhost:${port}/v1/mcp`;
+  return `http://${DEFAULT_HOST}:${port}/v1/mcp`;
 }
 
 function isPortAvailable(port, host) {

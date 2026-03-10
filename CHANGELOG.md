@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.49
+- Generate MCP client config with `127.0.0.1` instead of `localhost` so installer-written endpoints match the default daemon bind address.
+- Update MCP documentation/examples to use the canonical loopback URL and add regression coverage for the installer helpers.
+
 ## 0.2.48
 - Exclude paid or expensive mcoda agents from automatic local delegation target selection.
 - Document the zero-cost local delegation rule in the agent guidance and usage guide.

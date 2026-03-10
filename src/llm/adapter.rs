@@ -14,6 +14,7 @@ const DEFAULT_CODEX_MODEL: &str = "gpt-5.1-codex-max";
 const DEFAULT_OLLAMA_CLI_MODEL: &str = "llama3";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_ZHIPU_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
+const CODEX_CLI_TIMEOUT_FLOOR: Duration = Duration::from_secs(120);
 
 const CLI_BASED_ADAPTERS: [&str; 5] = [
     "codex-cli",
@@ -385,6 +386,14 @@ impl CodexCliClient {
     }
 }
 
+fn codex_cli_args(model: &str) -> [&str; 4] {
+    ["exec", "--model", model, "--json"]
+}
+
+fn codex_cli_timeout(timeout_duration: Duration) -> Duration {
+    timeout_duration.max(CODEX_CLI_TIMEOUT_FLOOR)
+}
+
 impl LlmClient for CodexCliClient {
     fn generate<'a>(
         &'a self,
@@ -393,17 +402,14 @@ impl LlmClient for CodexCliClient {
         timeout_duration: Duration,
     ) -> LlmFuture<'a> {
         Box::pin(async move {
+            let timeout_duration = codex_cli_timeout(timeout_duration);
             let model = self
                 .model
                 .clone()
                 .unwrap_or_else(|| DEFAULT_CODEX_MODEL.to_string());
             let mut command = Command::new(self.command.as_str());
             command
-                .arg("exec")
-                .arg("--model")
-                .arg(model.as_str())
-                .arg("--full-auto")
-                .arg("--json")
+                .args(codex_cli_args(model.as_str()))
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
@@ -900,5 +906,30 @@ fn merge_extra_body(target: &mut Map<String, Value>, extra: Option<&Value>) {
         if !target.contains_key(key) {
             target.insert(key.clone(), value.clone());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{codex_cli_args, codex_cli_timeout, CODEX_CLI_TIMEOUT_FLOOR};
+    use std::time::Duration;
+
+    #[test]
+    fn codex_cli_args_do_not_enable_full_auto() {
+        let args = codex_cli_args("gpt-5.1-codex-max");
+        assert_eq!(args, ["exec", "--model", "gpt-5.1-codex-max", "--json"]);
+        assert!(!args.contains(&"--full-auto"));
+    }
+
+    #[test]
+    fn codex_cli_timeout_enforces_floor() {
+        assert_eq!(
+            codex_cli_timeout(Duration::from_secs(30)),
+            CODEX_CLI_TIMEOUT_FLOOR
+        );
+        assert_eq!(
+            codex_cli_timeout(Duration::from_secs(180)),
+            Duration::from_secs(180)
+        );
     }
 }

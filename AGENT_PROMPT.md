@@ -1,4 +1,4 @@
----- START OF DOCDEX INFO V0.2.47 ----
+---- START OF DOCDEX INFO V0.2.48 ----
 Docdex URL: http://127.0.0.1:28491
 Use this base URL for Docdex HTTP endpoints.
 Health check endpoint: `GET /healthz` (not `/v1/health`).
@@ -109,6 +109,7 @@ For mcoda agents, also consider:
 - `max_complexity`: do not assign tasks above this ceiling.
 - `rating`: prefer higher-rated agents for reliability.
 - `cost_per_million`: USD per 1M tokens; prefer lower cost when ratings/complexity match.
+- Automatic local target selection must exclude mcoda agents that are paid (`cost_per_million > 0`) or otherwise matched by `docs/expensive_models.json`, unless the user explicitly overrides the target.
 - `usage`: best-fit role (for example `code_writer` or `code_reviewer`); use this for quick matching.
 - `reasoning_rating`: reasoning score out of 10; prefer higher for complex reasoning tasks.
 - `health_status`: only use agents marked `healthy` (treat `-` as unknown).
@@ -388,7 +389,7 @@ Delegation is mandatory for eligible tasks. If you are expensive and delegation 
 - Enforces the product's cost-control policy; skipping delegation is a regression.
 
 1. Determine if you are expensive: load `docs/expensive_models.json` and match your `agent_id`, `agent_slug`, `model`, or adapter type. If you match, continue; if not and you are clearly local/cheap, skip delegation. If unsure, default to expensive.
-2. Check config: Only delegate when `[llm.delegation].enabled` is true or `auto_enable` is true with an eligible local model/agent (and `task_type` is allowed). If uncertain, attempt delegation and handle the error.
+2. Check config: Only delegate when `[llm.delegation].enabled` is true or `auto_enable` is true with an eligible local model/agent (and `task_type` is allowed). For automatic mcoda selection, eligible means healthy and not paid/expensive unless the user explicitly overrides the target. If uncertain, attempt delegation and handle the error.
 3. Choose task type: Use one of `GENERATE_TESTS`, `WRITE_DOCSTRING`, `SCAFFOLD_BOILERPLATE`, `REFACTOR_SIMPLE`, `FORMAT_CODE`.
 4. Call the tool: `docdex_local_completion` with `task_type`, `instruction`, and minimal `context` (smallest necessary snippet).
 5. Validate output: If the local output is invalid or empty, fall back to the primary agent or handle with the paid model.

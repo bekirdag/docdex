@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.48
+- Exclude paid or expensive mcoda agents from automatic local delegation target selection.
+- Document the zero-cost local delegation rule in the packaged agent guidance.
+
 ## 0.2.47
 - Bump release metadata to 0.2.47.
 

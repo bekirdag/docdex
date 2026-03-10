@@ -8,6 +8,7 @@ use crate::llm::local_library::{
     resolve_local_ollama_base_url, save_local_library, CachedLocalAgentSelection, LocalAgentEntry,
     LocalModelLibrary,
 };
+use crate::llm::matches_expensive_delegation_target;
 use crate::max_size::truncate_utf8_chars;
 use crate::mcoda::ratings::{apply_agent_rating_default, AgentRunRating};
 use crate::mcoda::registry::{McodaAgent, McodaRegistry};
@@ -724,27 +725,9 @@ pub fn select_local_target(
     task_type: TaskType,
     library: &LocalModelLibrary,
 ) -> Option<LocalTarget> {
-    let mut best: Option<(LocalTarget, i32, bool)> = None;
-    for model in &library.models {
-        let score = score_for_task(task_type, &model.capabilities);
-        if score <= 0 {
-            continue;
-        }
-        let candidate = LocalTarget::OllamaModel(model.name.clone());
-        best = choose_best(best, candidate, score, true);
-    }
-    for agent in &library.agents {
-        if !mcoda_agent_health_allows(agent.health_status.as_deref()) {
-            continue;
-        }
-        let score = score_for_task(task_type, &agent.capabilities);
-        if score <= 0 {
-            continue;
-        }
-        let candidate = LocalTarget::McodaAgent(agent.agent_id.clone());
-        best = choose_best(best, candidate, score, false);
-    }
-    best.map(|(target, _, _)| target)
+    rank_task_capability_local_targets(task_type, library)
+        .into_iter()
+        .next()
 }
 
 pub fn local_selection_policy_requires_fresh_library(llm_config: &LlmConfig) -> bool {
@@ -786,7 +769,7 @@ fn rank_task_capability_local_targets(
         candidates.push((LocalTarget::OllamaModel(model.name.clone()), score, true));
     }
     for agent in &library.agents {
-        if !mcoda_agent_health_allows(agent.health_status.as_deref()) {
+        if !automatic_local_mcoda_agent_eligible(agent) {
             continue;
         }
         let score = score_for_task(task_type, &agent.capabilities);
@@ -1030,14 +1013,7 @@ fn resolve_completion_local_agent<'a>(
         .agents
         .iter()
         .filter(|agent| agent.adapter.eq_ignore_ascii_case(adapter))
-        .filter(|agent| {
-            agent
-                .cost_per_million
-                .filter(|value| value.is_finite())
-                .unwrap_or(0.0)
-                <= 0.0
-        })
-        .filter(|agent| mcoda_agent_health_allows(agent.health_status.as_deref()))
+        .filter(|agent| zero_cost_mcoda_agent_eligible(agent))
         .collect();
     if let Some(model) = model {
         candidates.retain(|agent| {
@@ -1054,28 +1030,6 @@ fn resolve_completion_local_agent<'a>(
         candidates.into_iter().next()
     } else {
         None
-    }
-}
-
-fn choose_best(
-    current: Option<(LocalTarget, i32, bool)>,
-    candidate: LocalTarget,
-    score: i32,
-    prefers_ollama: bool,
-) -> Option<(LocalTarget, i32, bool)> {
-    match current {
-        None => Some((candidate, score, prefers_ollama)),
-        Some((_, best_score, _best_prefers_ollama)) if score > best_score => {
-            Some((candidate, score, prefers_ollama))
-        }
-        Some((_, best_score, best_prefers_ollama)) if score == best_score => {
-            if prefers_ollama && !best_prefers_ollama {
-                Some((candidate, score, prefers_ollama))
-            } else {
-                current
-            }
-        }
-        _ => current,
     }
 }
 
@@ -1096,8 +1050,26 @@ fn resolve_cached_zero_cost_mcoda_agent<'a>(
         .filter(|agent| zero_cost_mcoda_agent_eligible(agent))
 }
 
-fn zero_cost_mcoda_agent_eligible(agent: &LocalAgentEntry) -> bool {
+fn automatic_local_mcoda_agent_eligible(agent: &LocalAgentEntry) -> bool {
     mcoda_agent_health_allows(agent.health_status.as_deref())
+        && !paid_or_expensive_local_mcoda_agent(agent)
+}
+
+fn paid_or_expensive_local_mcoda_agent(agent: &LocalAgentEntry) -> bool {
+    agent
+        .cost_per_million
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .is_some()
+        || matches_expensive_delegation_target(
+            Some(&agent.agent_id),
+            Some(&agent.agent_slug),
+            agent.default_model.as_deref(),
+            Some(&agent.adapter),
+        )
+}
+
+fn zero_cost_mcoda_agent_eligible(agent: &LocalAgentEntry) -> bool {
+    automatic_local_mcoda_agent_eligible(agent)
         && matches!(agent.cost_per_million, Some(cost) if cost <= 0.0)
         && zero_cost_mcoda_capability_score(agent) > 0
 }

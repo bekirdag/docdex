@@ -377,6 +377,7 @@ task_allowlist = ["generate_tests", "write_docstring", "scaffold_boilerplate", "
 Notes:
 - `auto_enable` defaults to true; delegation auto-enables when local models or mcoda agents are present (opt out with `auto_enable = false`).
 - If `local_agent_id` is empty, Docdex defaults to selecting a local model/agent from the library by task type; fallback is the configured Ollama model.
+- Automatic local target selection skips paid mcoda agents (`cost_per_million > 0`) and mcoda agents that match the expensive-model library (`docs/expensive_models.json`); explicit `local_agent_id` or per-request `agent` overrides still take precedence.
 - Set `local_selection_policy = "mcoda_zero_cost_most_capable"` to prefer mcoda when it is installed, inspect the mcoda inventory, find healthy zero-cost agents, choose the most capable one by delegation capabilities plus `max_complexity`/`reasoning_rating`/`rating`, and delegate local jobs to that agent.
 - When `use_cached_local_decision = true`, Docdex stores the chosen mcoda agent in `~/.docdex/state/llm/local_model_library.json` and reuses it on later runs. If the cached agent disappears, becomes unhealthy, or is no longer zero-cost, Docdex refreshes the mcoda inventory and chooses a new one automatically.
 - If `primary_agent_id` is empty, Docdex selects a primary model/agent from the local library by task type (preferring mcoda agents) for refinement/fallback.

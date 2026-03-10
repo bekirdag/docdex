@@ -732,6 +732,78 @@ fn delegation_selects_local_healthy_mcoda_agent() {
 }
 
 #[test]
+fn delegation_skips_paid_mcoda_agent_for_automatic_local_selection() {
+    let mut library = LocalModelLibrary::default();
+    library.agents.push(make_local_agent(
+        "agent-paid",
+        "agent-paid",
+        Some(2.5),
+        Some(8),
+        Some(8.8),
+        Some(8.9),
+        Some("code_writer"),
+        Some("healthy"),
+        &["code_writer", "code_reviewer"],
+    ));
+    library.agents.push(make_local_agent(
+        "agent-free",
+        "agent-free",
+        Some(0.0),
+        Some(6),
+        Some(7.2),
+        Some(7.4),
+        Some("code_writer"),
+        Some("healthy"),
+        &["code_writer"],
+    ));
+
+    let selected = select_local_target(TaskType::GenerateTests, &library).expect("selection");
+    match selected {
+        LocalTarget::McodaAgent(id) => assert_eq!(id, "agent-free"),
+        _ => panic!("expected free mcoda target"),
+    }
+}
+
+#[test]
+fn delegation_skips_expensive_adapter_for_automatic_local_selection() {
+    let mut library = LocalModelLibrary::default();
+    library.agents.push(LocalAgentEntry {
+        agent_id: "agent-claude".to_string(),
+        agent_slug: "claude-sonnet".to_string(),
+        adapter: "claude-cli".to_string(),
+        default_model: Some("claude-3.7-sonnet".to_string()),
+        max_complexity: Some(9),
+        rating: Some(9.0),
+        cost_per_million: Some(0.0),
+        usage: Some("code_writer".to_string()),
+        reasoning_rating: Some(9.1),
+        health_status: Some("healthy".to_string()),
+        capabilities: vec!["code_writer".to_string(), "code_reviewer".to_string()],
+        notes: None,
+        classification_method: "registry".to_string(),
+        last_seen_at_ms: 0,
+        last_classified_at_ms: None,
+    });
+    library.agents.push(make_local_agent(
+        "agent-local",
+        "agent-local",
+        Some(0.0),
+        Some(6),
+        Some(7.0),
+        Some(7.2),
+        Some("code_writer"),
+        Some("healthy"),
+        &["code_writer"],
+    ));
+
+    let selected = select_local_target(TaskType::GenerateTests, &library).expect("selection");
+    match selected {
+        LocalTarget::McodaAgent(id) => assert_eq!(id, "agent-local"),
+        _ => panic!("expected eligible local mcoda target"),
+    }
+}
+
+#[test]
 fn delegation_zero_cost_policy_selects_most_capable_mcoda_agent_and_caches_it(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let temp = TempDir::new()?;
@@ -963,10 +1035,82 @@ fn delegation_updates_cached_zero_cost_agent_after_successful_alternate_completi
         max_complexity: Some(7),
         rating: Some(6.8),
         cost_per_million: Some(0.0),
-        usage: Some("code_write".to_string()),
+        usage: Some("code_writer".to_string()),
         reasoning_rating: Some(7.2),
         health_status: Some("healthy".to_string()),
-        capabilities: vec!["code_write".to_string()],
+        capabilities: vec!["code_writer".to_string()],
+        notes: None,
+        classification_method: "mcoda".to_string(),
+        last_seen_at_ms: 0,
+        last_classified_at_ms: None,
+    });
+    library.agents.push(LocalAgentEntry {
+        agent_id: "agent-local-alt".to_string(),
+        agent_slug: "local-alt".to_string(),
+        adapter: "ollama-remote".to_string(),
+        default_model: Some("qwen3.5:32b".to_string()),
+        max_complexity: Some(6),
+        rating: Some(7.1),
+        cost_per_million: Some(0.0),
+        usage: Some("code_writer".to_string()),
+        reasoning_rating: Some(7.3),
+        health_status: Some("healthy".to_string()),
+        capabilities: vec!["code_writer".to_string()],
+        notes: None,
+        classification_method: "mcoda".to_string(),
+        last_seen_at_ms: 0,
+        last_classified_at_ms: None,
+    });
+    library.cached_local_agent_selection =
+        Some(crate::llm::local_library::CachedLocalAgentSelection {
+            policy: "mcoda_zero_cost_most_capable".to_string(),
+            agent_id: "agent-qwen".to_string(),
+            agent_slug: "qwen-3.5-27b".to_string(),
+            selected_at_ms: 0,
+        });
+
+    let completion = LlmCompletion {
+        output: "/// doc".to_string(),
+        adapter: "ollama-remote".to_string(),
+        model: Some("qwen3.5:32b".to_string()),
+        metadata: None,
+    };
+
+    let updated = update_cached_local_selection_from_completion(
+        Some(temp.path()),
+        &config,
+        &mut library,
+        &completion,
+    );
+
+    assert!(updated);
+    let cached = library
+        .cached_local_agent_selection
+        .as_ref()
+        .expect("cached selection");
+    assert_eq!(cached.agent_id, "agent-local-alt");
+    assert_eq!(cached.agent_slug, "local-alt");
+    Ok(())
+}
+
+#[test]
+fn delegation_does_not_cache_expensive_mcoda_completion() -> Result<(), Box<dyn std::error::Error>>
+{
+    let temp = TempDir::new()?;
+    let config = zero_cost_policy_config();
+    let mut library = LocalModelLibrary::default();
+    library.agents.push(LocalAgentEntry {
+        agent_id: "agent-qwen".to_string(),
+        agent_slug: "qwen-3.5-27b".to_string(),
+        adapter: "ollama-remote".to_string(),
+        default_model: Some("qwen3.5:27b".to_string()),
+        max_complexity: Some(7),
+        rating: Some(6.8),
+        cost_per_million: Some(0.0),
+        usage: Some("code_writer".to_string()),
+        reasoning_rating: Some(7.2),
+        health_status: Some("healthy".to_string()),
+        capabilities: vec!["code_writer".to_string()],
         notes: None,
         classification_method: "mcoda".to_string(),
         last_seen_at_ms: 0,
@@ -976,14 +1120,14 @@ fn delegation_updates_cached_zero_cost_agent_after_successful_alternate_completi
         agent_id: "agent-claude".to_string(),
         agent_slug: "claude-sonnet".to_string(),
         adapter: "claude-cli".to_string(),
-        default_model: Some("sonnet".to_string()),
-        max_complexity: Some(6),
-        rating: Some(7.1),
+        default_model: Some("claude-3.7-sonnet".to_string()),
+        max_complexity: Some(9),
+        rating: Some(9.1),
         cost_per_million: Some(0.0),
-        usage: Some("code_write".to_string()),
-        reasoning_rating: Some(7.3),
+        usage: Some("code_writer".to_string()),
+        reasoning_rating: Some(9.2),
         health_status: Some("healthy".to_string()),
-        capabilities: vec!["code_write".to_string()],
+        capabilities: vec!["code_writer".to_string(), "code_reviewer".to_string()],
         notes: None,
         classification_method: "mcoda".to_string(),
         last_seen_at_ms: 0,
@@ -1000,7 +1144,7 @@ fn delegation_updates_cached_zero_cost_agent_after_successful_alternate_completi
     let completion = LlmCompletion {
         output: "/// doc".to_string(),
         adapter: "claude-cli".to_string(),
-        model: Some("sonnet".to_string()),
+        model: Some("claude-3.7-sonnet".to_string()),
         metadata: None,
     };
 
@@ -1011,13 +1155,13 @@ fn delegation_updates_cached_zero_cost_agent_after_successful_alternate_completi
         &completion,
     );
 
-    assert!(updated);
+    assert!(!updated);
     let cached = library
         .cached_local_agent_selection
         .as_ref()
         .expect("cached selection");
-    assert_eq!(cached.agent_id, "agent-claude");
-    assert_eq!(cached.agent_slug, "claude-sonnet");
+    assert_eq!(cached.agent_id, "agent-qwen");
+    assert_eq!(cached.agent_slug, "qwen-3.5-27b");
     Ok(())
 }
 

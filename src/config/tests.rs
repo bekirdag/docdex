@@ -121,8 +121,8 @@ fn apply_defaults_sets_delegation_defaults() -> Result<(), Box<dyn std::error::E
         config.llm.delegation.max_context_chars,
         DEFAULT_DELEGATION_MAX_CONTEXT_CHARS
     );
-    assert_eq!(config.llm.delegation.primary_usd_per_1k_tokens, 0.0);
-    assert_eq!(config.llm.delegation.local_usd_per_1k_tokens, 0.0);
+    assert_eq!(config.llm.delegation.primary_usd_per_million_tokens, 0.0);
+    assert_eq!(config.llm.delegation.local_usd_per_million_tokens, 0.0);
     Ok(())
 }
 
@@ -165,8 +165,8 @@ fn load_config_applies_delegation_env_overrides() -> Result<(), Box<dyn std::err
     let _cached = EnvGuard::set("DOCDEX_DELEGATION_USE_CACHED_LOCAL_DECISION", "0");
     let _timeout = EnvGuard::set("DOCDEX_DELEGATION_TIMEOUT_MS", "42000");
     let _max_tokens = EnvGuard::set("DOCDEX_DELEGATION_MAX_TOKENS", "777");
-    let _primary_rate = EnvGuard::set("DOCDEX_DELEGATION_PRIMARY_USD_PER_1K_TOKENS", "1.25");
-    let _local_rate = EnvGuard::set("DOCDEX_DELEGATION_LOCAL_USD_PER_1K_TOKENS", "0.05");
+    let _primary_rate = EnvGuard::set("DOCDEX_DELEGATION_PRIMARY_USD_PER_MILLION_TOKENS", "1.25");
+    let _local_rate = EnvGuard::set("DOCDEX_DELEGATION_LOCAL_USD_PER_MILLION_TOKENS", "0.05");
 
     let config = load_config_from_path(&config_path)?;
 
@@ -184,8 +184,83 @@ fn load_config_applies_delegation_env_overrides() -> Result<(), Box<dyn std::err
     assert_eq!(config.llm.delegation.mode, "draft_then_refine");
     assert_eq!(config.llm.delegation.timeout_ms, 42000);
     assert_eq!(config.llm.delegation.max_tokens, 777);
-    assert!((config.llm.delegation.primary_usd_per_1k_tokens - 1.25).abs() < 1e-6);
-    assert!((config.llm.delegation.local_usd_per_1k_tokens - 0.05).abs() < 1e-6);
+    assert!((config.llm.delegation.primary_usd_per_million_tokens - 1.25).abs() < 1e-6);
+    assert!((config.llm.delegation.local_usd_per_million_tokens - 0.05).abs() < 1e-6);
+    Ok(())
+}
+
+#[test]
+fn load_config_applies_legacy_delegation_pricing_env_aliases(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let config_path = temp.path().join("config.toml");
+    let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
+    let _primary_rate = EnvGuard::set("DOCDEX_DELEGATION_PRIMARY_USD_PER_1K_TOKENS", "1.25");
+    let _local_rate = EnvGuard::set("DOCDEX_DELEGATION_LOCAL_USD_PER_1K_TOKENS", "0.05");
+
+    let config = load_config_from_path(&config_path)?;
+
+    assert!((config.llm.delegation.primary_usd_per_million_tokens - 1.25).abs() < 1e-6);
+    assert!((config.llm.delegation.local_usd_per_million_tokens - 0.05).abs() < 1e-6);
+    Ok(())
+}
+
+#[test]
+fn load_config_prefers_canonical_delegation_pricing_env_names(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let config_path = temp.path().join("config.toml");
+    let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
+    let _legacy_primary = EnvGuard::set("DOCDEX_DELEGATION_PRIMARY_USD_PER_1K_TOKENS", "1.25");
+    let _legacy_local = EnvGuard::set("DOCDEX_DELEGATION_LOCAL_USD_PER_1K_TOKENS", "0.05");
+    let _primary_rate = EnvGuard::set("DOCDEX_DELEGATION_PRIMARY_USD_PER_MILLION_TOKENS", "2.5");
+    let _local_rate = EnvGuard::set("DOCDEX_DELEGATION_LOCAL_USD_PER_MILLION_TOKENS", "0.15");
+
+    let config = load_config_from_path(&config_path)?;
+
+    assert!((config.llm.delegation.primary_usd_per_million_tokens - 2.5).abs() < 1e-6);
+    assert!((config.llm.delegation.local_usd_per_million_tokens - 0.15).abs() < 1e-6);
+    Ok(())
+}
+
+#[test]
+fn load_config_reads_legacy_delegation_pricing_toml_aliases(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let config_path = temp.path().join("config.toml");
+    let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
+    std::fs::write(
+        &config_path,
+        r#"[llm.delegation]
+primary_usd_per_1k_tokens = 7.5
+local_usd_per_1k_tokens = 0.25
+"#,
+    )?;
+
+    let config = load_config_from_path(&config_path)?;
+
+    assert!((config.llm.delegation.primary_usd_per_million_tokens - 7.5).abs() < 1e-6);
+    assert!((config.llm.delegation.local_usd_per_million_tokens - 0.25).abs() < 1e-6);
+    Ok(())
+}
+
+#[test]
+fn write_config_uses_canonical_delegation_pricing_names() -> Result<(), Box<dyn std::error::Error>>
+{
+    let temp = TempDir::new()?;
+    let config_path = temp.path().join("config.toml");
+    let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
+    let mut config = AppConfig::default();
+    config.llm.delegation.primary_usd_per_million_tokens = 7.5;
+    config.llm.delegation.local_usd_per_million_tokens = 0.25;
+
+    write_config(&config_path, &config)?;
+
+    let written = std::fs::read_to_string(&config_path)?;
+    assert!(written.contains("primary_usd_per_million_tokens = 7.5"));
+    assert!(written.contains("local_usd_per_million_tokens = 0.25"));
+    assert!(!written.contains("primary_usd_per_1k_tokens"));
+    assert!(!written.contains("local_usd_per_1k_tokens"));
     Ok(())
 }
 
@@ -206,12 +281,12 @@ fn delegation_pricing_clamps_invalid_values() -> Result<(), Box<dyn std::error::
     let _env = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
 
     let mut config = AppConfig::default();
-    config.llm.delegation.primary_usd_per_1k_tokens = -5.0;
-    config.llm.delegation.local_usd_per_1k_tokens = f64::NAN;
+    config.llm.delegation.primary_usd_per_million_tokens = -5.0;
+    config.llm.delegation.local_usd_per_million_tokens = f64::NAN;
     config.apply_defaults()?;
 
-    assert_eq!(config.llm.delegation.primary_usd_per_1k_tokens, 0.0);
-    assert_eq!(config.llm.delegation.local_usd_per_1k_tokens, 0.0);
+    assert_eq!(config.llm.delegation.primary_usd_per_million_tokens, 0.0);
+    assert_eq!(config.llm.delegation.local_usd_per_million_tokens, 0.0);
     Ok(())
 }
 

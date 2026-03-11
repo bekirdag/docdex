@@ -147,6 +147,8 @@ Codex config example (TOML):
 docdex = { url = "http://127.0.0.1:28491/v1/mcp" }
 ```
 
+After changing Codex MCP config, restart Codex or open a new Codex session. Running Codex sessions do not hot-reload MCP server URLs.
+
 ## HTTP API
 
 Core endpoints:
@@ -276,6 +278,8 @@ docdexd mcp add --all
 docdexd mcp add --agent codex --remove
 ```
 
+When `docdexd mcp add --agent codex ...` updates the Codex endpoint, restart Codex so the running MCP client reloads the new URL.
+
 TUI:
 ```bash
 docdexd tui --repo /path/to/repo
@@ -369,8 +373,8 @@ mode = "draft_only" # or "draft_then_refine"
 timeout_ms = 300000
 max_tokens = 500000
 max_context_chars = 250000
-primary_usd_per_1k_tokens = 0.0
-local_usd_per_1k_tokens = 0.0
+primary_usd_per_million_tokens = 0.0
+local_usd_per_million_tokens = 0.0
 task_allowlist = ["generate_tests", "write_docstring", "scaffold_boilerplate", "refactor_simple", "format_code"]
 ```
 
@@ -393,9 +397,12 @@ Notes:
 - If local delegation execution fails at runtime (for example missing local CLI binary), Docdex returns a warning and uses the configured/selected primary target when fallback is enabled.
 - `enforce_local = true` requires a local agent/model to be available; if `allow_fallback_to_primary = false`, primary usage (fallback/refine) is disabled and the local draft is returned.
 - Local model library: `~/.docdex/state/llm/local_model_library.json` (or under `DOCDEX_STATE_DIR`).
-- Env overrides: `DOCDEX_DELEGATION_ENABLED`, `DOCDEX_DELEGATION_AUTO_ENABLE`, `DOCDEX_DELEGATION_ENFORCE_LOCAL`, `DOCDEX_DELEGATION_ALLOW_FALLBACK`, `DOCDEX_DELEGATION_REEVALUATE`, `DOCDEX_DELEGATION_LOCAL_AGENT`, `DOCDEX_DELEGATION_PRIMARY_AGENT`, `DOCDEX_DELEGATION_LOCAL_SELECTION_POLICY`, `DOCDEX_DELEGATION_USE_CACHED_LOCAL_DECISION`, `DOCDEX_DELEGATION_MODE`, `DOCDEX_DELEGATION_TIMEOUT_MS`, `DOCDEX_DELEGATION_MAX_TOKENS`, `DOCDEX_DELEGATION_PRIMARY_USD_PER_1K_TOKENS`, `DOCDEX_DELEGATION_LOCAL_USD_PER_1K_TOKENS`.
+- Config compatibility: legacy config keys `primary_usd_per_1k_tokens` and `local_usd_per_1k_tokens` are still accepted on read, but Docdex now writes the canonical `*_usd_per_million_tokens` names.
+- Env overrides: `DOCDEX_DELEGATION_ENABLED`, `DOCDEX_DELEGATION_AUTO_ENABLE`, `DOCDEX_DELEGATION_ENFORCE_LOCAL`, `DOCDEX_DELEGATION_ALLOW_FALLBACK`, `DOCDEX_DELEGATION_REEVALUATE`, `DOCDEX_DELEGATION_LOCAL_AGENT`, `DOCDEX_DELEGATION_PRIMARY_AGENT`, `DOCDEX_DELEGATION_LOCAL_SELECTION_POLICY`, `DOCDEX_DELEGATION_USE_CACHED_LOCAL_DECISION`, `DOCDEX_DELEGATION_MODE`, `DOCDEX_DELEGATION_TIMEOUT_MS`, `DOCDEX_DELEGATION_MAX_TOKENS`, `DOCDEX_DELEGATION_PRIMARY_USD_PER_MILLION_TOKENS`, `DOCDEX_DELEGATION_LOCAL_USD_PER_MILLION_TOKENS`.
+- Env compatibility: legacy `DOCDEX_DELEGATION_PRIMARY_USD_PER_1K_TOKENS` and `DOCDEX_DELEGATION_LOCAL_USD_PER_1K_TOKENS` are still accepted as aliases. When both forms are set, the canonical per-million env vars win.
 - Expensive model library: `docs/expensive_models.json`. Agents should match `agent_id`, `agent_slug`, `model`, or adapter type (case-insensitive) to decide whether to delegate.
-- Telemetry: `GET /v1/telemetry/delegation` or `docdexd delegation savings --repo /path/to/repo`. The CLI renders a table by default; use `--json` for raw JSON. Savings are repo-scoped by default; when the daemon has multiple repos mounted, send `repo_id`/`x-docdex-repo-id` or the CLI `--repo` flag. Use `GET /v1/telemetry/delegation?all=true` or `docdexd delegation savings --all` for daemon-global totals across all mounted repos. Savings use mcoda `cost_per_million` when available; Ollama models are treated as free.
+- Delegation callers can supply `caller_agent_id`, `caller_model`, or `primary_cost_per_million` per request so avoided-cost telemetry is attributed to the actual expensive caller instead of the static delegation fallback target.
+- Telemetry: `GET /v1/telemetry/delegation` or `docdexd delegation savings --repo /path/to/repo`. The CLI renders a table by default; use `--json` for raw JSON. Savings are repo-scoped by default; when the daemon has multiple repos mounted, send `repo_id`/`x-docdex-repo-id` or the CLI `--repo` flag. Use `GET /v1/telemetry/delegation?all=true` or `docdexd delegation savings --all` for daemon-global totals across all mounted repos. The response includes actual fallback spend, avoided primary cost, and effective per-1M rates derived from runtime caller attribution when available.
 
 ## Repo memory
 Repo memory stores project facts (notes, decisions, edge cases) and is used during chat/context assembly. Memory is enabled by default; disable with `DOCDEX_ENABLE_MEMORY=0` or `[memory].enabled = false`.

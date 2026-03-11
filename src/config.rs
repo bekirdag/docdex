@@ -235,10 +235,16 @@ pub struct DelegationConfig {
     pub max_tokens: u32,
     #[serde(default = "default_delegation_max_context_chars")]
     pub max_context_chars: usize,
-    #[serde(default = "default_delegation_primary_usd_per_1k_tokens")]
-    pub primary_usd_per_1k_tokens: f64,
-    #[serde(default = "default_delegation_local_usd_per_1k_tokens")]
-    pub local_usd_per_1k_tokens: f64,
+    #[serde(
+        default = "default_delegation_primary_usd_per_million_tokens",
+        alias = "primary_usd_per_1k_tokens"
+    )]
+    pub primary_usd_per_million_tokens: f64,
+    #[serde(
+        default = "default_delegation_local_usd_per_million_tokens",
+        alias = "local_usd_per_1k_tokens"
+    )]
+    pub local_usd_per_million_tokens: f64,
     #[serde(default)]
     pub task_allowlist: Vec<String>,
 }
@@ -259,8 +265,8 @@ impl Default for DelegationConfig {
             timeout_ms: default_delegation_timeout_ms(),
             max_tokens: default_delegation_max_tokens(),
             max_context_chars: default_delegation_max_context_chars(),
-            primary_usd_per_1k_tokens: default_delegation_primary_usd_per_1k_tokens(),
-            local_usd_per_1k_tokens: default_delegation_local_usd_per_1k_tokens(),
+            primary_usd_per_million_tokens: default_delegation_primary_usd_per_million_tokens(),
+            local_usd_per_million_tokens: default_delegation_local_usd_per_million_tokens(),
             task_allowlist: Vec::new(),
         }
     }
@@ -282,8 +288,10 @@ impl DelegationConfig {
         if self.max_context_chars == 0 {
             self.max_context_chars = default_delegation_max_context_chars();
         }
-        self.primary_usd_per_1k_tokens = sanitize_non_negative_f64(self.primary_usd_per_1k_tokens);
-        self.local_usd_per_1k_tokens = sanitize_non_negative_f64(self.local_usd_per_1k_tokens);
+        self.primary_usd_per_million_tokens =
+            sanitize_non_negative_f64(self.primary_usd_per_million_tokens);
+        self.local_usd_per_million_tokens =
+            sanitize_non_negative_f64(self.local_usd_per_million_tokens);
     }
 }
 
@@ -663,11 +671,15 @@ fn apply_env_overrides(config: &mut AppConfig) {
     if let Some(value) = env_u32("DOCDEX_DELEGATION_MAX_TOKENS") {
         config.llm.delegation.max_tokens = value;
     }
-    if let Some(value) = env_f64("DOCDEX_DELEGATION_PRIMARY_USD_PER_1K_TOKENS") {
-        config.llm.delegation.primary_usd_per_1k_tokens = sanitize_non_negative_f64(value);
+    if let Some(value) = env_f64("DOCDEX_DELEGATION_PRIMARY_USD_PER_MILLION_TOKENS")
+        .or_else(|| env_f64("DOCDEX_DELEGATION_PRIMARY_USD_PER_1K_TOKENS"))
+    {
+        config.llm.delegation.primary_usd_per_million_tokens = sanitize_non_negative_f64(value);
     }
-    if let Some(value) = env_f64("DOCDEX_DELEGATION_LOCAL_USD_PER_1K_TOKENS") {
-        config.llm.delegation.local_usd_per_1k_tokens = sanitize_non_negative_f64(value);
+    if let Some(value) = env_f64("DOCDEX_DELEGATION_LOCAL_USD_PER_MILLION_TOKENS")
+        .or_else(|| env_f64("DOCDEX_DELEGATION_LOCAL_USD_PER_1K_TOKENS"))
+    {
+        config.llm.delegation.local_usd_per_million_tokens = sanitize_non_negative_f64(value);
     }
     if let Some(value) = env_mcp_ipc_mode("DOCDEX_MCP_IPC") {
         config.server.mcp_ipc_mode = value;
@@ -807,11 +819,11 @@ fn default_delegation_max_context_chars() -> usize {
     DEFAULT_DELEGATION_MAX_CONTEXT_CHARS
 }
 
-fn default_delegation_primary_usd_per_1k_tokens() -> f64 {
+fn default_delegation_primary_usd_per_million_tokens() -> f64 {
     0.0
 }
 
-fn default_delegation_local_usd_per_1k_tokens() -> f64 {
+fn default_delegation_local_usd_per_million_tokens() -> f64 {
     0.0
 }
 

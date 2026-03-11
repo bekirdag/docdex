@@ -11,6 +11,7 @@ const {
   upsertMcpServerJson,
   upsertZedConfig,
   upsertCodexConfig,
+  warnCodexRestart,
   configUrlForPort,
   configStreamableUrlForPort,
   runPostInstallSetup,
@@ -186,6 +187,17 @@ test("upsertCodexConfig removes legacy instructions entry", () => {
   assert.equal(changed, true);
   const contents = fs.readFileSync(file, "utf8");
   assert.ok(!contents.includes('experimental_instructions_file = "~/.docdex/agents.md"'));
+});
+
+test("warnCodexRestart only logs when Codex config changes", () => {
+  const warnings = [];
+  const logger = { warn: (message) => warnings.push(message) };
+  warnCodexRestart(logger, false);
+  assert.deepEqual(warnings, []);
+  warnCodexRestart(logger, true);
+  assert.deepEqual(warnings, [
+    "[docdex] Codex MCP config updated. Restart Codex to reload the MCP endpoint."
+  ]);
 });
 
 test("applyAgentInstructions appends versioned docdex block once", () => {

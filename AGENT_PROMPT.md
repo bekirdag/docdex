@@ -1,4 +1,4 @@
----- START OF DOCDEX INFO V0.2.49 ----
+---- START OF DOCDEX INFO V0.2.50 ----
 Docdex URL: http://127.0.0.1:28491
 Use this base URL for Docdex HTTP endpoints.
 Health check endpoint: `GET /healthz` (not `/v1/health`).
@@ -325,7 +325,7 @@ Do not guess fields; use these canonical shapes.
 - `docdex_memory_recall`: `{ project_root, query, top_k? }`
 - `docdex_get_profile`: `{ agent_id }`
 - `docdex_save_preference`: `{ agent_id, category, content }`
-- `docdex_local_completion`: `{ task_type, instruction, context, max_tokens?, timeout_ms?, mode?, max_context_chars?, agent? }`
+- `docdex_local_completion`: `{ task_type, instruction, context, max_tokens?, timeout_ms?, mode?, max_context_chars?, agent?, caller_agent_id?, caller_model?, primary_cost_per_million? }`
 - `docdex_web_research`: `{ project_root, query, force_web, skip_local_search?, web_limit?, no_cache? }`
 
 ### 9) Common error fixes (do not guess)

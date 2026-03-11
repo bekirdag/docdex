@@ -12,6 +12,8 @@ use toml::map::Map as TomlMap;
 use toml::Value as TomlValue;
 
 const DEFAULT_MCP_BASE_URL: &str = "http://127.0.0.1:28491";
+const CODEX_RESTART_HINT: &str =
+    "[docdexd mcp-add] Restart Codex to reload MCP config in running Codex sessions.";
 
 fn home_dir() -> Result<PathBuf> {
     let key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
@@ -759,6 +761,7 @@ fn handle_mcp_add(
                     "Removed docdex from Codex config at {} (if it existed)",
                     path.display()
                 );
+                println!("{CODEX_RESTART_HINT}");
             } else {
                 let path = codex_config_path()?;
                 let docdex_entry = if transport == McpAddTransport::Ipc {
@@ -782,6 +785,7 @@ fn handle_mcp_add(
                 };
                 upsert_codex_config(&path, docdex_entry)?;
                 println!("Added docdex to Codex config at {}", path.display());
+                println!("{CODEX_RESTART_HINT}");
             }
         }
         "continue" => {

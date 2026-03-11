@@ -19,7 +19,7 @@ use crate::llm::delegation::{
     mode_from_config, parse_local_target_override, resolve_local_cost_per_million,
     resolve_primary_cost_per_million, run_delegation_flow,
     update_cached_local_selection_from_completion, DelegationEnforcementError, DelegationMode,
-    LocalTarget, TaskType,
+    DelegationPricingContext, LocalTarget, TaskType,
 };
 use crate::llm::local_library::{
     delegation_is_enabled, load_local_library, refresh_local_library,
@@ -564,6 +564,12 @@ struct DelegateArgs {
     context: String,
     #[serde(default)]
     agent: Option<String>,
+    #[serde(default, alias = "callerAgentId")]
+    caller_agent_id: Option<String>,
+    #[serde(default, alias = "callerModel")]
+    caller_model: Option<String>,
+    #[serde(default, alias = "primaryCostPerMillion")]
+    primary_cost_per_million: Option<f64>,
     #[serde(default, alias = "maxTokens")]
     max_tokens: Option<u32>,
     #[serde(default, alias = "timeoutMs")]
@@ -2496,6 +2502,9 @@ impl McpServer {
                         "instruction": { "type": "string", "minLength": 1 },
                         "context": { "type": "string", "minLength": 1 },
                         "agent": { "type": "string", "description": "Optional mcoda agent id or slug override" },
+                        "caller_agent_id": { "type": "string", "description": "Optional calling agent id/slug for avoided-cost attribution; defaults from MCP initialize when available" },
+                        "caller_model": { "type": "string", "description": "Optional calling model name for avoided-cost attribution when agent metadata is unavailable" },
+                        "primary_cost_per_million": { "type": "number", "minimum": 0, "description": "Optional explicit avoided primary cost per 1M tokens" },
                         "max_tokens": { "type": "integer", "minimum": 1, "description": "Optional max tokens override" },
                         "timeout_ms": { "type": "integer", "minimum": 1, "description": "Optional timeout in milliseconds" },
                         "mode": { "type": "string", "enum": ["draft_only", "draft_then_refine"] },
@@ -3186,6 +3195,22 @@ Produce a phased plan with risks and tests to run."
             (None, Some(value)) => Some(value.to_string()),
             _ => None,
         };
+        let pricing_context = DelegationPricingContext {
+            caller_agent_id: args
+                .caller_agent_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .or_else(|| self.default_agent_id.clone()),
+            caller_model: args
+                .caller_model
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
+            primary_cost_per_million: args.primary_cost_per_million,
+        };
         let local_override = local_agent_override
             .as_deref()
             .map(|value| !value.trim().is_empty())
@@ -3256,6 +3281,7 @@ Produce a phased plan with risks and tests to run."
         );
         let primary_cost_per_million = resolve_primary_cost_per_million(
             &llm_config,
+            Some(&pricing_context),
             primary_targets.first(),
             library.as_ref(),
         );

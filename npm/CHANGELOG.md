@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.50
+- Attribute delegation savings to the actual expensive caller via `caller_agent_id`, `caller_model`, or `primary_cost_per_million`, and expose avoided primary cost plus effective per-1M telemetry rates.
+- Canonicalize delegation pricing config to `primary_usd_per_million_tokens` and `local_usd_per_million_tokens` while preserving legacy `*_usd_per_1k_tokens` compatibility in packaged docs and telemetry.
+
 ## 0.2.49
 - Generate installer-managed MCP URLs with `127.0.0.1` so client configs match the daemon bind default.
 - Update packaged MCP examples and add regression coverage for the postinstall URL helpers.

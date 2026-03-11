@@ -237,6 +237,13 @@ pub struct DelegationRequest {
     pub timeout_ms: Option<u64>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct DelegationPricingContext {
+    pub caller_agent_id: Option<String>,
+    pub caller_model: Option<String>,
+    pub primary_cost_per_million: Option<f64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct RenderedPrompt {
     pub prompt: String,
@@ -304,6 +311,29 @@ fn normalize_cost_per_million(cost: Option<f64>) -> Option<f64> {
     cost.filter(|value| value.is_finite() && *value >= 0.0)
 }
 
+fn normalized_match_value(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_ascii_lowercase())
+    }
+}
+
+fn select_conservative_cost<I>(costs: I) -> Option<f64>
+where
+    I: IntoIterator<Item = f64>,
+{
+    costs.into_iter().fold(None, |best, cost| match best {
+        Some(current) if current <= cost => Some(current),
+        _ => Some(cost),
+    })
+}
+
+fn configured_cost_per_million(cost: f64) -> Option<f64> {
+    normalize_cost_per_million(Some(cost))
+}
+
 fn resolve_cost_per_million_from_library(
     id_or_slug: &str,
     library: Option<&LocalModelLibrary>,
@@ -316,12 +346,61 @@ fn resolve_cost_per_million_from_library(
     normalize_cost_per_million(agent.cost_per_million)
 }
 
+fn resolve_cost_per_million_from_library_model(
+    model: &str,
+    library: Option<&LocalModelLibrary>,
+) -> Option<f64> {
+    let model = normalized_match_value(model)?;
+    let library = library?;
+    let model_costs = library.models.iter().filter_map(|entry| {
+        let entry_name = normalized_match_value(&entry.name)?;
+        if entry_name == model {
+            Some(0.0)
+        } else {
+            None
+        }
+    });
+    let agent_costs = library.agents.iter().filter_map(|agent| {
+        let default_model = normalized_match_value(agent.default_model.as_deref()?)?;
+        if default_model == model {
+            normalize_cost_per_million(agent.cost_per_million)
+        } else {
+            None
+        }
+    });
+    select_conservative_cost(model_costs.chain(agent_costs))
+}
+
 fn resolve_cost_per_million_from_registry(id_or_slug: &str) -> Option<f64> {
     let registry = McodaRegistry::load_default_db_only().ok().flatten()?;
     let agent = registry
         .agent_by_id(id_or_slug)
         .or_else(|| registry.agent_by_slug(id_or_slug))?;
     normalize_cost_per_million(agent.cost_per_million)
+}
+
+fn resolve_cost_per_million_from_registry_model(model: &str) -> Option<f64> {
+    let model = normalized_match_value(model)?;
+    let registry = McodaRegistry::load_default_db_only().ok().flatten()?;
+    let costs = registry.agents.iter().filter_map(|agent| {
+        let default_match = agent
+            .default_model
+            .as_deref()
+            .and_then(normalized_match_value)
+            .map(|value| value == model)
+            .unwrap_or(false);
+        let listed_match = agent.models.iter().any(|candidate| {
+            normalized_match_value(&candidate.model_name)
+                .map(|value| value == model)
+                .unwrap_or(false)
+        });
+        if default_match || listed_match {
+            normalize_cost_per_million(agent.cost_per_million)
+        } else {
+            None
+        }
+    });
+    select_conservative_cost(costs)
 }
 
 fn resolve_cost_per_million_for_agent(
@@ -331,6 +410,30 @@ fn resolve_cost_per_million_for_agent(
     resolve_cost_per_million_from_library(id_or_slug, library)
         .or_else(|| resolve_cost_per_million_from_registry(id_or_slug))
         .unwrap_or(0.0)
+}
+
+fn resolve_cost_per_million_for_model(
+    model: &str,
+    library: Option<&LocalModelLibrary>,
+) -> Option<f64> {
+    resolve_cost_per_million_from_library_model(model, library)
+        .or_else(|| resolve_cost_per_million_from_registry_model(model))
+}
+
+fn resolve_cost_per_million_for_identifier(
+    value: &str,
+    library: Option<&LocalModelLibrary>,
+) -> Option<f64> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(model) = parse_model_override(trimmed) {
+        return resolve_cost_per_million_for_model(&model, library).or(Some(0.0));
+    }
+    resolve_cost_per_million_from_library(trimmed, library)
+        .or_else(|| resolve_cost_per_million_from_registry(trimmed))
+        .or_else(|| resolve_cost_per_million_for_model(trimmed, library))
 }
 
 fn resolve_cost_per_million_for_target(
@@ -366,30 +469,68 @@ pub fn resolve_local_cost_per_million(
             }
         });
     let Some(agent_id) = agent_id else {
-        return 0.0;
+        return configured_cost_per_million(llm_config.delegation.local_usd_per_million_tokens)
+            .unwrap_or(0.0);
     };
-    if parse_model_override(agent_id).is_some() {
-        return 0.0;
+    if let Some(cost) = resolve_cost_per_million_for_identifier(agent_id, library) {
+        return cost;
     }
-    resolve_cost_per_million_for_agent(agent_id, library)
+    configured_cost_per_million(llm_config.delegation.local_usd_per_million_tokens).unwrap_or(0.0)
 }
 
 pub fn resolve_primary_cost_per_million(
     llm_config: &LlmConfig,
+    pricing_context: Option<&DelegationPricingContext>,
     primary_target: Option<&LocalTarget>,
     library: Option<&LocalModelLibrary>,
 ) -> f64 {
+    if let Some(cost) = pricing_context
+        .and_then(|context| normalize_cost_per_million(context.primary_cost_per_million))
+    {
+        return cost;
+    }
+    if let Some(caller_agent_id) = pricing_context
+        .and_then(|context| context.caller_agent_id.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if let Some(cost) = resolve_cost_per_million_for_identifier(caller_agent_id, library) {
+            return cost;
+        }
+    }
+    if let Some(caller_model) = pricing_context
+        .and_then(|context| context.caller_model.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if let Some(cost) = resolve_cost_per_million_for_model(caller_model, library) {
+            return cost;
+        }
+    }
     if let Some(cost) = resolve_cost_per_million_for_target(primary_target, library) {
         return cost;
     }
+    let llm_agent_id = llm_config.agent_id.trim();
+    if !llm_agent_id.is_empty() {
+        if let Some(cost) = resolve_cost_per_million_for_identifier(llm_agent_id, library) {
+            return cost;
+        }
+    }
+    if !llm_config.provider.trim().eq_ignore_ascii_case("ollama") {
+        let default_model = llm_config.default_model.trim();
+        if !default_model.is_empty() {
+            if let Some(cost) = resolve_cost_per_million_for_model(default_model, library) {
+                return cost;
+            }
+        }
+    }
     let agent_id = llm_config.delegation.primary_agent_id.trim();
-    if agent_id.is_empty() {
-        return 0.0;
+    if !agent_id.is_empty() {
+        if let Some(cost) = resolve_cost_per_million_for_identifier(agent_id, library) {
+            return cost;
+        }
     }
-    if parse_model_override(agent_id).is_some() {
-        return 0.0;
-    }
-    resolve_cost_per_million_for_agent(agent_id, library)
+    configured_cost_per_million(llm_config.delegation.primary_usd_per_million_tokens).unwrap_or(0.0)
 }
 
 #[derive(Debug)]

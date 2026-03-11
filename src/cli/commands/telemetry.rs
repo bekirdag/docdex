@@ -10,8 +10,10 @@ use serde::Deserialize;
 
 #[derive(Deserialize)]
 struct DelegationSavingsPricing {
-    primary_usd_per_1k_tokens: f64,
-    local_usd_per_1k_tokens: f64,
+    configured_primary_usd_per_million_tokens: f64,
+    configured_local_usd_per_million_tokens: f64,
+    effective_avoided_primary_usd_per_million_tokens: Option<f64>,
+    effective_local_usd_per_million_tokens: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -27,6 +29,8 @@ struct DelegationSavingsResponse {
     delegate_token_savings_total: u64,
     delegate_local_cost_micros_total: u64,
     delegate_primary_cost_micros_total: u64,
+    delegate_avoided_primary_cost_micros_total: u64,
+    delegate_avoided_primary_cost_usd: f64,
     delegate_cost_savings_micros_total: u64,
     delegate_cost_savings_usd: f64,
     pricing: DelegationSavingsPricing,
@@ -131,6 +135,14 @@ fn render_delegation_savings_table(response: &DelegationSavingsResponse) -> Stri
             format_cost(response.delegate_primary_cost_micros_total),
         ),
         (
+            "Avoided Primary Cost".to_string(),
+            format!(
+                "{} ({} micros)",
+                format_usd(response.delegate_avoided_primary_cost_usd),
+                format_u64(response.delegate_avoided_primary_cost_micros_total)
+            ),
+        ),
+        (
             "Cost Savings".to_string(),
             format!(
                 "{} ({} micros)",
@@ -139,12 +151,24 @@ fn render_delegation_savings_table(response: &DelegationSavingsResponse) -> Stri
             ),
         ),
         (
-            "Local Rate".to_string(),
-            format_rate(response.pricing.local_usd_per_1k_tokens),
+            "Effective Local Rate".to_string(),
+            format_opt_rate(response.pricing.effective_local_usd_per_million_tokens),
         ),
         (
-            "Primary Rate".to_string(),
-            format_rate(response.pricing.primary_usd_per_1k_tokens),
+            "Effective Avoided Rate".to_string(),
+            format_opt_rate(
+                response
+                    .pricing
+                    .effective_avoided_primary_usd_per_million_tokens,
+            ),
+        ),
+        (
+            "Configured Local Rate".to_string(),
+            format_rate(response.pricing.configured_local_usd_per_million_tokens),
+        ),
+        (
+            "Configured Primary Rate".to_string(),
+            format_rate(response.pricing.configured_primary_usd_per_million_tokens),
         ),
         (
             "Generated At".to_string(),
@@ -349,7 +373,14 @@ fn format_usd(value: f64) -> String {
 }
 
 fn format_rate(value: f64) -> String {
-    format!("${}/1k", format_float_with_precision(value, 4))
+    if !value.is_finite() || value < 0.0 {
+        return "-".to_string();
+    }
+    format!("${}/1M", format_float_with_precision(value, 4))
+}
+
+fn format_opt_rate(value: Option<f64>) -> String {
+    value.map(format_rate).unwrap_or_else(|| "-".to_string())
 }
 
 fn format_generated_at(epoch_ms: i64) -> String {
@@ -432,11 +463,15 @@ mod tests {
             delegate_token_savings_total: 610,
             delegate_local_cost_micros_total: 426,
             delegate_primary_cost_micros_total: 0,
-            delegate_cost_savings_micros_total: 0,
-            delegate_cost_savings_usd: 0.0,
+            delegate_avoided_primary_cost_micros_total: 1_646,
+            delegate_avoided_primary_cost_usd: 0.001646,
+            delegate_cost_savings_micros_total: 1_220,
+            delegate_cost_savings_usd: 0.00122,
             pricing: DelegationSavingsPricing {
-                local_usd_per_1k_tokens: 0.0,
-                primary_usd_per_1k_tokens: 0.0,
+                configured_primary_usd_per_million_tokens: 0.0,
+                configured_local_usd_per_million_tokens: 0.0,
+                effective_avoided_primary_usd_per_million_tokens: Some(2.6983606557),
+                effective_local_usd_per_million_tokens: Some(0.6983606557),
             },
         };
 
@@ -445,6 +480,8 @@ mod tests {
         assert!(rendered.starts_with("╭"));
         assert!(rendered.contains("│ METRIC"));
         assert!(rendered.contains("Token Savings"));
+        assert!(rendered.contains("Avoided Primary Cost"));
+        assert!(rendered.contains("Effective Avoided Rate"));
         assert!(rendered.contains("610"));
         assert!(rendered.ends_with("╯"));
     }

@@ -1,10 +1,11 @@
 use super::delegation::{
     allowlist_allows, compute_delegation_savings, local_selection_policy_requires_fresh_library,
     mode_from_config, parse_local_target_override, reevaluation_should_use_primary_client,
-    render_prompt, resolve_delegation_client, run_flow_with_client_candidates,
-    run_flow_with_clients, select_local_target, select_local_target_with_config,
-    select_primary_target, update_cached_local_selection_from_completion, validate_output,
-    DelegationEnforcementError, DelegationMode, DelegationReevaluation, LocalTarget, TaskType,
+    render_prompt, resolve_delegation_client, resolve_local_cost_per_million,
+    resolve_primary_cost_per_million, run_flow_with_client_candidates, run_flow_with_clients,
+    select_local_target, select_local_target_with_config, select_primary_target,
+    update_cached_local_selection_from_completion, validate_output, DelegationEnforcementError,
+    DelegationMode, DelegationPricingContext, DelegationReevaluation, LocalTarget, TaskType,
 };
 use super::delegation_rating::{
     compute_alpha, compute_run_score, estimate_complexity, fallback_quality_score,
@@ -133,6 +134,55 @@ fn seed_mcoda_registry(
     status: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     seed_mcoda_registry_with_adapter(home, agent_id, slug, "ollama-remote", status)
+}
+
+fn seed_mcoda_registry_priced_agent(
+    home: &Path,
+    agent_id: &str,
+    slug: &str,
+    adapter: &str,
+    default_model: Option<&str>,
+    cost_per_million: Option<f64>,
+    status: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mcoda_dir = home.join(".mcoda");
+    fs::create_dir_all(&mcoda_dir)?;
+    let db_path = mcoda_dir.join("mcoda.db");
+    let conn = Connection::open(db_path)?;
+    conn.execute_batch(
+        "CREATE TABLE agents (
+            id TEXT PRIMARY KEY,
+            slug TEXT NOT NULL,
+            adapter TEXT NOT NULL,
+            default_model TEXT,
+            config_json TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            cost_per_million REAL
+        );
+        CREATE TABLE agent_health (
+            agent_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL
+        );",
+    )?;
+    conn.execute(
+        "INSERT INTO agents (id, slug, adapter, default_model, config_json, created_at, updated_at, cost_per_million)
+         VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7)",
+        rusqlite::params![
+            agent_id,
+            slug,
+            adapter,
+            default_model,
+            "2026-01-01T00:00:00Z",
+            "2026-01-01T00:00:00Z",
+            cost_per_million
+        ],
+    )?;
+    conn.execute(
+        "INSERT INTO agent_health (agent_id, status) VALUES (?1, ?2)",
+        rusqlite::params![agent_id, status],
+    )?;
+    Ok(())
 }
 
 fn make_local_agent(
@@ -394,6 +444,97 @@ fn delegation_savings_uses_rate_delta() {
     let negative = compute_delegation_savings(1500, 3000.0, 2000.0);
     assert_eq!(negative.token_savings, 1500);
     assert_eq!(negative.cost_savings_micros, 0);
+}
+
+#[test]
+fn delegation_primary_cost_prefers_runtime_caller_agent() {
+    let mut config = LlmConfig::default();
+    config.delegation.primary_agent_id = "free-local".to_string();
+    config.delegation.primary_usd_per_million_tokens = 3.0;
+    let library = LocalModelLibrary {
+        models: Vec::new(),
+        agents: vec![
+            make_local_agent(
+                "free-local",
+                "free-local",
+                Some(0.0),
+                None,
+                None,
+                None,
+                Some("general_chat"),
+                Some("healthy"),
+                &["general_chat"],
+            ),
+            make_local_agent(
+                "paid-main",
+                "paid-main",
+                Some(10.0),
+                None,
+                None,
+                None,
+                Some("general_chat"),
+                Some("healthy"),
+                &["general_chat"],
+            ),
+        ],
+        ..LocalModelLibrary::default()
+    };
+    let pricing_context = DelegationPricingContext {
+        caller_agent_id: Some("paid-main".to_string()),
+        caller_model: None,
+        primary_cost_per_million: None,
+    };
+
+    let cost =
+        resolve_primary_cost_per_million(&config, Some(&pricing_context), None, Some(&library));
+    assert!((cost - 10.0).abs() < 1e-6);
+}
+
+#[test]
+fn delegation_primary_cost_resolves_runtime_caller_model_from_registry(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
+    let _profile = EnvGuard::set("USERPROFILE", temp.path().to_string_lossy().as_ref());
+    let _disable_cli = EnvGuard::set("DOCDEX_DISABLE_MCODA_CLI", "1");
+    seed_mcoda_registry_priced_agent(
+        temp.path(),
+        "agent-1",
+        "codex-main",
+        "codex-cli",
+        Some("gpt-5.2-codex"),
+        Some(10.0),
+        "healthy",
+    )?;
+
+    let config = LlmConfig::default();
+    let pricing_context = DelegationPricingContext {
+        caller_agent_id: None,
+        caller_model: Some("gpt-5.2-codex".to_string()),
+        primary_cost_per_million: None,
+    };
+
+    let cost = resolve_primary_cost_per_million(&config, Some(&pricing_context), None, None);
+    assert!((cost - 10.0).abs() < 1e-6);
+    Ok(())
+}
+
+#[test]
+fn delegation_primary_cost_falls_back_to_configured_rate_when_unresolved() {
+    let mut config = LlmConfig::default();
+    config.delegation.primary_usd_per_million_tokens = 12.5;
+
+    let cost = resolve_primary_cost_per_million(&config, None, None, None);
+    assert!((cost - 12.5).abs() < 1e-6);
+}
+
+#[test]
+fn delegation_local_cost_falls_back_to_configured_rate_when_unresolved() {
+    let mut config = LlmConfig::default();
+    config.delegation.local_usd_per_million_tokens = 0.15;
+
+    let cost = resolve_local_cost_per_million(&config, None, None, None);
+    assert!((cost - 0.15).abs() < 1e-6);
 }
 
 #[test]

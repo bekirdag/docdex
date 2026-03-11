@@ -14,7 +14,7 @@ use crate::llm::delegation::{
     mode_from_config, parse_local_target_override, resolve_local_cost_per_million,
     resolve_primary_cost_per_million, run_delegation_flow,
     update_cached_local_selection_from_completion, DelegationEnforcementError, DelegationMode,
-    LocalTarget, TaskType,
+    DelegationPricingContext, LocalTarget, TaskType,
 };
 use crate::llm::local_library::resolve_local_ollama_base_url;
 use crate::llm::local_library::{
@@ -35,6 +35,12 @@ pub struct DelegateRequest {
     context: String,
     #[serde(default)]
     agent: Option<String>,
+    #[serde(default, alias = "callerAgentId")]
+    caller_agent_id: Option<String>,
+    #[serde(default, alias = "callerModel")]
+    caller_model: Option<String>,
+    #[serde(default, alias = "primaryCostPerMillion")]
+    primary_cost_per_million: Option<f64>,
     #[serde(default)]
     max_tokens: Option<u32>,
     #[serde(default)]
@@ -247,6 +253,40 @@ pub async fn delegate_handler(
         (None, Some(value)) => Some(value.to_string()),
         _ => None,
     };
+    let caller_agent_id = headers
+        .get("x-docdex-agent-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            payload
+                .caller_agent_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+        .or_else(|| state.default_agent_id.clone());
+    let caller_model = headers
+        .get("x-docdex-agent-model")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            payload
+                .caller_model
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        });
+    let pricing_context = DelegationPricingContext {
+        caller_agent_id,
+        caller_model,
+        primary_cost_per_million: payload.primary_cost_per_million,
+    };
     let local_override = local_agent_override
         .as_deref()
         .map(|value| !value.trim().is_empty())
@@ -338,6 +378,7 @@ pub async fn delegate_handler(
     );
     let primary_cost_per_million = resolve_primary_cost_per_million(
         &state.llm_config,
+        Some(&pricing_context),
         primary_targets.first(),
         library.as_ref(),
     );

@@ -13,8 +13,18 @@ use crate::search::{repo_error_response, resolve_repo_context, AppState};
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]
 struct DelegationTelemetryPricing {
-    primary_usd_per_1k_tokens: f64,
-    local_usd_per_1k_tokens: f64,
+    #[serde(rename = "primary_usd_per_1k_tokens")]
+    legacy_primary_usd_per_1k_tokens: f64,
+    #[serde(rename = "local_usd_per_1k_tokens")]
+    legacy_local_usd_per_1k_tokens: f64,
+    primary_usd_per_million_tokens: f64,
+    local_usd_per_million_tokens: f64,
+    configured_primary_usd_per_million_tokens: f64,
+    configured_local_usd_per_million_tokens: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effective_avoided_primary_usd_per_million_tokens: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effective_local_usd_per_million_tokens: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -31,6 +41,8 @@ struct DelegationTelemetryResponse {
     delegate_token_savings_total: u64,
     delegate_local_cost_micros_total: u64,
     delegate_primary_cost_micros_total: u64,
+    delegate_avoided_primary_cost_micros_total: u64,
+    delegate_avoided_primary_cost_usd: f64,
     delegate_cost_savings_micros_total: u64,
     delegate_cost_savings_usd: f64,
     pricing: DelegationTelemetryPricing,
@@ -93,9 +105,21 @@ fn build_delegation_response(
     let primary_tokens = metrics.delegate_primary_tokens_total;
     let local_cost = metrics.delegate_local_cost_micros_total;
     let primary_cost = metrics.delegate_primary_cost_micros_total;
+    let avoided_primary_cost = local_cost.saturating_add(cost_micros);
+    let avoided_primary_cost_usd = avoided_primary_cost as f64 / 1_000_000.0;
+    let effective_avoided_primary_usd_per_million_tokens =
+        effective_cost_per_million(avoided_primary_cost, metrics.delegate_token_savings_total);
+    let effective_local_usd_per_million_tokens =
+        effective_cost_per_million(local_cost, local_tokens);
     let pricing = DelegationTelemetryPricing {
-        primary_usd_per_1k_tokens: config.primary_usd_per_1k_tokens,
-        local_usd_per_1k_tokens: config.local_usd_per_1k_tokens,
+        legacy_primary_usd_per_1k_tokens: config.primary_usd_per_million_tokens,
+        legacy_local_usd_per_1k_tokens: config.local_usd_per_million_tokens,
+        primary_usd_per_million_tokens: config.primary_usd_per_million_tokens,
+        local_usd_per_million_tokens: config.local_usd_per_million_tokens,
+        configured_primary_usd_per_million_tokens: config.primary_usd_per_million_tokens,
+        configured_local_usd_per_million_tokens: config.local_usd_per_million_tokens,
+        effective_avoided_primary_usd_per_million_tokens,
+        effective_local_usd_per_million_tokens,
     };
 
     DelegationTelemetryResponse {
@@ -110,9 +134,19 @@ fn build_delegation_response(
         delegate_token_savings_total: metrics.delegate_token_savings_total,
         delegate_local_cost_micros_total: local_cost,
         delegate_primary_cost_micros_total: primary_cost,
+        delegate_avoided_primary_cost_micros_total: avoided_primary_cost,
+        delegate_avoided_primary_cost_usd: avoided_primary_cost_usd,
         delegate_cost_savings_micros_total: cost_micros,
         delegate_cost_savings_usd: cost_usd,
         pricing,
+    }
+}
+
+fn effective_cost_per_million(cost_micros: u64, tokens: u64) -> Option<f64> {
+    if tokens == 0 {
+        None
+    } else {
+        Some(cost_micros as f64 / tokens as f64)
     }
 }
 
@@ -244,6 +278,58 @@ mod tests {
             mcp_router: None,
         };
         Ok((state, repo_metrics, temp))
+    }
+
+    #[tokio::test]
+    async fn delegation_telemetry_handler_includes_canonical_pricing_fields(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (mut state, repo_metrics, _temp) = build_test_state(1)?;
+        state.llm_config.delegation.primary_usd_per_million_tokens = 12.5;
+        state.llm_config.delegation.local_usd_per_million_tokens = 0.25;
+        let repo_metrics = repo_metrics[0].1.clone();
+        repo_metrics.inc_delegate_request();
+        repo_metrics.inc_delegate_offloaded();
+        repo_metrics.record_delegate_local_tokens(100_000);
+        repo_metrics.record_delegate_token_savings(100_000);
+        repo_metrics.record_delegate_local_cost_micros(25_000);
+        repo_metrics.record_delegate_cost_savings_micros(1_225_000);
+
+        let response = delegation_telemetry_handler(
+            State(state),
+            HeaderMap::new(),
+            Query(DelegationTelemetryQuery::default()),
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        let body = response.into_body().collect().await?.to_bytes();
+        let payload: serde_json::Value = serde_json::from_slice(&body)?;
+        let pricing = payload.get("pricing").expect("pricing payload");
+        assert_eq!(
+            pricing
+                .get("primary_usd_per_million_tokens")
+                .and_then(|value| value.as_f64()),
+            Some(12.5)
+        );
+        assert_eq!(
+            pricing
+                .get("local_usd_per_million_tokens")
+                .and_then(|value| value.as_f64()),
+            Some(0.25)
+        );
+        assert_eq!(
+            pricing
+                .get("primary_usd_per_1k_tokens")
+                .and_then(|value| value.as_f64()),
+            Some(12.5)
+        );
+        assert_eq!(
+            pricing
+                .get("local_usd_per_1k_tokens")
+                .and_then(|value| value.as_f64()),
+            Some(0.25)
+        );
+        Ok(())
     }
 
     #[tokio::test]

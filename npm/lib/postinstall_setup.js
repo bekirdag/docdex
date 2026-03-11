@@ -1359,6 +1359,11 @@ function upsertCodexConfig(pathname, url) {
   return true;
 }
 
+function warnCodexRestart(logger, changed) {
+  if (!changed) return;
+  logger?.warn?.("[docdex] Codex MCP config updated. Restart Codex to reload the MCP endpoint.");
+}
+
 function clientConfigPaths() {
   const home = os.homedir();
   const appData = process.env.APPDATA || path.join(home, "AppData", "Roaming");
@@ -2831,7 +2836,8 @@ async function runPostInstallSetup({ binaryPath, logger, env, skipDaemon, distBa
   if (paths.zed) {
     upsertZedConfig(paths.zed, url);
   }
-  upsertCodexConfig(paths.codex, httpUrl);
+  const codexChanged = upsertCodexConfig(paths.codex, httpUrl);
+  warnCodexRestart(log, codexChanged);
   applyAgentInstructions({ logger: log });
   if (startupOk) {
     clearStartupFailure();
@@ -2861,6 +2867,7 @@ module.exports = {
   upsertMcpServerJson,
   upsertZedConfig,
   upsertCodexConfig,
+  warnCodexRestart,
   configUrlForPort,
   configStreamableUrlForPort,
   parseEnvBool,

@@ -12,9 +12,10 @@ use crate::llm::delegation::{
     allowlist_allows, build_local_target_candidates_with_config, build_primary_target_candidates,
     compute_cost_micros, compute_delegation_savings, local_selection_policy_requires_fresh_library,
     mode_from_config, parse_local_target_override, resolve_local_cost_per_million,
-    resolve_primary_cost_per_million, run_delegation_flow,
-    update_cached_local_selection_from_completion, DelegationEnforcementError, DelegationMode,
-    DelegationPricingContext, LocalTarget, TaskType,
+    resolve_primary_cost_per_million, run_delegation_flow_with_failure_history,
+    update_cached_local_selection_from_completion, DelegationEnforcementError,
+    DelegationFailureHistoryContext, DelegationMode, DelegationPricingContext, LocalTarget,
+    TaskType,
 };
 use crate::llm::local_library::resolve_local_ollama_base_url;
 use crate::llm::local_library::{
@@ -309,7 +310,13 @@ pub async fn delegate_handler(
     }
 
     let started_at = Instant::now();
-    let result = run_delegation_flow(
+    let failure_history = DelegationFailureHistoryContext {
+        global_state_dir: state.global_state_dir.clone(),
+        repo_id: Some(repo.repo_id.clone()),
+        repo_root: Some(repo.indexer.repo_root().display().to_string()),
+        source: Some("http".to_string()),
+    };
+    let result = run_delegation_flow_with_failure_history(
         &state.llm_config,
         local_agent_override.as_deref(),
         &local_targets,
@@ -321,6 +328,7 @@ pub async fn delegate_handler(
         payload.max_tokens,
         payload.timeout_ms,
         mode,
+        Some(failure_history),
     )
     .await
     .map_err(|err| {

@@ -2,10 +2,12 @@ use super::delegation::{
     allowlist_allows, compute_delegation_savings, local_selection_policy_requires_fresh_library,
     mode_from_config, parse_local_target_override, reevaluation_should_use_primary_client,
     render_prompt, resolve_delegation_client, resolve_local_cost_per_million,
-    resolve_primary_cost_per_million, run_flow_with_client_candidates, run_flow_with_clients,
+    resolve_primary_cost_per_million, run_flow_with_client_candidates,
+    run_flow_with_client_candidates_with_failure_history, run_flow_with_clients,
     select_local_target, select_local_target_with_config, select_primary_target,
     update_cached_local_selection_from_completion, validate_output, DelegationEnforcementError,
-    DelegationMode, DelegationPricingContext, DelegationReevaluation, LocalTarget, TaskType,
+    DelegationFailureHistoryContext, DelegationMode, DelegationPricingContext,
+    DelegationReevaluation, LocalTarget, TaskType,
 };
 use super::delegation_rating::{
     compute_alpha, compute_run_score, estimate_complexity, fallback_quality_score,
@@ -1542,6 +1544,115 @@ async fn delegation_flow_returns_draft_when_refine_fails() {
     assert_eq!(result.completion.output, "draft");
     assert!(result.draft);
     assert!(result.fallback_used);
+}
+
+#[tokio::test]
+async fn delegation_flow_writes_completion_failure_history() {
+    let state_dir = TempDir::new().expect("temp state dir");
+    let result = run_flow_with_client_candidates_with_failure_history(
+        TaskType::FormatCode,
+        "Format this code",
+        "let  a=1;",
+        200,
+        DelegationMode::DraftOnly,
+        16,
+        Duration::from_secs(1),
+        vec![Arc::new(ErrorClient)],
+        vec!["test-local".to_string()],
+        vec![Arc::new(StaticClient::new("primary", "primary"))],
+        false,
+        None,
+        None,
+        Some(DelegationFailureHistoryContext {
+            global_state_dir: Some(state_dir.path().to_path_buf()),
+            repo_id: Some("repo-1".to_string()),
+            repo_root: Some("/tmp/repo".to_string()),
+            source: Some("test".to_string()),
+        }),
+    )
+    .await
+    .expect("delegation flow");
+
+    assert_eq!(result.completion.output, "primary");
+    let history_path = state_dir
+        .path()
+        .join("logs")
+        .join("errors")
+        .join("delegation_local_failures.jsonl");
+    let raw = fs::read_to_string(history_path).expect("read failure history");
+    let record: serde_json::Value = serde_json::from_str(raw.lines().next().expect("history line"))
+        .expect("parse history line");
+    assert_eq!(
+        record.get("kind").and_then(|value| value.as_str()),
+        Some("local_completion_failed")
+    );
+    assert_eq!(
+        record
+            .get("recovery_action")
+            .and_then(|value| value.as_str()),
+        Some("fallback_to_primary")
+    );
+    assert_eq!(
+        record.get("local_target").and_then(|value| value.as_str()),
+        Some("test-local")
+    );
+    assert_eq!(
+        record.get("repo_id").and_then(|value| value.as_str()),
+        Some("repo-1")
+    );
+}
+
+#[tokio::test]
+async fn delegation_flow_writes_validation_failure_history() {
+    let state_dir = TempDir::new().expect("temp state dir");
+    let err = run_flow_with_client_candidates_with_failure_history(
+        TaskType::FormatCode,
+        "Format this code",
+        "let  a=1;",
+        200,
+        DelegationMode::DraftOnly,
+        16,
+        Duration::from_secs(1),
+        vec![Arc::new(StaticClient::new("", "local"))],
+        vec!["test-local".to_string()],
+        Vec::new(),
+        false,
+        None,
+        None,
+        Some(DelegationFailureHistoryContext {
+            global_state_dir: Some(state_dir.path().to_path_buf()),
+            repo_id: Some("repo-2".to_string()),
+            repo_root: Some("/tmp/repo".to_string()),
+            source: Some("test".to_string()),
+        }),
+    )
+    .await
+    .err()
+    .expect("delegation error");
+
+    assert!(err.to_string().contains("failure history"));
+    let history_path = state_dir
+        .path()
+        .join("logs")
+        .join("errors")
+        .join("delegation_local_failures.jsonl");
+    let raw = fs::read_to_string(history_path).expect("read failure history");
+    let record: serde_json::Value = serde_json::from_str(raw.lines().next().expect("history line"))
+        .expect("parse history line");
+    assert_eq!(
+        record.get("kind").and_then(|value| value.as_str()),
+        Some("local_validation_failed")
+    );
+    assert_eq!(
+        record
+            .get("recovery_action")
+            .and_then(|value| value.as_str()),
+        Some("return_error")
+    );
+    assert_eq!(
+        record.get("source").and_then(|value| value.as_str()),
+        Some("test")
+    );
 }
 
 #[tokio::test]

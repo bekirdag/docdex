@@ -1,4 +1,4 @@
----- START OF DOCDEX INFO V0.2.50 ----
+---- START OF DOCDEX INFO V0.2.51 ----
 Docdex URL: http://127.0.0.1:28491
 Use this base URL for Docdex HTTP endpoints.
 Health check endpoint: `GET /healthz` (not `/v1/health`).

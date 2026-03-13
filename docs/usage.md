@@ -395,6 +395,7 @@ Notes:
 - `task_allowlist` is optional; an empty list allows all task types.
 - `draft_then_refine` returns a primary-agent refinement when available; otherwise returns the local draft with a warning.
 - If local delegation execution fails at runtime (for example missing local CLI binary), Docdex returns a warning and uses the configured/selected primary target when fallback is enabled.
+- Local delegation failures are also appended to `~/.docdex/state/logs/errors/delegation_local_failures.jsonl` with source, repo, task type, local target, recovery action, and error details. This dedicated failure history is written independently of `DOCDEX_LOG_TO_STATE`.
 - `enforce_local = true` requires a local agent/model to be available; if `allow_fallback_to_primary = false`, primary usage (fallback/refine) is disabled and the local draft is returned.
 - Local model library: `~/.docdex/state/llm/local_model_library.json` (or under `DOCDEX_STATE_DIR`).
 - Config compatibility: legacy config keys `primary_usd_per_1k_tokens` and `local_usd_per_1k_tokens` are still accepted on read, but Docdex now writes the canonical `*_usd_per_million_tokens` names.

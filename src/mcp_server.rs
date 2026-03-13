@@ -17,9 +17,10 @@ use crate::llm::delegation::{
     allowlist_allows, build_local_target_candidates_with_config, build_primary_target_candidates,
     compute_cost_micros, compute_delegation_savings, local_selection_policy_requires_fresh_library,
     mode_from_config, parse_local_target_override, resolve_local_cost_per_million,
-    resolve_primary_cost_per_million, run_delegation_flow,
-    update_cached_local_selection_from_completion, DelegationEnforcementError, DelegationMode,
-    DelegationPricingContext, LocalTarget, TaskType,
+    resolve_primary_cost_per_million, run_delegation_flow_with_failure_history,
+    update_cached_local_selection_from_completion, DelegationEnforcementError,
+    DelegationFailureHistoryContext, DelegationMode, DelegationPricingContext, LocalTarget,
+    TaskType,
 };
 use crate::llm::local_library::{
     delegation_is_enabled, load_local_library, refresh_local_library,
@@ -3228,7 +3229,13 @@ Produce a phased plan with risks and tests to run."
             .into());
         }
         let started_at = Instant::now();
-        let result = run_delegation_flow(
+        let failure_history = DelegationFailureHistoryContext {
+            global_state_dir: self.global_state_dir.clone(),
+            repo_id: Some(self.repo_id.clone()),
+            repo_root: Some(self.repo_root.display().to_string()),
+            source: Some("mcp".to_string()),
+        };
+        let result = run_delegation_flow_with_failure_history(
             &llm_config,
             local_agent_override.as_deref(),
             &local_targets,
@@ -3240,6 +3247,7 @@ Produce a phased plan with risks and tests to run."
             args.max_tokens,
             args.timeout_ms,
             mode,
+            Some(failure_history),
         )
         .await
         .map_err(|err| {

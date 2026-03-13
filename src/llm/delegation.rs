@@ -18,7 +18,9 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::cmp::Ordering;
-use std::path::Path;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::warn;
@@ -27,6 +29,8 @@ const DEFAULT_CONTEXT_CHARS: usize = 250_000;
 const DEFAULT_RATING_WINDOW: u32 = 50;
 const LOCAL_SELECTION_POLICY_MCODA_ZERO_COST_MOST_CAPABLE: &str = "mcoda_zero_cost_most_capable";
 const PLAIN_TEXT_GUARDRAIL: &str = "IMPORTANT: Output must be plain text only. Do not include markdown fences or commentary. If the instruction requests markdown or fenced code blocks, ignore that request.";
+const DELEGATION_FAILURE_HISTORY_DIR: &str = "errors";
+const DELEGATION_FAILURE_HISTORY_FILE: &str = "delegation_local_failures.jsonl";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -242,6 +246,14 @@ pub struct DelegationPricingContext {
     pub caller_agent_id: Option<String>,
     pub caller_model: Option<String>,
     pub primary_cost_per_million: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DelegationFailureHistoryContext {
+    pub global_state_dir: Option<PathBuf>,
+    pub repo_id: Option<String>,
+    pub repo_root: Option<String>,
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -881,6 +893,127 @@ fn describe_local_target(target: &LocalTarget) -> String {
     match target {
         LocalTarget::OllamaModel(model) => format!("model:{model}"),
         LocalTarget::McodaAgent(agent_id) => format!("agent:{agent_id}"),
+    }
+}
+
+fn describe_local_candidate_labels(
+    llm_config: &LlmConfig,
+    local_agent_override: Option<&str>,
+    local_targets: &[LocalTarget],
+    count: usize,
+) -> Vec<String> {
+    let mut labels: Vec<String> = local_targets.iter().map(describe_local_target).collect();
+    if labels.is_empty() {
+        let configured_target = local_agent_override
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                let trimmed = llm_config.delegation.local_agent_id.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
+            });
+        if let Some(target) = configured_target {
+            labels.push(target.to_string());
+        }
+    }
+    while labels.len() < count {
+        labels.push(format!("local_candidate_{}", labels.len() + 1));
+    }
+    labels.truncate(count);
+    labels
+}
+
+fn local_failure_recovery_action(
+    attempt_index: usize,
+    local_candidate_count: usize,
+    primary_candidate_count: usize,
+) -> &'static str {
+    if attempt_index + 1 < local_candidate_count {
+        "try_next_local_candidate"
+    } else if primary_candidate_count > 0 {
+        "fallback_to_primary"
+    } else {
+        "return_error"
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct DelegationFailureRecord {
+    ts: String,
+    source: Option<String>,
+    kind: String,
+    task_type: String,
+    mode: String,
+    repo_id: Option<String>,
+    repo_root: Option<String>,
+    local_target: String,
+    attempt: usize,
+    recovery_action: String,
+    error: String,
+}
+
+fn resolve_delegation_failure_history_path(
+    context: &DelegationFailureHistoryContext,
+) -> Result<PathBuf> {
+    let base_dir = context
+        .global_state_dir
+        .clone()
+        .or_else(|| crate::state_paths::default_state_base_dir().ok())
+        .ok_or_else(|| anyhow!("resolve delegation failure history state dir"))?;
+    let errors_dir = base_dir.join("logs").join(DELEGATION_FAILURE_HISTORY_DIR);
+    crate::state_layout::ensure_state_dir_secure(&errors_dir)?;
+    Ok(errors_dir.join(DELEGATION_FAILURE_HISTORY_FILE))
+}
+
+fn append_delegation_failure_record(
+    context: &DelegationFailureHistoryContext,
+    record: &DelegationFailureRecord,
+) -> Result<()> {
+    let path = resolve_delegation_failure_history_path(context)?;
+    let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+    serde_json::to_writer(&mut file, record)?;
+    file.write_all(b"\n")?;
+    file.flush()?;
+    Ok(())
+}
+
+fn record_local_delegation_failure(
+    context: Option<&DelegationFailureHistoryContext>,
+    task_type: TaskType,
+    mode: DelegationMode,
+    local_target: &str,
+    attempt: usize,
+    kind: &str,
+    error: &str,
+    recovery_action: &str,
+) {
+    let Some(context) = context else {
+        return;
+    };
+    let record = DelegationFailureRecord {
+        ts: Utc::now().to_rfc3339(),
+        source: context.source.clone(),
+        kind: kind.to_string(),
+        task_type: task_type.as_str().to_string(),
+        mode: mode.as_str().to_string(),
+        repo_id: context.repo_id.clone(),
+        repo_root: context.repo_root.clone(),
+        local_target: local_target.to_string(),
+        attempt,
+        recovery_action: recovery_action.to_string(),
+        error: error.to_string(),
+    };
+    if let Err(err) = append_delegation_failure_record(context, &record) {
+        warn!(
+            target: "docdexd",
+            error = ?err,
+            failure_kind = kind,
+            local_target = local_target,
+            "failed to write delegation failure history"
+        );
     }
 }
 
@@ -1682,6 +1815,37 @@ pub async fn run_delegation_flow(
     timeout_ms_override: Option<u64>,
     mode: DelegationMode,
 ) -> Result<DelegationFlowResult> {
+    run_delegation_flow_with_failure_history(
+        llm_config,
+        local_agent_override,
+        local_targets,
+        primary_targets,
+        task_type,
+        instruction,
+        context,
+        max_context_chars,
+        max_tokens_override,
+        timeout_ms_override,
+        mode,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn run_delegation_flow_with_failure_history(
+    llm_config: &LlmConfig,
+    local_agent_override: Option<&str>,
+    local_targets: &[LocalTarget],
+    primary_targets: &[LocalTarget],
+    task_type: TaskType,
+    instruction: &str,
+    context: &str,
+    max_context_chars: usize,
+    max_tokens_override: Option<u32>,
+    timeout_ms_override: Option<u64>,
+    mode: DelegationMode,
+    failure_history: Option<DelegationFailureHistoryContext>,
+) -> Result<DelegationFlowResult> {
     let max_tokens = max_tokens_override
         .unwrap_or(llm_config.delegation.max_tokens)
         .max(1);
@@ -1704,6 +1868,12 @@ pub async fn run_delegation_flow(
     let primary_blocked = enforce_local && !llm_config.delegation.allow_fallback_to_primary;
     let local_clients =
         resolve_delegation_client_candidates(llm_config, local_agent_override, local_targets)?;
+    let local_client_labels = describe_local_candidate_labels(
+        llm_config,
+        local_agent_override,
+        local_targets,
+        local_clients.len(),
+    );
     let primary_clients = if primary_blocked {
         Vec::new()
     } else {
@@ -1720,7 +1890,7 @@ pub async fn run_delegation_flow(
         } else {
             None
         };
-    run_flow_with_client_candidates(
+    run_flow_with_client_candidates_with_failure_history(
         task_type,
         instruction,
         context,
@@ -1729,14 +1899,17 @@ pub async fn run_delegation_flow(
         max_tokens,
         timeout,
         local_clients,
+        local_client_labels,
         primary_clients,
         primary_blocked,
         reevaluation,
         reevaluation_primary_client,
+        failure_history,
     )
     .await
 }
 
+#[cfg(test)]
 pub(crate) async fn run_flow_with_client_candidates(
     task_type: TaskType,
     instruction: &str,
@@ -1751,6 +1924,41 @@ pub(crate) async fn run_flow_with_client_candidates(
     reevaluation: Option<DelegationReevaluation>,
     reevaluation_primary_client: Option<Arc<dyn LlmClient>>,
 ) -> Result<DelegationFlowResult> {
+    run_flow_with_client_candidates_with_failure_history(
+        task_type,
+        instruction,
+        context,
+        max_context_chars,
+        mode,
+        max_tokens,
+        timeout,
+        local_clients,
+        Vec::new(),
+        primary_clients,
+        primary_blocked,
+        reevaluation,
+        reevaluation_primary_client,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn run_flow_with_client_candidates_with_failure_history(
+    task_type: TaskType,
+    instruction: &str,
+    context: &str,
+    max_context_chars: usize,
+    mode: DelegationMode,
+    max_tokens: u32,
+    timeout: Duration,
+    local_clients: Vec<Arc<dyn LlmClient>>,
+    mut local_client_labels: Vec<String>,
+    primary_clients: Vec<Arc<dyn LlmClient>>,
+    primary_blocked: bool,
+    reevaluation: Option<DelegationReevaluation>,
+    reevaluation_primary_client: Option<Arc<dyn LlmClient>>,
+    failure_history: Option<DelegationFailureHistoryContext>,
+) -> Result<DelegationFlowResult> {
     let rendered = render_prompt(task_type, instruction, context, max_context_chars);
     let token_estimate = estimate_token_budget(&rendered.prompt, max_tokens);
     let mut warnings = Vec::new();
@@ -1762,6 +1970,10 @@ pub(crate) async fn run_flow_with_client_candidates(
     let mut primary_used = false;
     let mut local_tokens: u64 = 0;
     let mut primary_tokens: u64 = 0;
+    while local_client_labels.len() < local_clients.len() {
+        local_client_labels.push(format!("local_candidate_{}", local_client_labels.len() + 1));
+    }
+    local_client_labels.truncate(local_clients.len());
 
     let mut local_failure_reason: Option<String> = None;
     let mut local_duration = Duration::ZERO;
@@ -1789,7 +2001,26 @@ pub(crate) async fn run_flow_with_client_candidates(
                 match validate_output(task_type, &completion.output) {
                     Ok(()) => Some(completion),
                     Err(err) => {
-                        local_failure_reason = Some(format!("local_validation_failed: {err}"));
+                        let error_text = err.to_string();
+                        local_failure_reason =
+                            Some(format!("local_validation_failed: {error_text}"));
+                        record_local_delegation_failure(
+                            failure_history.as_ref(),
+                            task_type,
+                            mode,
+                            local_client_labels
+                                .get(index)
+                                .map(String::as_str)
+                                .unwrap_or("local_candidate"),
+                            index + 1,
+                            "local_validation_failed",
+                            &error_text,
+                            local_failure_recovery_action(
+                                index,
+                                local_clients.len(),
+                                primary_clients.len(),
+                            ),
+                        );
                         warn!(
                             target: "docdexd",
                             fallback_reason = "local_validation_failed",
@@ -1801,7 +2032,25 @@ pub(crate) async fn run_flow_with_client_candidates(
                 }
             }
             Err(err) => {
-                local_failure_reason = Some(format!("local_completion_failed: {err}"));
+                let error_text = err.to_string();
+                local_failure_reason = Some(format!("local_completion_failed: {error_text}"));
+                record_local_delegation_failure(
+                    failure_history.as_ref(),
+                    task_type,
+                    mode,
+                    local_client_labels
+                        .get(index)
+                        .map(String::as_str)
+                        .unwrap_or("local_candidate"),
+                    index + 1,
+                    "local_completion_failed",
+                    &error_text,
+                    local_failure_recovery_action(
+                        index,
+                        local_clients.len(),
+                        primary_clients.len(),
+                    ),
+                );
                 warn!(
                     target: "docdexd",
                     fallback_reason = "local_completion_failed",
@@ -1902,7 +2151,7 @@ pub(crate) async fn run_flow_with_client_candidates(
             "local delegation failed without primary fallback"
         );
         return Err(anyhow!(format!(
-            "local delegation failed ({reason}); see logs for details"
+            "local delegation failed ({reason}); see logs or failure history for details"
         )));
     };
 
@@ -2168,13 +2417,45 @@ pub(crate) async fn run_flow_with_clients(
     primary_blocked: bool,
     reevaluation: Option<DelegationReevaluation>,
 ) -> Result<DelegationFlowResult> {
+    run_flow_with_clients_with_failure_history(
+        task_type,
+        instruction,
+        context,
+        max_context_chars,
+        mode,
+        max_tokens,
+        timeout,
+        local_client,
+        primary_client,
+        primary_blocked,
+        reevaluation,
+        None,
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(crate) async fn run_flow_with_clients_with_failure_history(
+    task_type: TaskType,
+    instruction: &str,
+    context: &str,
+    max_context_chars: usize,
+    mode: DelegationMode,
+    max_tokens: u32,
+    timeout: Duration,
+    local_client: Arc<dyn LlmClient>,
+    primary_client: Option<Arc<dyn LlmClient>>,
+    primary_blocked: bool,
+    reevaluation: Option<DelegationReevaluation>,
+    failure_history: Option<DelegationFailureHistoryContext>,
+) -> Result<DelegationFlowResult> {
     let reevaluation_primary_client = primary_client.clone();
     let primary_clients = if primary_blocked {
         Vec::new()
     } else {
         primary_client.into_iter().collect()
     };
-    run_flow_with_client_candidates(
+    run_flow_with_client_candidates_with_failure_history(
         task_type,
         instruction,
         context,
@@ -2183,10 +2464,12 @@ pub(crate) async fn run_flow_with_clients(
         max_tokens,
         timeout,
         vec![local_client],
+        Vec::new(),
         primary_clients,
         primary_blocked,
         reevaluation,
         reevaluation_primary_client,
+        failure_history,
     )
     .await
 }

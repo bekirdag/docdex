@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.51
+- Persist local delegation failures to `~/.docdex/state/logs/errors/delegation_local_failures.jsonl` with repo/source metadata and recovery details.
+- Document the packaged delegation failure history path in the usage guide.
+
 ## 0.2.50
 - Attribute delegation savings to the actual expensive caller via `caller_agent_id`, `caller_model`, or `primary_cost_per_million`, and expose avoided primary cost plus effective per-1M telemetry rates.
 - Canonicalize delegation pricing config to `primary_usd_per_million_tokens` and `local_usd_per_million_tokens` while preserving legacy `*_usd_per_1k_tokens` compatibility in packaged docs and telemetry.

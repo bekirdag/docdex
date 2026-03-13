@@ -1,6 +1,7 @@
 use hdrhistogram::Histogram;
 use once_cell::sync::Lazy;
 use parking_lot::{Mutex, RwLock};
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -130,9 +131,40 @@ impl DelegationMetrics {
         self.delegate_local_enforced_failures_total
             .load(Ordering::Relaxed)
     }
+
+    pub fn snapshot(&self) -> DelegationTelemetrySnapshot {
+        DelegationTelemetrySnapshot::from_delegation_metrics(self)
+    }
+
+    pub fn apply_snapshot(&self, snapshot: DelegationTelemetrySnapshot) {
+        self.delegate_requests
+            .store(snapshot.delegate_requests_total, Ordering::Relaxed);
+        self.delegate_offloaded_total
+            .store(snapshot.delegate_offloaded_total, Ordering::Relaxed);
+        self.delegate_fallbacks
+            .store(snapshot.delegate_fallbacks_total, Ordering::Relaxed);
+        self.delegate_token_estimate_total
+            .store(snapshot.delegate_token_estimate_total, Ordering::Relaxed);
+        self.delegate_local_tokens_total
+            .store(snapshot.delegate_local_tokens_total, Ordering::Relaxed);
+        self.delegate_primary_tokens_total
+            .store(snapshot.delegate_primary_tokens_total, Ordering::Relaxed);
+        self.delegate_token_savings_total
+            .store(snapshot.delegate_token_savings_total, Ordering::Relaxed);
+        self.delegate_local_cost_micros_total
+            .store(snapshot.delegate_local_cost_micros_total, Ordering::Relaxed);
+        self.delegate_primary_cost_micros_total.store(
+            snapshot.delegate_primary_cost_micros_total,
+            Ordering::Relaxed,
+        );
+        self.delegate_cost_savings_micros_total.store(
+            snapshot.delegate_cost_savings_micros_total,
+            Ordering::Relaxed,
+        );
+    }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DelegationTelemetrySnapshot {
     pub delegate_requests_total: u64,
     pub delegate_offloaded_total: u64,
@@ -605,6 +637,37 @@ impl Metrics {
     pub fn delegate_local_enforced_failures_total(&self) -> u64 {
         self.delegate_local_enforced_failures_total
             .load(Ordering::Relaxed)
+    }
+
+    pub fn delegation_snapshot(&self) -> DelegationTelemetrySnapshot {
+        DelegationTelemetrySnapshot::from_metrics(self)
+    }
+
+    pub fn apply_delegation_snapshot(&self, snapshot: DelegationTelemetrySnapshot) {
+        self.delegate_requests
+            .store(snapshot.delegate_requests_total, Ordering::Relaxed);
+        self.delegate_offloaded_total
+            .store(snapshot.delegate_offloaded_total, Ordering::Relaxed);
+        self.delegate_fallbacks
+            .store(snapshot.delegate_fallbacks_total, Ordering::Relaxed);
+        self.delegate_token_estimate_total
+            .store(snapshot.delegate_token_estimate_total, Ordering::Relaxed);
+        self.delegate_local_tokens_total
+            .store(snapshot.delegate_local_tokens_total, Ordering::Relaxed);
+        self.delegate_primary_tokens_total
+            .store(snapshot.delegate_primary_tokens_total, Ordering::Relaxed);
+        self.delegate_token_savings_total
+            .store(snapshot.delegate_token_savings_total, Ordering::Relaxed);
+        self.delegate_local_cost_micros_total
+            .store(snapshot.delegate_local_cost_micros_total, Ordering::Relaxed);
+        self.delegate_primary_cost_micros_total.store(
+            snapshot.delegate_primary_cost_micros_total,
+            Ordering::Relaxed,
+        );
+        self.delegate_cost_savings_micros_total.store(
+            snapshot.delegate_cost_savings_micros_total,
+            Ordering::Relaxed,
+        );
     }
 
     pub fn inc_project_map_cache_hit(&self) {

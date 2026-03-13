@@ -81,6 +81,10 @@ pub async fn delegation_telemetry_handler(
 }
 
 fn delegation_snapshot_for_all(state: &AppState) -> DelegationTelemetrySnapshot {
+    let snapshot = DelegationTelemetrySnapshot::from_metrics(state.metrics.as_ref());
+    if !snapshot.is_zero() {
+        return snapshot;
+    }
     if let Some(manager) = state.repos.as_ref() {
         let snapshot = manager.delegation_metrics_snapshot();
         if !snapshot.is_zero() {
@@ -92,7 +96,7 @@ fn delegation_snapshot_for_all(state: &AppState) -> DelegationTelemetrySnapshot 
     if !snapshot.is_zero() {
         return snapshot;
     }
-    DelegationTelemetrySnapshot::from_metrics(state.metrics.as_ref())
+    snapshot
 }
 
 fn build_delegation_response(
@@ -621,6 +625,76 @@ mod tests {
                 .get("delegate_cost_savings_micros_total")
                 .and_then(|value| value.as_u64()),
             Some(6)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn delegation_telemetry_handler_prefers_global_metrics_for_all_flag(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (state, repo_metrics, _temp) = build_test_state(2)?;
+        let repo_one_metrics = repo_metrics[0].1.clone();
+        let repo_two_metrics = repo_metrics[1].1.clone();
+
+        repo_one_metrics.inc_delegate_request();
+        repo_one_metrics.record_delegate_local_tokens(11);
+        repo_one_metrics.record_delegate_token_savings(11);
+        repo_two_metrics.inc_delegate_request();
+        repo_two_metrics.inc_delegate_request();
+        repo_two_metrics.inc_delegate_offloaded();
+        repo_two_metrics.record_delegate_local_tokens(25);
+        repo_two_metrics.record_delegate_primary_tokens(4);
+        repo_two_metrics.record_delegate_token_savings(25);
+
+        state.metrics.inc_delegate_request();
+        state.metrics.inc_delegate_request();
+        state.metrics.inc_delegate_request();
+        state.metrics.inc_delegate_request();
+        state.metrics.inc_delegate_offloaded();
+        state.metrics.inc_delegate_offloaded();
+        state.metrics.record_delegate_token_estimate(80);
+        state.metrics.record_delegate_local_tokens(70);
+        state.metrics.record_delegate_primary_tokens(5);
+        state.metrics.record_delegate_token_savings(70);
+        state.metrics.record_delegate_local_cost_micros(100);
+        state.metrics.record_delegate_cost_savings_micros(200);
+
+        let response = delegation_telemetry_handler(
+            State(state),
+            HeaderMap::new(),
+            Query(DelegationTelemetryQuery {
+                repo_id: None,
+                all: true,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        let body = response.into_body().collect().await?.to_bytes();
+        let payload: serde_json::Value = serde_json::from_slice(&body)?;
+        assert_eq!(
+            payload
+                .get("delegate_requests_total")
+                .and_then(|value| value.as_u64()),
+            Some(4)
+        );
+        assert_eq!(
+            payload
+                .get("delegate_offloaded_total")
+                .and_then(|value| value.as_u64()),
+            Some(2)
+        );
+        assert_eq!(
+            payload
+                .get("delegate_local_tokens_total")
+                .and_then(|value| value.as_u64()),
+            Some(70)
+        );
+        assert_eq!(
+            payload
+                .get("delegate_cost_savings_micros_total")
+                .and_then(|value| value.as_u64()),
+            Some(200)
         );
         Ok(())
     }

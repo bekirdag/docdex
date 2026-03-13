@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.52
+- Persist delegation savings telemetry across daemon restarts and reinstalls, including packaged daemon-global `--all` totals and repo-scoped counters.
+- Store daemon-global delegation savings under `~/.docdex/state/telemetry/delegation.json` and repo totals under `~/.docdex/state/repos/<state_key>/delegation_telemetry.json`.
+
 ## 0.2.51
 - Persist local delegation failures to `~/.docdex/state/logs/errors/delegation_local_failures.jsonl` with repo/source metadata and recovery details.
 - Document the packaged delegation failure history path in the usage guide.

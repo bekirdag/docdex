@@ -4,11 +4,13 @@ pub mod multi_repo;
 
 use crate::audit::AuditLogger;
 use crate::config::RepoArgs;
+use crate::delegation_telemetry;
 use crate::error::StartupError;
 use crate::index::{IndexConfig, Indexer};
 use crate::ipc::mcp_ipc;
 use crate::libs;
 use crate::mcp;
+use crate::memory::repo_state_root_from_state_dir;
 use crate::memory::MemoryStore;
 use crate::metrics;
 use crate::ollama::OllamaEmbedder;
@@ -567,6 +569,12 @@ pub async fn serve(
     };
     let mcp_auth_token = security.auth_token.clone();
     let metrics = Arc::new(metrics::Metrics::default());
+    if let Err(err) = delegation_telemetry::restore_global_metrics_if_empty(
+        metrics.as_ref(),
+        global_state_dir.as_deref(),
+    ) {
+        warn!(target: "docdexd", error = ?err, "failed to restore delegation telemetry");
+    }
     metrics::set_global(metrics.clone());
     let repo_id = repo_manager::repo_fingerprint_sha256(indexer.repo_root()).map_err(|err| {
         StartupError::new(
@@ -589,6 +597,17 @@ pub async fn serve(
             shared_state_dir,
         ));
         let delegation_metrics = manager.delegation_metrics_for_repo_id(&repo_id);
+        if let Err(err) = delegation_telemetry::restore_repo_metrics_if_empty(
+            delegation_metrics.as_ref(),
+            indexer.state_dir(),
+        ) {
+            warn!(
+                target: "docdexd",
+                error = ?err,
+                repo = %repo_display,
+                "failed to restore repo delegation telemetry"
+            );
+        }
         let default_repo = Arc::new(crate::daemon::multi_repo::RepoRuntime {
             repo_id: repo_id.clone(),
             legacy_repo_id: legacy_repo_id.clone(),
@@ -613,7 +632,19 @@ pub async fn serve(
         manager.start_housekeeping();
         (Some(manager), delegation_metrics)
     } else {
-        (None, Arc::new(metrics::DelegationMetrics::default()))
+        let delegation_metrics = Arc::new(metrics::DelegationMetrics::default());
+        if let Err(err) = delegation_telemetry::restore_repo_metrics_if_empty(
+            delegation_metrics.as_ref(),
+            indexer.state_dir(),
+        ) {
+            warn!(
+                target: "docdexd",
+                error = ?err,
+                repo = %repo_state_root_from_state_dir(indexer.state_dir()).display(),
+                "failed to restore repo delegation telemetry"
+            );
+        }
+        (None, delegation_metrics)
     };
 
     let mut mcp_router = None;

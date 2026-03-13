@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use uuid::Uuid;
 
+use crate::delegation_telemetry;
 use crate::error::{
     AppError, ERR_DELEGATION_LOCAL_REQUIRED, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
 };
@@ -23,6 +24,7 @@ use crate::llm::local_library::{
     refresh_local_library_if_stale, refresh_local_library_if_stale_with_web,
     refresh_local_library_with_web,
 };
+use crate::memory::repo_state_root_from_state_dir;
 use crate::orchestrator::web::{run_web_research, WebResearchResponse};
 use crate::orchestrator::WebGateConfig;
 use crate::search::resolve_repo_context;
@@ -435,6 +437,13 @@ pub async fn delegate_handler(
         state.metrics.inc_delegate_fallback();
         repo.delegation_metrics.inc_delegate_fallback();
     }
+    let repo_state_root = repo_state_root_from_state_dir(repo.indexer.state_dir());
+    delegation_telemetry::persist_metrics(
+        state.global_state_dir.as_deref(),
+        state.metrics.as_ref(),
+        Some(repo_state_root.as_path()),
+        Some(repo.delegation_metrics.as_ref()),
+    );
 
     Ok(Json(DelegateResponse {
         id: Uuid::new_v4().to_string(),

@@ -1,3 +1,4 @@
+use crate::delegation_telemetry;
 use crate::index::{IndexConfig, Indexer};
 use crate::libs;
 use crate::memory::MemoryStore;
@@ -320,6 +321,17 @@ impl RepoManager {
             repo_id: repo_id.clone(),
         });
         let delegation_metrics = self.delegation_metrics_for_repo_id(&repo_id);
+        if let Err(err) = delegation_telemetry::restore_repo_metrics_if_empty(
+            delegation_metrics.as_ref(),
+            indexer.state_dir(),
+        ) {
+            warn!(
+                target: "docdexd",
+                error = ?err,
+                repo = %repo_root.display(),
+                "failed to restore repo delegation telemetry"
+            );
+        }
         let repo = Arc::new(RepoRuntime {
             repo_id: repo_id.clone(),
             legacy_repo_id,
@@ -380,6 +392,9 @@ fn is_lock_busy_error(err: &anyhow::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::delegation_telemetry;
+    use crate::metrics::Metrics;
+    use crate::state_layout::resolve_state_paths;
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -457,5 +472,40 @@ mod tests {
         let _ = manager.get_by_id(&mount.repo.repo_id);
         let updated = entry.lock().last_access;
         assert!(updated > stale);
+    }
+
+    #[tokio::test]
+    async fn repo_manager_restores_persisted_repo_delegation_metrics() {
+        let repo = TempDir::new().expect("repo dir");
+        std::fs::write(repo.path().join("README.md"), "# test\n").expect("write file");
+        let state_dir = TempDir::new().expect("state dir");
+        let state_paths = resolve_state_paths(repo.path(), Some(state_dir.path().to_path_buf()))
+            .expect("resolve state paths");
+
+        let persisted = DelegationMetrics::default();
+        persisted.inc_delegate_request();
+        persisted.inc_delegate_offloaded();
+        persisted.record_delegate_local_tokens(9);
+        persisted.record_delegate_token_savings(9);
+        delegation_telemetry::persist_metrics(
+            Some(state_dir.path()),
+            &Metrics::default(),
+            Some(state_paths.repo_root()),
+            Some(&persisted),
+        );
+
+        let manager = RepoManager::new_with_timeouts(
+            None,
+            Some(state_dir.path().to_path_buf()),
+            Duration::from_secs(60),
+            Duration::from_secs(120),
+            Duration::from_secs(60),
+        );
+        let mount = manager.mount_repo(repo.path()).expect("mount repo");
+        let snapshot = mount.repo.delegation_metrics.snapshot();
+        assert_eq!(snapshot.delegate_requests_total, 1);
+        assert_eq!(snapshot.delegate_offloaded_total, 1);
+        assert_eq!(snapshot.delegate_local_tokens_total, 9);
+        assert_eq!(snapshot.delegate_token_savings_total, 9);
     }
 }

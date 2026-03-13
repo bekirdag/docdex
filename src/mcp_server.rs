@@ -1,6 +1,7 @@
 use crate::capabilities::{self, BATCH_SEARCH_MAX_QUERIES, RERANK_MAX_CANDIDATES};
 use crate::config;
 use crate::dag::logging as dag_logging;
+use crate::delegation_telemetry;
 use crate::diff;
 use crate::error::{
     repo_resolution_details, AppError, RateLimited, ERR_BACKOFF_REQUIRED,
@@ -3327,6 +3328,13 @@ Produce a phased plan with risks and tests to run."
             metrics.inc_delegate_fallback();
             self.delegation_metrics.inc_delegate_fallback();
         }
+        let repo_state_root = repo_state_root_from_state_dir(self.indexer.state_dir());
+        delegation_telemetry::persist_metrics(
+            self.global_state_dir.as_deref(),
+            metrics.as_ref(),
+            Some(repo_state_root.as_path()),
+            Some(self.delegation_metrics.as_ref()),
+        );
 
         Ok(json!({
             "id": Uuid::new_v4().to_string(),

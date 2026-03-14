@@ -169,6 +169,26 @@ impl RepoManager {
         snapshot
     }
 
+    pub fn delegation_project_snapshots(
+        &self,
+    ) -> Vec<delegation_telemetry::RepoDelegationTelemetrySnapshot> {
+        let mut snapshots = Vec::new();
+        for entry in self.repos.read().values() {
+            let runtime = entry.lock().runtime.clone();
+            snapshots.push(delegation_telemetry::RepoDelegationTelemetrySnapshot {
+                state_key: runtime.repo_id.clone(),
+                project: repo_manager::normalize_path(&runtime.repo_root),
+                snapshot: runtime.delegation_metrics.snapshot(),
+            });
+        }
+        snapshots.sort_by(|a, b| {
+            a.project
+                .cmp(&b.project)
+                .then_with(|| a.state_key.cmp(&b.state_key))
+        });
+        snapshots
+    }
+
     fn get_entry(&self, repo_id: &str) -> Option<Arc<Mutex<RepoEntry>>> {
         if let Some(entry) = self.repos.read().get(repo_id) {
             return Some(entry.clone());

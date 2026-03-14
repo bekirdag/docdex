@@ -627,15 +627,27 @@ function removeClientConfigs() {
   }
 }
 
-function removeDocdexRoot() {
-  const root = docdexRootPath();
-  if (!fs.existsSync(root)) return false;
-  const resolvedRoot = path.resolve(root);
-  const resolvedHome = path.resolve(os.homedir());
-  const expectedRoot = path.join(resolvedHome, ".docdex");
+function removeDocdexRootIfEmpty({ fsModule = fs, osModule = os, pathModule = path } = {}) {
+  const home = typeof osModule?.homedir === "function" ? osModule.homedir() : os.homedir();
+  if (!home) return false;
+  const root = pathModule.join(home, ".docdex");
+  if (!fsModule.existsSync(root)) return false;
+  const resolvedRoot = pathModule.resolve(root);
+  const expectedRoot = pathModule.join(pathModule.resolve(home), ".docdex");
   if (resolvedRoot !== expectedRoot) return false;
+  let entries = [];
   try {
-    fs.rmSync(resolvedRoot, { recursive: true, force: true });
+    entries = fsModule.readdirSync(resolvedRoot);
+  } catch {
+    return false;
+  }
+  if (entries.length > 0) return false;
+  try {
+    if (typeof fsModule.rmdirSync === "function") {
+      fsModule.rmdirSync(resolvedRoot);
+    } else {
+      fsModule.rmSync(resolvedRoot, { recursive: true, force: true });
+    }
     return true;
   } catch {
     return false;
@@ -738,7 +750,7 @@ async function main() {
   removeClientConfigs();
   clearStartupFailure();
   removeDaemonRootNotice();
-  removeDocdexRoot();
+  removeDocdexRootIfEmpty();
   purgeExternalInstalls();
 }
 
@@ -753,5 +765,6 @@ module.exports = {
   stopDaemonFromLock,
   stopDaemonByName,
   unregisterStartup,
-  removeClientConfigs
+  removeClientConfigs,
+  removeDocdexRootIfEmpty
 };

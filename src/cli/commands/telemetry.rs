@@ -34,6 +34,18 @@ struct DelegationSavingsResponse {
     delegate_cost_savings_micros_total: u64,
     delegate_cost_savings_usd: f64,
     pricing: DelegationSavingsPricing,
+    #[serde(default)]
+    projects: Option<Vec<DelegationSavingsProject>>,
+}
+
+#[derive(Deserialize)]
+struct DelegationSavingsProject {
+    project: String,
+    delegate_requests_total: u64,
+    delegate_offloaded_total: u64,
+    delegate_local_cost_micros_total: u64,
+    delegate_avoided_primary_cost_micros_total: u64,
+    delegate_cost_savings_micros_total: u64,
 }
 
 pub(crate) async fn run(command: crate::cli::DelegationCommand) -> Result<()> {
@@ -176,7 +188,16 @@ fn render_delegation_savings_table(response: &DelegationSavingsResponse) -> Stri
         ),
     ];
 
-    render_boxed_kv_table("METRIC", "VALUE", &rows)
+    let summary = render_boxed_kv_table("METRIC", "VALUE", &rows);
+    let Some(projects) = response
+        .projects
+        .as_ref()
+        .filter(|projects| !projects.is_empty())
+    else {
+        return summary;
+    };
+
+    format!("{summary}\n\n{}", render_delegation_project_table(projects))
 }
 
 fn render_boxed_kv_table(
@@ -223,6 +244,87 @@ fn render_boxed_kv_table(
         "─".repeat(left_width + 2),
         "─".repeat(right_width + 2)
     ));
+    lines.join("\n")
+}
+
+fn render_delegation_project_table(projects: &[DelegationSavingsProject]) -> String {
+    let headers = [
+        "PROJECT",
+        "REQUESTS",
+        "OFFLOADED",
+        "LOCAL COST",
+        "AVOIDED PRIMARY",
+        "COST SAVINGS",
+    ];
+    let rows = projects
+        .iter()
+        .map(|project| {
+            vec![
+                project.project.clone(),
+                format_u64(project.delegate_requests_total),
+                format_u64(project.delegate_offloaded_total),
+                format_cost(project.delegate_local_cost_micros_total),
+                format_cost(project.delegate_avoided_primary_cost_micros_total),
+                format_cost(project.delegate_cost_savings_micros_total),
+            ]
+        })
+        .collect::<Vec<_>>();
+    render_boxed_table(&headers, &rows, &[false, true, true, true, true, true])
+}
+
+fn render_boxed_table(headers: &[&str], rows: &[Vec<String>], right_align: &[bool]) -> String {
+    debug_assert_eq!(headers.len(), right_align.len());
+    let widths = headers
+        .iter()
+        .enumerate()
+        .map(|(idx, header)| {
+            std::iter::once(*header)
+                .chain(
+                    rows.iter()
+                        .filter_map(|row| row.get(idx).map(String::as_str)),
+                )
+                .map(display_width)
+                .max()
+                .unwrap_or(0)
+        })
+        .collect::<Vec<_>>();
+    let border = |left: char, middle: char, right: char| {
+        let cells = widths
+            .iter()
+            .map(|width| "─".repeat(width + 2))
+            .collect::<Vec<_>>()
+            .join(&middle.to_string());
+        format!("{left}{cells}{right}")
+    };
+    let format_cells = |cells: &[String]| {
+        let rendered = cells
+            .iter()
+            .enumerate()
+            .map(|(idx, cell)| {
+                if right_align.get(idx).copied().unwrap_or(false) {
+                    pad_left(cell, widths[idx])
+                } else {
+                    pad_right(cell, widths[idx])
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" │ ");
+        format!("│ {rendered} │")
+    };
+
+    let mut lines = Vec::with_capacity(rows.len() + 4);
+    lines.push(border('╭', '┬', '╮'));
+    lines.push(format_cells(
+        &headers
+            .iter()
+            .map(|header| header.to_string())
+            .collect::<Vec<_>>(),
+    ));
+    lines.push(border('├', '┼', '┤'));
+    for row in rows {
+        lines.push(format_cells(row));
+    }
+    lines.push(border('╰', '┴', '╯'));
     lines.join("\n")
 }
 
@@ -446,7 +548,8 @@ fn format_float_with_precision(value: f64, precision: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        render_delegation_savings_table, DelegationSavingsPricing, DelegationSavingsResponse,
+        render_delegation_savings_table, DelegationSavingsPricing, DelegationSavingsProject,
+        DelegationSavingsResponse,
     };
 
     #[test]
@@ -473,6 +576,7 @@ mod tests {
                 effective_avoided_primary_usd_per_million_tokens: Some(2.6983606557),
                 effective_local_usd_per_million_tokens: Some(0.6983606557),
             },
+            projects: None,
         };
 
         let rendered = render_delegation_savings_table(&response);
@@ -484,5 +588,47 @@ mod tests {
         assert!(rendered.contains("Effective Avoided Rate"));
         assert!(rendered.contains("610"));
         assert!(rendered.ends_with("╯"));
+    }
+
+    #[test]
+    fn render_delegation_savings_table_includes_project_table_for_all_output() {
+        let response = DelegationSavingsResponse {
+            generated_at_epoch_ms: 1_772_971_367_124,
+            delegate_requests_total: 4,
+            delegate_offloaded_total: 4,
+            delegate_fallbacks_total: 0,
+            delegate_token_estimate_total: 692,
+            delegate_local_tokens_total: 610,
+            delegate_primary_tokens_total: 0,
+            delegate_tokens_total: 610,
+            delegate_token_savings_total: 610,
+            delegate_local_cost_micros_total: 426,
+            delegate_primary_cost_micros_total: 0,
+            delegate_avoided_primary_cost_micros_total: 1_646,
+            delegate_avoided_primary_cost_usd: 0.001646,
+            delegate_cost_savings_micros_total: 1_220,
+            delegate_cost_savings_usd: 0.00122,
+            pricing: DelegationSavingsPricing {
+                configured_primary_usd_per_million_tokens: 0.0,
+                configured_local_usd_per_million_tokens: 0.0,
+                effective_avoided_primary_usd_per_million_tokens: Some(2.6983606557),
+                effective_local_usd_per_million_tokens: Some(0.6983606557),
+            },
+            projects: Some(vec![DelegationSavingsProject {
+                project: "/tmp/demo".to_string(),
+                delegate_requests_total: 4,
+                delegate_offloaded_total: 4,
+                delegate_local_cost_micros_total: 426,
+                delegate_avoided_primary_cost_micros_total: 1_646,
+                delegate_cost_savings_micros_total: 1_220,
+            }]),
+        };
+
+        let rendered = render_delegation_savings_table(&response);
+
+        assert!(rendered.contains("│ PROJECT"));
+        assert!(rendered.contains("COST SAVINGS"));
+        assert!(rendered.contains("/tmp/demo"));
+        assert!(rendered.contains("$0.00122"));
     }
 }

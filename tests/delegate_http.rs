@@ -98,6 +98,7 @@ fn spawn_server(
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_ENABLE_MCP", "0")
+        .env("DOCDEX_DISABLE_MCODA_CLI", "1")
         .env("DOCDEX_STATE_DIR", state_root)
         .env("DOCDEX_CONFIG_PATH", config_path)
         .env("DOCDEX_DAEMON_LOCK_PATH", &lock_path)
@@ -206,9 +207,10 @@ fn spawn_mock_ollama() -> Result<(u16, MockOllamaGuard), Box<dyn Error>> {
     ))
 }
 
-fn write_config(path: &Path, ollama_port: u16) -> Result<(), Box<dyn Error>> {
+fn write_config(path: &Path, state_root: &Path, ollama_port: u16) -> Result<(), Box<dyn Error>> {
     let payload = format!(
-        "[llm]\nprovider=\"ollama\"\nbase_url=\"http://127.0.0.1:{}\"\ndefault_model=\"test-model\"\n\n[llm.delegation]\nenabled=true\nmax_tokens=32\ntimeout_ms=2000\nmax_context_chars=200\n",
+        "[core]\nglobal_state_dir=\"{}\"\n\n[llm]\nprovider=\"ollama\"\nbase_url=\"http://127.0.0.1:{}\"\ndefault_model=\"test-model\"\n\n[llm.delegation]\nenabled=true\nmax_tokens=32\ntimeout_ms=2000\nmax_context_chars=200\n",
+        state_root.display(),
         ollama_port
     );
     std::fs::write(path, payload)?;
@@ -242,7 +244,7 @@ fn delegate_endpoint_returns_output() -> Result<(), Box<dyn Error>> {
         }
     };
     let config_path = temp.path().join("config.toml");
-    write_config(&config_path, ollama_port)?;
+    write_config(&config_path, &state_root, ollama_port)?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
@@ -265,6 +267,7 @@ fn delegate_endpoint_returns_output() -> Result<(), Box<dyn Error>> {
     let resp = client
         .post(&url)
         .json(&serde_json::json!({
+            "agent": "model:test-model",
             "task_type": "format_code",
             "instruction": "Format this code",
             "context": "let  a=1;"

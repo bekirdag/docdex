@@ -1,13 +1,13 @@
 use super::delegation::{
-    allowlist_allows, compute_delegation_savings, local_selection_policy_requires_fresh_library,
-    mode_from_config, parse_local_target_override, reevaluation_should_use_primary_client,
-    render_prompt, resolve_delegation_client, resolve_local_cost_per_million,
-    resolve_primary_cost_per_million, run_flow_with_client_candidates,
-    run_flow_with_client_candidates_with_failure_history, run_flow_with_clients,
-    select_local_target, select_local_target_with_config, select_primary_target,
-    update_cached_local_selection_from_completion, validate_output, DelegationEnforcementError,
-    DelegationFailureHistoryContext, DelegationMode, DelegationPricingContext,
-    DelegationReevaluation, LocalTarget, TaskType,
+    allowlist_allows, build_local_target_candidates_with_config, compute_delegation_savings,
+    local_selection_policy_requires_fresh_library, mode_from_config, parse_local_target_override,
+    reevaluation_should_use_primary_client, render_prompt, resolve_delegation_client,
+    resolve_local_cost_per_million, resolve_primary_cost_per_million,
+    run_flow_with_client_candidates, run_flow_with_client_candidates_with_failure_history,
+    run_flow_with_clients, select_local_target, select_local_target_with_config,
+    select_primary_target, update_cached_local_selection_from_completion, validate_output,
+    DelegationEnforcementError, DelegationFailureHistoryContext, DelegationMode,
+    DelegationPricingContext, DelegationReevaluation, LocalTarget, TaskType,
 };
 use super::delegation_rating::{
     compute_alpha, compute_run_score, estimate_complexity, fallback_quality_score,
@@ -17,7 +17,9 @@ use super::{load_catalog, recommended_model, supports, LlmModel};
 use crate::config::{DelegationConfig, LlmConfig};
 use crate::hardware::{GraphicsInfo, HardwareProfile};
 use crate::llm::adapter::{LlmClient, LlmCompletion, LlmFuture};
-use crate::llm::local_library::{LocalAgentEntry, LocalModelEntry, LocalModelLibrary};
+use crate::llm::local_library::{
+    CachedLocalAgentSelection, LocalAgentEntry, LocalModelEntry, LocalModelLibrary,
+};
 use crate::mcoda::ratings::{apply_agent_rating, AgentRunRating};
 use crate::setup::test_support::ENV_LOCK;
 use anyhow::anyhow;
@@ -218,6 +220,22 @@ fn make_local_agent(
         last_seen_at_ms: 0,
         last_classified_at_ms: None,
     }
+}
+
+fn write_recent_local_failures(state_root: &Path, entries: &[(&str, &str, &str)]) {
+    let logs_dir = state_root.join("logs").join("errors");
+    fs::create_dir_all(&logs_dir).expect("create failure history dir");
+    let now = chrono::Utc::now().to_rfc3339();
+    let payload = entries
+        .iter()
+        .map(|(target, kind, error)| {
+            format!(
+                "{{\"ts\":\"{now}\",\"kind\":\"{kind}\",\"local_target\":\"{target}\",\"error\":\"{error}\"}}\n"
+            )
+        })
+        .collect::<String>();
+    fs::write(logs_dir.join("delegation_local_failures.jsonl"), payload)
+        .expect("write failure history");
 }
 
 fn zero_cost_policy_config() -> LlmConfig {
@@ -1441,6 +1459,130 @@ fn delegation_selects_primary_skips_embedding_only_models() {
     });
     let selected = select_primary_target(TaskType::GenerateTests, &library, None);
     assert!(selected.is_none());
+}
+
+#[test]
+fn delegation_selects_local_skips_recently_failing_targets() {
+    let temp = TempDir::new().expect("temp dir");
+    let _state_dir = EnvGuard::set(
+        "DOCDEX_STATE_DIR",
+        temp.path().to_str().expect("temp path utf-8"),
+    );
+    write_recent_local_failures(
+        temp.path(),
+        &[
+            (
+                "agent:agent-1",
+                "local_completion_failed",
+                "gemini CLI timeout",
+            ),
+            (
+                "agent:agent-1",
+                "local_completion_failed",
+                "gemini CLI timeout",
+            ),
+        ],
+    );
+
+    let mut library = LocalModelLibrary::default();
+    library.agents.push(make_local_agent(
+        "agent-1",
+        "agent-one",
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some("healthy"),
+        &["code_writer"],
+    ));
+    library.agents.push(make_local_agent(
+        "agent-2",
+        "agent-two",
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some("healthy"),
+        &["code_writer"],
+    ));
+
+    let selected = select_local_target(TaskType::GenerateTests, &library).expect("selection");
+    match selected {
+        LocalTarget::McodaAgent(id) => assert_eq!(id, "agent-2"),
+        _ => panic!("unexpected local selection"),
+    }
+}
+
+#[test]
+fn build_local_target_candidates_replaces_cached_agent_after_recent_failures() {
+    let temp = TempDir::new().expect("temp dir");
+    write_recent_local_failures(
+        temp.path(),
+        &[
+            (
+                "agent:agent-1",
+                "local_completion_failed",
+                "ollama generate request",
+            ),
+            (
+                "agent:agent-1",
+                "local_completion_failed",
+                "ollama generate request",
+            ),
+        ],
+    );
+
+    let mut library = LocalModelLibrary::default();
+    library.agents.push(make_local_agent(
+        "agent-1",
+        "agent-one",
+        Some(0.0),
+        Some(4),
+        Some(7.0),
+        Some(7.5),
+        Some("code_writer"),
+        Some("healthy"),
+        &["code_writer", "code_reviewer"],
+    ));
+    library.agents.push(make_local_agent(
+        "agent-2",
+        "agent-two",
+        Some(0.0),
+        Some(4),
+        Some(6.5),
+        Some(7.0),
+        Some("code_writer"),
+        Some("healthy"),
+        &["code_writer", "code_reviewer"],
+    ));
+    library.cached_local_agent_selection = Some(CachedLocalAgentSelection {
+        policy: "mcoda_zero_cost_most_capable".to_string(),
+        agent_id: "agent-1".to_string(),
+        agent_slug: "agent-one".to_string(),
+        selected_at_ms: 1,
+    });
+
+    let config = zero_cost_policy_config();
+    let targets = build_local_target_candidates_with_config(
+        Some(temp.path()),
+        &config,
+        TaskType::FormatCode,
+        &mut library,
+    );
+
+    assert!(matches!(
+        targets.first(),
+        Some(LocalTarget::McodaAgent(id)) if id == "agent-2"
+    ));
+    assert_eq!(
+        library
+            .cached_local_agent_selection
+            .as_ref()
+            .map(|cached| cached.agent_id.as_str()),
+        Some("agent-2")
+    );
 }
 
 #[test]

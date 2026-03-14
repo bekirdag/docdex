@@ -15,6 +15,8 @@ const DEFAULT_OLLAMA_CLI_MODEL: &str = "llama3";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_ZHIPU_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
 const CODEX_CLI_TIMEOUT_FLOOR: Duration = Duration::from_secs(120);
+const GEMINI_CLI_TIMEOUT_FLOOR: Duration = Duration::from_secs(45);
+const CLI_INLINE_PROMPT_MAX_BYTES: usize = 16 * 1024;
 
 const CLI_BASED_ADAPTERS: [&str; 5] = [
     "codex-cli",
@@ -283,11 +285,21 @@ impl LlmClient for OllamaRemoteClient {
             if !self.headers.is_empty() {
                 request = request.headers(to_header_map(&self.headers)?);
             }
-            let resp = request.send().await.context("ollama generate request")?;
+            let resp = request.send().await.map_err(|err| {
+                anyhow!(
+                    "ollama generate request failed for model {model} at {} with timeout {}ms: {err}",
+                    self.base_url,
+                    timeout.as_millis()
+                )
+            })?;
             if !resp.status().is_success() {
                 let status = resp.status();
                 let text = resp.text().await.unwrap_or_default();
-                return Err(anyhow!("ollama generate failed ({status}): {text}"));
+                return Err(anyhow!(
+                    "ollama generate failed for model {model} at {} with timeout {}ms ({status}): {text}",
+                    self.base_url,
+                    timeout.as_millis()
+                ));
             }
             let data: Value = resp.json().await.unwrap_or_else(|_| json!({}));
             let output = data
@@ -394,6 +406,27 @@ fn codex_cli_timeout(timeout_duration: Duration) -> Duration {
     timeout_duration.max(CODEX_CLI_TIMEOUT_FLOOR)
 }
 
+fn gemini_cli_timeout(timeout_duration: Duration) -> Duration {
+    timeout_duration.max(GEMINI_CLI_TIMEOUT_FLOOR)
+}
+
+fn should_inline_cli_prompt(prompt: &str) -> bool {
+    !prompt.contains('\0') && prompt.len() <= CLI_INLINE_PROMPT_MAX_BYTES
+}
+
+async fn write_prompt_to_child_stdin(
+    stdin: Option<tokio::process::ChildStdin>,
+    prompt: &str,
+) -> Result<()> {
+    let Some(mut stdin) = stdin else {
+        return Ok(());
+    };
+    tokio::io::AsyncWriteExt::write_all(&mut stdin, prompt.as_bytes()).await?;
+    tokio::io::AsyncWriteExt::flush(&mut stdin).await?;
+    tokio::io::AsyncWriteExt::shutdown(&mut stdin).await?;
+    Ok(())
+}
+
 impl LlmClient for CodexCliClient {
     fn generate<'a>(
         &'a self,
@@ -407,15 +440,18 @@ impl LlmClient for CodexCliClient {
                 .model
                 .clone()
                 .unwrap_or_else(|| DEFAULT_CODEX_MODEL.to_string());
+            let use_inline_prompt = should_inline_cli_prompt(prompt);
             let mut command = Command::new(self.command.as_str());
-            command
-                .args(codex_cli_args(model.as_str()))
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
+            command.args(codex_cli_args(model.as_str()));
+            if use_inline_prompt {
+                command.arg(prompt).stdin(Stdio::null());
+            } else {
+                command.stdin(Stdio::piped());
+            }
+            command.stdout(Stdio::piped()).stderr(Stdio::piped());
             let mut child = command.spawn().context("spawn codex CLI")?;
-            if let Some(mut stdin) = child.stdin.take() {
-                tokio::io::AsyncWriteExt::write_all(&mut stdin, prompt.as_bytes()).await?;
+            if !use_inline_prompt {
+                write_prompt_to_child_stdin(child.stdin.take(), prompt).await?;
             }
             let output = timeout(timeout_duration, child.wait_with_output())
                 .await
@@ -470,20 +506,24 @@ impl LlmClient for GeminiCliClient {
         timeout_duration: Duration,
     ) -> LlmFuture<'a> {
         Box::pin(async move {
+            let timeout_duration = gemini_cli_timeout(timeout_duration);
+            let use_inline_prompt = should_inline_cli_prompt(prompt);
             let mut command = Command::new(self.command.as_str());
-            command.arg("prompt");
+            command.arg("--output-format").arg("text");
             if let Some(model) = self.model.as_ref() {
                 if !model.trim().is_empty() {
                     command.arg("--model").arg(model.as_str());
                 }
             }
-            command
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
+            if use_inline_prompt {
+                command.arg("--prompt").arg(prompt).stdin(Stdio::null());
+            } else {
+                command.arg("--prompt").arg("").stdin(Stdio::piped());
+            }
+            command.stdout(Stdio::piped()).stderr(Stdio::piped());
             let mut child = command.spawn().context("spawn gemini CLI")?;
-            if let Some(mut stdin) = child.stdin.take() {
-                tokio::io::AsyncWriteExt::write_all(&mut stdin, prompt.as_bytes()).await?;
+            if !use_inline_prompt {
+                write_prompt_to_child_stdin(child.stdin.take(), prompt).await?;
             }
             let output = timeout(timeout_duration, child.wait_with_output())
                 .await
@@ -679,7 +719,7 @@ pub struct ZhipuApiClient {
     base_url: String,
     headers: HashMap<String, String>,
     temperature: Option<f64>,
-    thinking: Option<bool>,
+    thinking: Option<Value>,
     extra_body: Option<Value>,
     api_key: String,
     model: Option<String>,
@@ -704,7 +744,7 @@ impl ZhipuApiClient {
             base_url,
             headers: config_headers(config),
             temperature: config_number(config, "temperature").or(Some(0.1)),
-            thinking: config_bool(config, "thinking"),
+            thinking: config_zhipu_thinking(config),
             extra_body: config_object(config, "extraBody"),
             api_key,
             model,
@@ -740,8 +780,8 @@ impl LlmClient for ZhipuApiClient {
             if let Some(temp) = self.temperature {
                 body.insert("temperature".to_string(), Value::from(temp));
             }
-            if let Some(thinking) = self.thinking {
-                body.insert("thinking".to_string(), Value::from(thinking));
+            if let Some(thinking) = self.thinking.clone() {
+                body.insert("thinking".to_string(), thinking);
             }
             merge_extra_body(&mut body, self.extra_body.as_ref());
             let mut request = self
@@ -834,6 +874,10 @@ fn config_string(config: Option<&Value>, key: &str) -> Option<String> {
         .map(|value| value.to_string())
 }
 
+fn config_value<'a>(config: Option<&'a Value>, key: &str) -> Option<&'a Value> {
+    config.and_then(|value| value.get(key))
+}
+
 fn config_bool(config: Option<&Value>, key: &str) -> Option<bool> {
     config
         .and_then(|value| value.get(key))
@@ -852,6 +896,15 @@ fn config_object(config: Option<&Value>, key: &str) -> Option<Value> {
         .and_then(|value| value.as_object().cloned().map(Value::Object))
 }
 
+fn config_zhipu_thinking(config: Option<&Value>) -> Option<Value> {
+    match config_value(config, "thinking") {
+        Some(Value::Bool(true)) => Some(json!({ "type": "enabled" })),
+        Some(Value::Bool(false)) => Some(json!({ "type": "disabled" })),
+        Some(Value::Object(object)) if !object.is_empty() => Some(Value::Object(object.clone())),
+        _ => None,
+    }
+}
+
 fn config_headers(config: Option<&Value>) -> HashMap<String, String> {
     let mut headers = HashMap::new();
     let Some(value) = config.and_then(|value| value.get("headers")) else {
@@ -866,6 +919,74 @@ fn config_headers(config: Option<&Value>) -> HashMap<String, String> {
         }
     }
     headers
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_timeout_applies_floor() {
+        assert_eq!(
+            codex_cli_timeout(Duration::from_secs(8)),
+            CODEX_CLI_TIMEOUT_FLOOR
+        );
+        assert_eq!(
+            codex_cli_timeout(Duration::from_secs(180)),
+            Duration::from_secs(180)
+        );
+    }
+
+    #[test]
+    fn gemini_timeout_applies_floor() {
+        assert_eq!(
+            gemini_cli_timeout(Duration::from_secs(8)),
+            GEMINI_CLI_TIMEOUT_FLOOR
+        );
+        assert_eq!(
+            gemini_cli_timeout(Duration::from_secs(90)),
+            Duration::from_secs(90)
+        );
+    }
+
+    #[test]
+    fn cli_prompt_is_inlined_only_for_small_safe_payloads() {
+        assert!(should_inline_cli_prompt("format this code"));
+        assert!(!should_inline_cli_prompt(
+            &"x".repeat(CLI_INLINE_PROMPT_MAX_BYTES + 1)
+        ));
+        assert!(!should_inline_cli_prompt("bad\0prompt"));
+    }
+
+    #[test]
+    fn zhipu_bool_thinking_maps_to_documented_object_shape() {
+        let enabled = json!({ "thinking": true });
+        let disabled = json!({ "thinking": false });
+        assert_eq!(
+            config_zhipu_thinking(Some(&enabled)),
+            Some(json!({ "type": "enabled" }))
+        );
+        assert_eq!(
+            config_zhipu_thinking(Some(&disabled)),
+            Some(json!({ "type": "disabled" }))
+        );
+    }
+
+    #[test]
+    fn zhipu_object_thinking_is_preserved() {
+        let config = json!({ "thinking": { "type": "enabled" } });
+        assert_eq!(
+            config_zhipu_thinking(Some(&config)),
+            Some(json!({ "type": "enabled" }))
+        );
+    }
+
+    #[test]
+    fn codex_cli_args_do_not_enable_full_auto() {
+        let args = codex_cli_args("gpt-5.1-codex-max");
+        assert_eq!(args, ["exec", "--model", "gpt-5.1-codex-max", "--json"]);
+        assert!(!args.contains(&"--full-auto"));
+    }
 }
 
 fn build_auth_headers(headers: &HashMap<String, String>, api_key: &str) -> HashMap<String, String> {
@@ -906,30 +1027,5 @@ fn merge_extra_body(target: &mut Map<String, Value>, extra: Option<&Value>) {
         if !target.contains_key(key) {
             target.insert(key.clone(), value.clone());
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{codex_cli_args, codex_cli_timeout, CODEX_CLI_TIMEOUT_FLOOR};
-    use std::time::Duration;
-
-    #[test]
-    fn codex_cli_args_do_not_enable_full_auto() {
-        let args = codex_cli_args("gpt-5.1-codex-max");
-        assert_eq!(args, ["exec", "--model", "gpt-5.1-codex-max", "--json"]);
-        assert!(!args.contains(&"--full-auto"));
-    }
-
-    #[test]
-    fn codex_cli_timeout_enforces_floor() {
-        assert_eq!(
-            codex_cli_timeout(Duration::from_secs(30)),
-            CODEX_CLI_TIMEOUT_FLOOR
-        );
-        assert_eq!(
-            codex_cli_timeout(Duration::from_secs(180)),
-            Duration::from_secs(180)
-        );
     }
 }

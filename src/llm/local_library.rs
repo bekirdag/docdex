@@ -4,9 +4,10 @@ use crate::ollama;
 use crate::setup::ollama as setup_ollama;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
-use std::fs;
+use std::collections::{HashMap, HashSet};
+use std::fs::{self, File};
 use std::future::{Future, Ready};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{info, warn};
@@ -23,6 +24,14 @@ const CAP_VISION: &str = "vision";
 const DEFAULT_LIBRARY_TTL_SECS: u64 = 300;
 const WEB_CLASSIFY_TTL_SECS: u64 = 7 * 24 * 60 * 60;
 const MAX_WEB_CLASSIFICATIONS_PER_REFRESH: usize = 3;
+const DELEGATION_FAILURE_HISTORY_DIR: &str = "errors";
+const DELEGATION_FAILURE_HISTORY_FILE: &str = "delegation_local_failures.jsonl";
+const DEFAULT_LOCAL_TARGET_FAILURE_THRESHOLD: usize = 2;
+const DEFAULT_LOCAL_TARGET_FAILURE_LOOKBACK_SECS: u64 = 6 * 60 * 60;
+const DEFAULT_LOCAL_TARGET_FAILURE_COOLDOWN_SECS: u64 = 30 * 60;
+const LOCAL_TARGET_FAILURE_THRESHOLD_ENV: &str = "DOCDEX_DELEGATION_FAILURE_THRESHOLD";
+const LOCAL_TARGET_FAILURE_LOOKBACK_ENV: &str = "DOCDEX_DELEGATION_FAILURE_LOOKBACK_SECS";
+const LOCAL_TARGET_FAILURE_COOLDOWN_ENV: &str = "DOCDEX_DELEGATION_FAILURE_COOLDOWN_SECS";
 
 #[derive(Debug, Clone)]
 pub(crate) struct ModelClassification {
@@ -290,7 +299,7 @@ pub(crate) async fn discover_ollama_models(
     models.into_iter().collect()
 }
 
-pub(crate) fn discover_mcoda_agents() -> Vec<LocalAgentEntry> {
+pub(crate) fn discover_mcoda_agents(state_dir_override: Option<&Path>) -> Vec<LocalAgentEntry> {
     let registry = match McodaRegistry::load_default() {
         Ok(Some(registry)) => registry,
         Ok(None) => return Vec::new(),
@@ -304,10 +313,11 @@ pub(crate) fn discover_mcoda_agents() -> Vec<LocalAgentEntry> {
         }
     };
     let now = now_ms();
+    let recent_failures = load_recent_local_target_failures(state_dir_override);
     registry
         .agents
         .iter()
-        .map(|agent| mcoda_agent_entry(agent, now))
+        .map(|agent| mcoda_agent_entry(agent, now, Some(&recent_failures)))
         .collect()
 }
 
@@ -470,7 +480,7 @@ where
         }
     }
 
-    let agents = discover_mcoda_agents();
+    let agents = discover_mcoda_agents(state_dir_override);
 
     library.updated_at_ms = now;
     library.models = models;
@@ -689,7 +699,141 @@ fn is_candidate_capabilities(capabilities: &[String]) -> bool {
         .any(|cap| cap == CAP_CODE_WRITER || cap == CAP_CODE_REVIEWER || cap == CAP_GENERAL_CHAT)
 }
 
-fn mcoda_agent_entry(agent: &McodaAgent, now_ms: u128) -> LocalAgentEntry {
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct LocalTargetFailureWindow {
+    recent_failures: usize,
+    last_failure_at_ms: u128,
+}
+
+#[derive(Debug, Deserialize)]
+struct DelegationFailureHistoryLine {
+    ts: String,
+    kind: String,
+    local_target: String,
+    #[serde(default)]
+    error: String,
+}
+
+fn blocking_failure_for_runtime_health(kind: &str, error: &str) -> bool {
+    if kind == "local_completion_failed" {
+        return true;
+    }
+    kind == "local_validation_failed"
+        && !error
+            .to_ascii_lowercase()
+            .contains("delegation output must not include markdown fences")
+}
+
+fn local_target_failure_threshold() -> usize {
+    env_u64(LOCAL_TARGET_FAILURE_THRESHOLD_ENV)
+        .map(|value| value as usize)
+        .unwrap_or(DEFAULT_LOCAL_TARGET_FAILURE_THRESHOLD)
+        .max(1)
+}
+
+fn local_target_failure_lookback() -> Duration {
+    Duration::from_secs(
+        env_u64(LOCAL_TARGET_FAILURE_LOOKBACK_ENV)
+            .unwrap_or(DEFAULT_LOCAL_TARGET_FAILURE_LOOKBACK_SECS)
+            .max(1),
+    )
+}
+
+fn local_target_failure_cooldown() -> Duration {
+    Duration::from_secs(
+        env_u64(LOCAL_TARGET_FAILURE_COOLDOWN_ENV)
+            .unwrap_or(DEFAULT_LOCAL_TARGET_FAILURE_COOLDOWN_SECS)
+            .max(1),
+    )
+}
+
+fn agent_recent_local_failure<'a>(
+    agent: &McodaAgent,
+    recent_failures: &'a HashMap<String, LocalTargetFailureWindow>,
+) -> Option<&'a LocalTargetFailureWindow> {
+    recent_failures
+        .get(&format!("agent:{}", agent.id))
+        .or_else(|| recent_failures.get(&format!("agent:{}", agent.slug)))
+        .or_else(|| recent_failures.get(&agent.id))
+        .or_else(|| recent_failures.get(&agent.slug))
+}
+
+fn mcoda_agent_health_allows(status: Option<&str>) -> bool {
+    let Some(status) = status.map(str::trim).filter(|value| !value.is_empty()) else {
+        return true;
+    };
+    status.eq_ignore_ascii_case("healthy")
+        || status.eq_ignore_ascii_case("unknown")
+        || status == "-"
+}
+
+fn load_recent_local_target_failures(
+    state_dir_override: Option<&Path>,
+) -> HashMap<String, LocalTargetFailureWindow> {
+    let Ok(root) = resolve_state_root(state_dir_override) else {
+        return HashMap::new();
+    };
+    let path = root
+        .join("logs")
+        .join(DELEGATION_FAILURE_HISTORY_DIR)
+        .join(DELEGATION_FAILURE_HISTORY_FILE);
+    if !path.exists() {
+        return HashMap::new();
+    }
+    let file = match File::open(&path) {
+        Ok(file) => file,
+        Err(err) => {
+            warn!(
+                target: "docdexd",
+                error = ?err,
+                path = %path.display(),
+                "failed to open delegation failure history for runtime health overlay"
+            );
+            return HashMap::new();
+        }
+    };
+    let now_ms = now_ms();
+    let lookback_ms = local_target_failure_lookback().as_millis() as u128;
+    let cooldown_ms = local_target_failure_cooldown().as_millis() as u128;
+    let threshold = local_target_failure_threshold();
+    let mut failures: HashMap<String, LocalTargetFailureWindow> = HashMap::new();
+    for line in BufReader::new(file)
+        .lines()
+        .map_while(std::result::Result::ok)
+    {
+        let Ok(record) = serde_json::from_str::<DelegationFailureHistoryLine>(&line) else {
+            continue;
+        };
+        if !blocking_failure_for_runtime_health(&record.kind, &record.error) {
+            continue;
+        }
+        let target = record.local_target.trim();
+        if target.is_empty() {
+            continue;
+        }
+        let Ok(ts) = chrono::DateTime::parse_from_rfc3339(record.ts.trim()) else {
+            continue;
+        };
+        let failure_at_ms = ts.timestamp_millis().max(0) as u128;
+        if now_ms.saturating_sub(failure_at_ms) > lookback_ms {
+            continue;
+        }
+        let entry = failures.entry(target.to_string()).or_default();
+        entry.recent_failures = entry.recent_failures.saturating_add(1);
+        entry.last_failure_at_ms = entry.last_failure_at_ms.max(failure_at_ms);
+    }
+    failures.retain(|_, window| {
+        window.recent_failures >= threshold
+            && window.last_failure_at_ms.saturating_add(cooldown_ms) > now_ms
+    });
+    failures
+}
+
+fn mcoda_agent_entry(
+    agent: &McodaAgent,
+    now_ms: u128,
+    recent_failures: Option<&HashMap<String, LocalTargetFailureWindow>>,
+) -> LocalAgentEntry {
     let max_complexity = agent.max_complexity.filter(|value| *value >= 0);
     let usage = agent
         .best_usage
@@ -697,12 +841,24 @@ fn mcoda_agent_entry(agent: &McodaAgent, now_ms: u128) -> LocalAgentEntry {
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
         .map(|value| value.to_string());
-    let health_status = agent
+    let mut health_status = agent
         .health_status
         .as_ref()
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
         .map(|value| value.to_string());
+    let mut notes = None;
+    if let Some(failure) =
+        recent_failures.and_then(|failures| agent_recent_local_failure(agent, failures))
+    {
+        notes = Some(format!(
+            "recent local delegation failures: {} (cooldown active)",
+            failure.recent_failures
+        ));
+        if mcoda_agent_health_allows(health_status.as_deref()) {
+            health_status = Some("degraded".to_string());
+        }
+    }
     LocalAgentEntry {
         agent_id: agent.id.clone(),
         agent_slug: agent.slug.clone(),
@@ -715,7 +871,7 @@ fn mcoda_agent_entry(agent: &McodaAgent, now_ms: u128) -> LocalAgentEntry {
         reasoning_rating: agent.reasoning_rating,
         health_status,
         capabilities: normalize_agent_capabilities(&agent.adapter, &agent.capabilities),
-        notes: None,
+        notes,
         classification_method: "registry".to_string(),
         last_seen_at_ms: now_ms,
         last_classified_at_ms: None,
@@ -927,7 +1083,7 @@ mod tests {
             models: Vec::new(),
             auth: None,
         };
-        let entry = mcoda_agent_entry(&agent, 10);
+        let entry = mcoda_agent_entry(&agent, 10, None);
         assert_eq!(entry.agent_id, "agent-1");
         assert!(entry.capabilities.contains(&"code_writer".to_string()));
         assert!(entry.capabilities.contains(&"code_reviewer".to_string()));
@@ -1005,7 +1161,7 @@ mod tests {
 
         let _home = EnvVarGuard::set("HOME", dir.path());
         let _userprofile = EnvVarGuard::set("USERPROFILE", dir.path());
-        let agents = discover_mcoda_agents();
+        let agents = discover_mcoda_agents(None);
 
         assert_eq!(agents.len(), 1);
         let entry = &agents[0];
@@ -1021,6 +1177,71 @@ mod tests {
         assert_eq!(entry.reasoning_rating, Some(9.0));
         assert_eq!(entry.health_status.as_deref(), Some("healthy"));
         assert_eq!(entry.classification_method, "registry");
+        Ok(())
+    }
+
+    #[test]
+    fn discover_mcoda_agents_marks_recent_runtime_failures_degraded() -> Result<()> {
+        let _guard = ENV_LOCK.lock();
+        let dir = TempDir::new()?;
+        let mcoda_dir = dir.path().join(".mcoda");
+        fs::create_dir_all(&mcoda_dir)?;
+        let db_path = mcoda_dir.join("mcoda.db");
+        let conn = Connection::open(&db_path)?;
+        conn.execute_batch(
+            "CREATE TABLE agents (
+                id TEXT PRIMARY KEY,
+                slug TEXT NOT NULL,
+                adapter TEXT NOT NULL,
+                default_model TEXT,
+                config_json TEXT,
+                created_at TEXT,
+                updated_at TEXT,
+                rating REAL,
+                cost_per_million REAL,
+                max_complexity INTEGER,
+                best_usage TEXT,
+                reasoning_rating REAL
+            );
+            CREATE TABLE agent_health (
+                agent_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL
+            );",
+        )?;
+        conn.execute(
+            "INSERT INTO agents (id, slug, adapter, default_model, config_json, created_at, updated_at, rating, cost_per_million, max_complexity, best_usage, reasoning_rating)
+             VALUES (?1, ?2, ?3, NULL, NULL, NULL, NULL, NULL, 0.0, NULL, NULL, NULL)",
+            params!["agent-1", "agent-one", "ollama"],
+        )?;
+        conn.execute(
+            "INSERT INTO agent_health (agent_id, status) VALUES (?1, ?2)",
+            params!["agent-1", "healthy"],
+        )?;
+        drop(conn);
+
+        let logs_dir = dir.path().join("logs").join("errors");
+        fs::create_dir_all(&logs_dir)?;
+        let now = chrono::Utc::now().to_rfc3339();
+        let record = format!(
+            "{{\"ts\":\"{now}\",\"kind\":\"local_completion_failed\",\"local_target\":\"agent:agent-1\",\"error\":\"gemini CLI timeout\"}}\n"
+        );
+        fs::write(
+            logs_dir.join("delegation_local_failures.jsonl"),
+            format!("{record}{record}"),
+        )?;
+
+        let _home = EnvVarGuard::set("HOME", dir.path());
+        let _userprofile = EnvVarGuard::set("USERPROFILE", dir.path());
+        let agents = discover_mcoda_agents(Some(dir.path()));
+
+        assert_eq!(agents.len(), 1);
+        let entry = &agents[0];
+        assert_eq!(entry.health_status.as_deref(), Some("degraded"));
+        assert!(entry
+            .notes
+            .as_deref()
+            .unwrap_or_default()
+            .contains("recent local delegation failures"));
         Ok(())
     }
 

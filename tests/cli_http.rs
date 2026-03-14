@@ -261,6 +261,8 @@ fn cli_delegation_savings_defaults_to_boxed_table() -> Result<(), Box<dyn Error>
     assert!(rendered.contains("│ METRIC"));
     assert!(rendered.contains("Requests"));
     assert!(rendered.contains("Generated At"));
+    assert!(rendered.contains("│ PROJECT"));
+    assert!(rendered.contains("COST SAVINGS"));
 
     server.kill().ok();
     server.wait().ok();

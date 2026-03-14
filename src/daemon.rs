@@ -458,6 +458,10 @@ pub async fn serve(
         .with_hint("Verify repo/state-dir paths and permissions; consider `--state-dir <path>`.")
         .into()
     })?);
+    let telemetry_global_state_dir = delegation_telemetry::effective_global_state_dir(
+        global_state_dir.as_deref(),
+        indexer.state_dir(),
+    );
     let libs_indexer = {
         let libs_dir = libs::libs_state_dir_from_index_state_dir(indexer.state_dir());
         libs::LibsIndexer::open_read_only(libs_dir)
@@ -571,7 +575,7 @@ pub async fn serve(
     let metrics = Arc::new(metrics::Metrics::default());
     if let Err(err) = delegation_telemetry::restore_global_metrics_if_empty(
         metrics.as_ref(),
-        global_state_dir.as_deref(),
+        telemetry_global_state_dir.as_deref(),
     ) {
         warn!(target: "docdexd", error = ?err, "failed to restore delegation telemetry");
     }

@@ -4,7 +4,12 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { removeMcpServerJson, removeCodexConfig, removeMcpServerYaml } = require("../lib/uninstall");
+const {
+  removeMcpServerJson,
+  removeCodexConfig,
+  removeMcpServerYaml,
+  removeDocdexRootIfEmpty
+} = require("../lib/uninstall");
 
 test("removeMcpServerJson drops docdex entry", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-uninstall-json-"));
@@ -202,4 +207,47 @@ test("removeMcpServerYaml removes docdex entries", () => {
   const contents = fs.readFileSync(file, "utf8");
   assert.ok(!contents.includes("docdex:"));
   assert.ok(contents.includes("other:"));
+});
+
+test("removeDocdexRootIfEmpty preserves persistent docdex state", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-uninstall-home-"));
+  const root = path.join(home, ".docdex");
+  const telemetryPath = path.join(root, "state", "telemetry", "delegation.json");
+  const indexPath = path.join(root, "state", "repos", "repo-1", "index", "docs.sqlite");
+  const configPath = path.join(root, "config.toml");
+  fs.mkdirSync(path.dirname(telemetryPath), { recursive: true });
+  fs.mkdirSync(path.dirname(indexPath), { recursive: true });
+  fs.writeFileSync(telemetryPath, '{"delegate_requests_total":93}\n');
+  fs.writeFileSync(indexPath, "sqlite");
+  fs.writeFileSync(configPath, "[server]\nhttp_bind_addr = \"127.0.0.1:28491\"\n");
+
+  const removed = removeDocdexRootIfEmpty({
+    fsModule: fs,
+    osModule: { homedir: () => home },
+    pathModule: path
+  });
+
+  assert.equal(removed, false);
+  assert.ok(fs.existsSync(root));
+  assert.equal(
+    fs.readFileSync(telemetryPath, "utf8"),
+    '{"delegate_requests_total":93}\n'
+  );
+  assert.ok(fs.existsSync(indexPath));
+  assert.ok(fs.existsSync(configPath));
+});
+
+test("removeDocdexRootIfEmpty removes an empty docdex root", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-uninstall-empty-home-"));
+  const root = path.join(home, ".docdex");
+  fs.mkdirSync(root, { recursive: true });
+
+  const removed = removeDocdexRootIfEmpty({
+    fsModule: fs,
+    osModule: { homedir: () => home },
+    pathModule: path
+  });
+
+  assert.equal(removed, true);
+  assert.equal(fs.existsSync(root), false);
 });

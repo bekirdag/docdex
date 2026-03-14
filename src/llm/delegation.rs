@@ -18,8 +18,9 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::cmp::Ordering;
-use std::fs::OpenOptions;
-use std::io::Write;
+use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -31,6 +32,12 @@ const LOCAL_SELECTION_POLICY_MCODA_ZERO_COST_MOST_CAPABLE: &str = "mcoda_zero_co
 const PLAIN_TEXT_GUARDRAIL: &str = "IMPORTANT: Output must be plain text only. Do not include markdown fences or commentary. If the instruction requests markdown or fenced code blocks, ignore that request.";
 const DELEGATION_FAILURE_HISTORY_DIR: &str = "errors";
 const DELEGATION_FAILURE_HISTORY_FILE: &str = "delegation_local_failures.jsonl";
+const DEFAULT_LOCAL_TARGET_FAILURE_THRESHOLD: usize = 2;
+const DEFAULT_LOCAL_TARGET_FAILURE_LOOKBACK_SECS: u64 = 6 * 60 * 60;
+const DEFAULT_LOCAL_TARGET_FAILURE_COOLDOWN_SECS: u64 = 30 * 60;
+const LOCAL_TARGET_FAILURE_THRESHOLD_ENV: &str = "DOCDEX_DELEGATION_FAILURE_THRESHOLD";
+const LOCAL_TARGET_FAILURE_LOOKBACK_ENV: &str = "DOCDEX_DELEGATION_FAILURE_LOOKBACK_SECS";
+const LOCAL_TARGET_FAILURE_COOLDOWN_ENV: &str = "DOCDEX_DELEGATION_FAILURE_COOLDOWN_SECS";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -878,7 +885,8 @@ pub fn select_local_target(
     task_type: TaskType,
     library: &LocalModelLibrary,
 ) -> Option<LocalTarget> {
-    rank_task_capability_local_targets(task_type, library)
+    let recent_failures = load_recent_local_target_failures(None);
+    rank_task_capability_local_targets(task_type, library, Some(&recent_failures))
         .into_iter()
         .next()
 }
@@ -955,17 +963,77 @@ struct DelegationFailureRecord {
     error: String,
 }
 
-fn resolve_delegation_failure_history_path(
-    context: &DelegationFailureHistoryContext,
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct LocalTargetFailureWindow {
+    recent_failures: usize,
+    last_failure_at_ms: u128,
+}
+
+#[derive(Debug, Deserialize)]
+struct DelegationFailureHistoryLine {
+    ts: String,
+    kind: String,
+    local_target: String,
+    #[serde(default)]
+    error: String,
+}
+
+fn env_u64(key: &str) -> Option<u64> {
+    std::env::var(key).ok()?.trim().parse::<u64>().ok()
+}
+
+fn env_usize(key: &str) -> Option<usize> {
+    std::env::var(key).ok()?.trim().parse::<usize>().ok()
+}
+
+fn local_target_failure_threshold() -> usize {
+    env_usize(LOCAL_TARGET_FAILURE_THRESHOLD_ENV)
+        .unwrap_or(DEFAULT_LOCAL_TARGET_FAILURE_THRESHOLD)
+        .max(1)
+}
+
+fn local_target_failure_lookback() -> Duration {
+    Duration::from_secs(
+        env_u64(LOCAL_TARGET_FAILURE_LOOKBACK_ENV)
+            .unwrap_or(DEFAULT_LOCAL_TARGET_FAILURE_LOOKBACK_SECS)
+            .max(1),
+    )
+}
+
+fn local_target_failure_cooldown() -> Duration {
+    Duration::from_secs(
+        env_u64(LOCAL_TARGET_FAILURE_COOLDOWN_ENV)
+            .unwrap_or(DEFAULT_LOCAL_TARGET_FAILURE_COOLDOWN_SECS)
+            .max(1),
+    )
+}
+
+fn resolve_delegation_failure_history_path_from_root(
+    global_state_dir: Option<&Path>,
 ) -> Result<PathBuf> {
-    let base_dir = context
-        .global_state_dir
-        .clone()
+    let base_dir = global_state_dir
+        .map(Path::to_path_buf)
+        .or_else(|| {
+            std::env::var("DOCDEX_STATE_DIR").ok().and_then(|value| {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(trimmed))
+                }
+            })
+        })
         .or_else(|| crate::state_paths::default_state_base_dir().ok())
         .ok_or_else(|| anyhow!("resolve delegation failure history state dir"))?;
     let errors_dir = base_dir.join("logs").join(DELEGATION_FAILURE_HISTORY_DIR);
     crate::state_layout::ensure_state_dir_secure(&errors_dir)?;
     Ok(errors_dir.join(DELEGATION_FAILURE_HISTORY_FILE))
+}
+
+fn resolve_delegation_failure_history_path(
+    context: &DelegationFailureHistoryContext,
+) -> Result<PathBuf> {
+    resolve_delegation_failure_history_path_from_root(context.global_state_dir.as_deref())
 }
 
 fn append_delegation_failure_record(
@@ -1017,6 +1085,123 @@ fn record_local_delegation_failure(
     }
 }
 
+fn blocking_failure_for_cooldown(kind: &str, error: &str) -> bool {
+    if kind == "local_completion_failed" {
+        return true;
+    }
+    kind == "local_validation_failed"
+        && !error
+            .to_ascii_lowercase()
+            .contains("delegation output must not include markdown fences")
+}
+
+fn load_recent_local_target_failures(
+    state_dir_override: Option<&Path>,
+) -> HashMap<String, LocalTargetFailureWindow> {
+    let path = match resolve_delegation_failure_history_path_from_root(state_dir_override) {
+        Ok(path) => path,
+        Err(err) => {
+            warn!(
+                target: "docdexd",
+                error = ?err,
+                "failed to resolve delegation failure history path for cooldown checks"
+            );
+            return HashMap::new();
+        }
+    };
+    if !path.exists() {
+        return HashMap::new();
+    }
+    let file = match File::open(&path) {
+        Ok(file) => file,
+        Err(err) => {
+            warn!(
+                target: "docdexd",
+                error = ?err,
+                path = %path.display(),
+                "failed to open delegation failure history for cooldown checks"
+            );
+            return HashMap::new();
+        }
+    };
+    let now_ms = Utc::now().timestamp_millis().max(0) as u128;
+    let lookback_ms = local_target_failure_lookback().as_millis() as u128;
+    let cooldown_ms = local_target_failure_cooldown().as_millis() as u128;
+    let threshold = local_target_failure_threshold();
+    let mut failures: HashMap<String, LocalTargetFailureWindow> = HashMap::new();
+    for line in BufReader::new(file)
+        .lines()
+        .map_while(std::result::Result::ok)
+    {
+        let Ok(record) = serde_json::from_str::<DelegationFailureHistoryLine>(&line) else {
+            continue;
+        };
+        if !blocking_failure_for_cooldown(&record.kind, &record.error) {
+            continue;
+        }
+        let target = record.local_target.trim();
+        if target.is_empty() {
+            continue;
+        }
+        let Ok(ts) = chrono::DateTime::parse_from_rfc3339(record.ts.trim()) else {
+            continue;
+        };
+        let failure_at_ms = ts.timestamp_millis().max(0) as u128;
+        if now_ms.saturating_sub(failure_at_ms) > lookback_ms {
+            continue;
+        }
+        let entry = failures.entry(target.to_string()).or_default();
+        entry.recent_failures = entry.recent_failures.saturating_add(1);
+        entry.last_failure_at_ms = entry.last_failure_at_ms.max(failure_at_ms);
+    }
+    failures.retain(|_, window| {
+        window.recent_failures >= threshold
+            && window.last_failure_at_ms.saturating_add(cooldown_ms) > now_ms
+    });
+    failures
+}
+
+fn recent_failures_contain(
+    recent_failures: &HashMap<String, LocalTargetFailureWindow>,
+    label: &str,
+) -> bool {
+    let trimmed = label.trim();
+    !trimmed.is_empty() && recent_failures.contains_key(trimmed)
+}
+
+fn agent_has_recent_local_failure(
+    agent: &LocalAgentEntry,
+    recent_failures: &HashMap<String, LocalTargetFailureWindow>,
+) -> bool {
+    recent_failures_contain(recent_failures, &format!("agent:{}", agent.agent_id))
+        || recent_failures_contain(recent_failures, &format!("agent:{}", agent.agent_slug))
+        || recent_failures_contain(recent_failures, &agent.agent_id)
+        || recent_failures_contain(recent_failures, &agent.agent_slug)
+}
+
+fn model_has_recent_local_failure(
+    model: &str,
+    recent_failures: &HashMap<String, LocalTargetFailureWindow>,
+) -> bool {
+    recent_failures_contain(recent_failures, &format!("model:{model}"))
+        || recent_failures_contain(recent_failures, model)
+}
+
+fn automatic_local_mcoda_agent_selection_eligible(
+    agent: &LocalAgentEntry,
+    recent_failures: &HashMap<String, LocalTargetFailureWindow>,
+) -> bool {
+    automatic_local_mcoda_agent_eligible(agent)
+        && !agent_has_recent_local_failure(agent, recent_failures)
+}
+
+fn zero_cost_mcoda_agent_selection_eligible(
+    agent: &LocalAgentEntry,
+    recent_failures: &HashMap<String, LocalTargetFailureWindow>,
+) -> bool {
+    zero_cost_mcoda_agent_eligible(agent) && !agent_has_recent_local_failure(agent, recent_failures)
+}
+
 fn push_unique_target(targets: &mut Vec<LocalTarget>, target: LocalTarget) {
     if !targets.contains(&target) {
         targets.push(target);
@@ -1033,9 +1218,16 @@ fn local_target_sort_key(target: &LocalTarget) -> String {
 fn rank_task_capability_local_targets(
     task_type: TaskType,
     library: &LocalModelLibrary,
+    recent_failures: Option<&HashMap<String, LocalTargetFailureWindow>>,
 ) -> Vec<LocalTarget> {
     let mut candidates: Vec<(LocalTarget, i32, bool)> = Vec::new();
     for model in &library.models {
+        if recent_failures
+            .map(|failures| model_has_recent_local_failure(&model.name, failures))
+            .unwrap_or(false)
+        {
+            continue;
+        }
         let score = score_for_task(task_type, &model.capabilities);
         if score <= 0 {
             continue;
@@ -1043,7 +1235,10 @@ fn rank_task_capability_local_targets(
         candidates.push((LocalTarget::OllamaModel(model.name.clone()), score, true));
     }
     for agent in &library.agents {
-        if !automatic_local_mcoda_agent_eligible(agent) {
+        if !recent_failures
+            .map(|failures| automatic_local_mcoda_agent_selection_eligible(agent, failures))
+            .unwrap_or_else(|| automatic_local_mcoda_agent_eligible(agent))
+        {
             continue;
         }
         let score = score_for_task(task_type, &agent.capabilities);
@@ -1069,11 +1264,18 @@ fn rank_task_capability_local_targets(
         .collect()
 }
 
-fn rank_zero_cost_mcoda_agents(library: &LocalModelLibrary) -> Vec<&LocalAgentEntry> {
+fn rank_zero_cost_mcoda_agents<'a>(
+    library: &'a LocalModelLibrary,
+    recent_failures: Option<&HashMap<String, LocalTargetFailureWindow>>,
+) -> Vec<&'a LocalAgentEntry> {
     let mut agents: Vec<&LocalAgentEntry> = library
         .agents
         .iter()
-        .filter(|agent| zero_cost_mcoda_agent_eligible(agent))
+        .filter(|agent| {
+            recent_failures
+                .map(|failures| zero_cost_mcoda_agent_selection_eligible(agent, failures))
+                .unwrap_or_else(|| zero_cost_mcoda_agent_eligible(agent))
+        })
         .collect();
     agents.sort_by(|left, right| compare_zero_cost_mcoda_agents(left, right));
     agents
@@ -1106,15 +1308,16 @@ pub fn build_local_target_candidates_with_config(
     task_type: TaskType,
     library: &mut LocalModelLibrary,
 ) -> Vec<LocalTarget> {
+    let recent_failures = load_recent_local_target_failures(state_dir_override);
     if llm_config.delegation.local_selection_policy
         != LOCAL_SELECTION_POLICY_MCODA_ZERO_COST_MOST_CAPABLE
     {
-        return rank_task_capability_local_targets(task_type, library);
+        return rank_task_capability_local_targets(task_type, library, Some(&recent_failures));
     }
 
     let mut targets = Vec::new();
     if llm_config.delegation.use_cached_local_decision {
-        if let Some(agent) = resolve_cached_zero_cost_mcoda_agent(library) {
+        if let Some(agent) = resolve_cached_zero_cost_mcoda_agent(library, &recent_failures) {
             push_unique_target(
                 &mut targets,
                 LocalTarget::McodaAgent(agent.agent_id.clone()),
@@ -1122,14 +1325,14 @@ pub fn build_local_target_candidates_with_config(
         }
     }
 
-    for agent in rank_zero_cost_mcoda_agents(library) {
+    for agent in rank_zero_cost_mcoda_agents(library, Some(&recent_failures)) {
         push_unique_target(
             &mut targets,
             LocalTarget::McodaAgent(agent.agent_id.clone()),
         );
     }
 
-    for target in rank_task_capability_local_targets(task_type, library) {
+    for target in rank_task_capability_local_targets(task_type, library, Some(&recent_failures)) {
         push_unique_target(&mut targets, target);
     }
 
@@ -1214,7 +1417,8 @@ pub fn select_primary_target(
     library: &LocalModelLibrary,
     local_target: Option<&LocalTarget>,
 ) -> Option<LocalTarget> {
-    rank_primary_targets(task_type, library, local_target)
+    let recent_failures = load_recent_local_target_failures(None);
+    rank_primary_targets(task_type, library, local_target, Some(&recent_failures))
         .into_iter()
         .next()
 }
@@ -1223,10 +1427,17 @@ fn rank_primary_targets(
     task_type: TaskType,
     library: &LocalModelLibrary,
     local_target: Option<&LocalTarget>,
+    recent_failures: Option<&HashMap<String, LocalTargetFailureWindow>>,
 ) -> Vec<LocalTarget> {
     let mut candidates: Vec<(LocalTarget, i32, bool)> = Vec::new();
     for agent in &library.agents {
         if !mcoda_agent_health_allows(agent.health_status.as_deref()) {
+            continue;
+        }
+        if recent_failures
+            .map(|failures| agent_has_recent_local_failure(agent, failures))
+            .unwrap_or(false)
+        {
             continue;
         }
         let score = score_for_task(task_type, &agent.capabilities);
@@ -1236,6 +1447,12 @@ fn rank_primary_targets(
         candidates.push((LocalTarget::McodaAgent(agent.agent_id.clone()), score, true));
     }
     for model in &library.models {
+        if recent_failures
+            .map(|failures| model_has_recent_local_failure(&model.name, failures))
+            .unwrap_or(false)
+        {
+            continue;
+        }
         let score = score_for_task(task_type, &model.capabilities);
         if score <= 0 {
             continue;
@@ -1309,6 +1526,7 @@ fn resolve_completion_local_agent<'a>(
 
 fn resolve_cached_zero_cost_mcoda_agent<'a>(
     library: &'a LocalModelLibrary,
+    recent_failures: &HashMap<String, LocalTargetFailureWindow>,
 ) -> Option<&'a LocalAgentEntry> {
     let cached = library.cached_local_agent_selection.as_ref()?;
     if cached.policy != LOCAL_SELECTION_POLICY_MCODA_ZERO_COST_MOST_CAPABLE {
@@ -1321,7 +1539,7 @@ fn resolve_cached_zero_cost_mcoda_agent<'a>(
             agent.agent_id == cached.agent_id
                 || (!cached.agent_slug.is_empty() && agent.agent_slug == cached.agent_slug)
         })
-        .filter(|agent| zero_cost_mcoda_agent_eligible(agent))
+        .filter(|agent| zero_cost_mcoda_agent_selection_eligible(agent, recent_failures))
 }
 
 fn automatic_local_mcoda_agent_eligible(agent: &LocalAgentEntry) -> bool {
@@ -1430,6 +1648,7 @@ pub fn build_primary_target_candidates(
     library: &LocalModelLibrary,
     local_target: Option<&LocalTarget>,
 ) -> Vec<LocalTarget> {
+    let recent_failures = load_recent_local_target_failures(None);
     let mut targets = Vec::new();
     if let Some(target) =
         resolve_explicit_target(&llm_config.delegation.primary_agent_id, Some(library))
@@ -1438,7 +1657,7 @@ pub fn build_primary_target_candidates(
             push_unique_target(&mut targets, target);
         }
     }
-    for target in rank_primary_targets(task_type, library, local_target) {
+    for target in rank_primary_targets(task_type, library, local_target, Some(&recent_failures)) {
         push_unique_target(&mut targets, target);
     }
     targets

@@ -1,7 +1,9 @@
 use crate::memory::{ensure_repo_state_dir, repo_state_root_from_state_dir};
 use crate::metrics::{DelegationMetrics, DelegationTelemetrySnapshot, Metrics};
+use crate::state_paths::StatePaths;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::warn;
@@ -26,6 +28,25 @@ impl PersistedDelegationTelemetry {
             snapshot,
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RepoDelegationTelemetrySnapshot {
+    pub state_key: String,
+    pub project: String,
+    pub snapshot: DelegationTelemetrySnapshot,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct RepoRegistryFile {
+    #[serde(default)]
+    repos: HashMap<String, RepoRegistryEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RepoRegistryEntry {
+    state_key: String,
+    canonical_path: String,
 }
 
 pub fn restore_global_metrics_if_empty(
@@ -94,21 +115,64 @@ pub fn repo_snapshot_path(repo_state_root: &Path) -> PathBuf {
     repo_state_root.join(REPO_TELEMETRY_FILE)
 }
 
+pub fn load_repo_snapshots(
+    global_state_dir: &Path,
+) -> Result<Vec<RepoDelegationTelemetrySnapshot>> {
+    let layout = StatePaths::new(global_state_dir.to_path_buf());
+    let repos_dir = layout.repos_dir();
+    if !repos_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let registry_paths = load_registry_state_key_paths(&layout.repo_registry_path())?;
+    let mut snapshots = Vec::new();
+    for entry in fs::read_dir(&repos_dir)
+        .with_context(|| format!("read repo telemetry dir {}", repos_dir.display()))?
+    {
+        let entry = entry.with_context(|| format!("iterate {}", repos_dir.display()))?;
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("read type {}", entry.path().display()))?;
+        if !file_type.is_dir() {
+            continue;
+        }
+        let state_key = entry.file_name().to_string_lossy().to_string();
+        let Some(snapshot) = load_snapshot(&repo_snapshot_path(&entry.path()))? else {
+            continue;
+        };
+        let project = registry_paths
+            .get(&state_key)
+            .cloned()
+            .unwrap_or_else(|| state_key.clone());
+        snapshots.push(RepoDelegationTelemetrySnapshot {
+            state_key,
+            project,
+            snapshot,
+        });
+    }
+    snapshots.sort_by(|a, b| {
+        a.project
+            .cmp(&b.project)
+            .then_with(|| a.state_key.cmp(&b.state_key))
+    });
+    Ok(snapshots)
+}
+
 fn persist_global_snapshot_path(global_state_dir: Option<&Path>) -> Option<PathBuf> {
-    global_state_dir
-        .map(Path::to_path_buf)
-        .map(|root| root.join(GLOBAL_TELEMETRY_DIR).join(GLOBAL_TELEMETRY_FILE))
+    global_state_dir.map(|root| root.join(GLOBAL_TELEMETRY_DIR).join(GLOBAL_TELEMETRY_FILE))
 }
 
 fn restore_global_snapshot_path(global_state_dir: Option<&Path>) -> Option<PathBuf> {
-    resolve_global_state_dir(global_state_dir)
-        .map(|root| root.join(GLOBAL_TELEMETRY_DIR).join(GLOBAL_TELEMETRY_FILE))
+    persist_global_snapshot_path(global_state_dir)
 }
 
-fn resolve_global_state_dir(global_state_dir: Option<&Path>) -> Option<PathBuf> {
-    global_state_dir
-        .map(Path::to_path_buf)
-        .or_else(|| crate::state_paths::default_state_base_dir().ok())
+pub fn effective_global_state_dir(
+    configured_global_state_dir: Option<&Path>,
+    state_dir: &Path,
+) -> Option<PathBuf> {
+    crate::repo_manager::split_scoped_state_dir(state_dir)
+        .map(|(base_dir, _, _)| base_dir)
+        .or_else(|| configured_global_state_dir.map(Path::to_path_buf))
 }
 
 fn load_snapshot(path: &Path) -> Result<Option<DelegationTelemetrySnapshot>> {
@@ -120,6 +184,21 @@ fn load_snapshot(path: &Path) -> Result<Option<DelegationTelemetrySnapshot>> {
     let parsed: PersistedDelegationTelemetry = serde_json::from_str(&payload)
         .with_context(|| format!("parse delegation telemetry {}", path.display()))?;
     Ok(Some(parsed.snapshot))
+}
+
+fn load_registry_state_key_paths(path: &Path) -> Result<HashMap<String, String>> {
+    if !path.exists() {
+        return Ok(HashMap::new());
+    }
+    let payload = fs::read_to_string(path)
+        .with_context(|| format!("read repo registry {}", path.display()))?;
+    let parsed: RepoRegistryFile = serde_json::from_str(&payload)
+        .with_context(|| format!("parse repo registry {}", path.display()))?;
+    Ok(parsed
+        .repos
+        .into_values()
+        .map(|entry| (entry.state_key, entry.canonical_path))
+        .collect())
 }
 
 fn write_snapshot(path: &Path, snapshot: DelegationTelemetrySnapshot) -> Result<()> {
@@ -151,6 +230,8 @@ fn ensure_parent_dir(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state_layout::resolve_state_paths;
+    use serde_json::json;
     use tempfile::TempDir;
 
     #[test]
@@ -224,6 +305,65 @@ mod tests {
         live.inc_delegate_request();
         assert!(!restore_global_metrics_if_empty(&live, Some(temp.path()))?);
         assert_eq!(live.delegation_snapshot().delegate_requests_total, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn effective_global_state_dir_prefers_repo_state_base() -> Result<()> {
+        let repo = TempDir::new()?;
+        fs::create_dir_all(repo.path().join(".git"))?;
+        let shared_state = TempDir::new()?;
+        let state_paths =
+            resolve_state_paths(repo.path(), Some(shared_state.path().to_path_buf()))?;
+        let configured = PathBuf::from("/tmp/should-not-win");
+
+        let resolved =
+            effective_global_state_dir(Some(configured.as_path()), state_paths.index_dir())
+                .context("resolved global state dir")?;
+
+        assert_eq!(resolved, shared_state.path());
+        Ok(())
+    }
+
+    #[test]
+    fn load_repo_snapshots_uses_registry_paths() -> Result<()> {
+        let temp = TempDir::new()?;
+        let state_root = temp.path();
+        let repos_dir = state_root.join("repos");
+        fs::create_dir_all(&repos_dir)?;
+        let repo_state_root = repos_dir.join("demo-state");
+        fs::create_dir_all(&repo_state_root)?;
+        write_snapshot(
+            &repo_snapshot_path(&repo_state_root),
+            DelegationTelemetrySnapshot {
+                delegate_requests_total: 2,
+                delegate_offloaded_total: 1,
+                delegate_token_savings_total: 12,
+                delegate_cost_savings_micros_total: 34,
+                ..DelegationTelemetrySnapshot::default()
+            },
+        )?;
+        fs::write(
+            repos_dir.join("repo_registry.json"),
+            serde_json::to_vec_pretty(&json!({
+                "version": 1,
+                "repos": {
+                    "demo-fingerprint": {
+                        "state_key": "demo-state",
+                        "canonical_path": "/tmp/demo",
+                        "prior_paths": [],
+                        "last_seen_at_epoch_ms": 0
+                    }
+                }
+            }))?,
+        )?;
+
+        let snapshots = load_repo_snapshots(state_root)?;
+
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].state_key, "demo-state");
+        assert_eq!(snapshots[0].project, "/tmp/demo");
+        assert_eq!(snapshots[0].snapshot.delegate_requests_total, 2);
         Ok(())
     }
 }

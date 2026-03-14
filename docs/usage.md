@@ -57,6 +57,7 @@ Postinstall behavior:
 ### Uninstall
 - `npm uninstall -g docdex` stops the daemon, removes its startup registration, and deletes Docdex MCP entries from supported client config files.
 - The installer data dir (see below) is not removed automatically; delete it manually if you want a full cleanup.
+- Persistent `~/.docdex` data such as `config.toml`, repo indexes, logs, and delegation telemetry is preserved across uninstall/reinstall; remove it manually only when you intentionally want to reset local state.
 
 ## First run
 

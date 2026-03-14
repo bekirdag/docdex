@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.53
+- Add a per-project actual cost savings table to `docdexd delegation savings --all`.
+- Include optional per-project `projects` telemetry entries for `/v1/telemetry/delegation?all=true`, resolving persisted repo telemetry to canonical project paths with live mounted-repo fallback.
+
 ## 0.2.52
 - Persist delegation savings telemetry across daemon restarts and reinstalls, including daemon-global `--all` totals and repo-scoped counters.
 - Store daemon-global delegation savings under `~/.docdex/state/telemetry/delegation.json` and repo totals under `~/.docdex/state/repos/<state_key>/delegation_telemetry.json`.

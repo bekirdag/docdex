@@ -414,20 +414,22 @@ mod tests {
     async fn build_test_state() -> Result<(AppState, TempDir), Box<dyn std::error::Error>> {
         let temp = TempDir::new()?;
         fs::create_dir_all(temp.path())?;
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root)?;
         let state_dir = temp.path().join("state");
         let index_config = crate::index::IndexConfig::with_overrides(
-            temp.path(),
-            Some(state_dir),
+            &repo_root,
+            Some(state_dir.clone()),
             Vec::new(),
             Vec::new(),
             true,
         )?;
         let indexer = Arc::new(crate::index::Indexer::with_config(
-            temp.path().to_path_buf(),
+            repo_root.clone(),
             index_config,
         )?);
-        let repo_id = crate::repo_manager::repo_fingerprint_sha256(temp.path())?;
-        let legacy_repo_id = crate::repo_manager::fingerprint::legacy_repo_id_for_root(temp.path());
+        let repo_id = crate::repo_manager::repo_fingerprint_sha256(&repo_root)?;
+        let legacy_repo_id = crate::repo_manager::fingerprint::legacy_repo_id_for_root(&repo_root);
         let security = SecurityConfig::from_options(
             None,
             &[],
@@ -443,8 +445,8 @@ mod tests {
             false,
         )?;
         let repo_args = crate::config::RepoArgs {
-            repo: temp.path().to_path_buf(),
-            state_dir: None,
+            repo: repo_root,
+            state_dir: Some(state_dir),
             exclude_prefix: Vec::new(),
             exclude_dir: Vec::new(),
             enable_symbol_extraction: true,

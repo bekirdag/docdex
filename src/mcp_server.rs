@@ -3329,8 +3329,12 @@ Produce a phased plan with risks and tests to run."
             self.delegation_metrics.inc_delegate_fallback();
         }
         let repo_state_root = repo_state_root_from_state_dir(self.indexer.state_dir());
-        delegation_telemetry::persist_metrics(
+        let telemetry_global_state_dir = delegation_telemetry::effective_global_state_dir(
             self.global_state_dir.as_deref(),
+            self.indexer.state_dir(),
+        );
+        delegation_telemetry::persist_metrics(
+            telemetry_global_state_dir.as_deref(),
             metrics.as_ref(),
             Some(repo_state_root.as_path()),
             Some(self.delegation_metrics.as_ref()),

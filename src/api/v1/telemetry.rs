@@ -6,8 +6,10 @@ use axum::{
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::metrics::DelegationTelemetrySnapshot;
+use crate::repo_manager;
 use crate::search::{repo_error_response, resolve_repo_context, AppState};
 
 #[derive(Serialize)]
@@ -46,6 +48,24 @@ struct DelegationTelemetryResponse {
     delegate_cost_savings_micros_total: u64,
     delegate_cost_savings_usd: f64,
     pricing: DelegationTelemetryPricing,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    projects: Option<Vec<DelegationTelemetryProjectResponse>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+struct DelegationTelemetryProjectResponse {
+    project: String,
+    state_key: String,
+    delegate_requests_total: u64,
+    delegate_offloaded_total: u64,
+    delegate_fallbacks_total: u64,
+    delegate_token_savings_total: u64,
+    delegate_local_cost_micros_total: u64,
+    delegate_avoided_primary_cost_micros_total: u64,
+    delegate_avoided_primary_cost_usd: f64,
+    delegate_cost_savings_micros_total: u64,
+    delegate_cost_savings_usd: f64,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -65,6 +85,7 @@ pub async fn delegation_telemetry_handler(
         return Json(build_delegation_response(
             delegation_snapshot_for_all(&state),
             &state.llm_config.delegation,
+            delegation_projects_for_all(&state),
         ))
         .into_response();
     }
@@ -76,6 +97,7 @@ pub async fn delegation_telemetry_handler(
     Json(build_delegation_response(
         DelegationTelemetrySnapshot::from_delegation_metrics(repo.delegation_metrics.as_ref()),
         &state.llm_config.delegation,
+        None,
     ))
     .into_response()
 }
@@ -102,6 +124,7 @@ fn delegation_snapshot_for_all(state: &AppState) -> DelegationTelemetrySnapshot 
 fn build_delegation_response(
     metrics: DelegationTelemetrySnapshot,
     config: &crate::config::DelegationConfig,
+    projects: Option<Vec<DelegationTelemetryProjectResponse>>,
 ) -> DelegationTelemetryResponse {
     let cost_micros = metrics.delegate_cost_savings_micros_total;
     let cost_usd = cost_micros as f64 / 1_000_000.0;
@@ -143,6 +166,78 @@ fn build_delegation_response(
         delegate_cost_savings_micros_total: cost_micros,
         delegate_cost_savings_usd: cost_usd,
         pricing,
+        projects,
+    }
+}
+
+fn delegation_projects_for_all(
+    state: &AppState,
+) -> Option<Vec<DelegationTelemetryProjectResponse>> {
+    if let Some(global_state_dir) = state.global_state_dir.as_deref() {
+        match crate::delegation_telemetry::load_repo_snapshots(global_state_dir) {
+            Ok(projects) if !projects.is_empty() => {
+                return Some(
+                    projects
+                        .into_iter()
+                        .map(build_project_response)
+                        .collect::<Vec<_>>(),
+                );
+            }
+            Ok(_) => {}
+            Err(err) => {
+                warn!(
+                    target: "docdexd",
+                    state_dir = %global_state_dir.display(),
+                    error = ?err,
+                    "failed to load persisted repo delegation telemetry"
+                );
+            }
+        }
+    }
+
+    if let Some(manager) = state.repos.as_ref() {
+        let projects = manager
+            .delegation_project_snapshots()
+            .into_iter()
+            .map(build_project_response)
+            .collect::<Vec<_>>();
+        if !projects.is_empty() {
+            return Some(projects);
+        }
+    }
+
+    let snapshot =
+        DelegationTelemetrySnapshot::from_delegation_metrics(state.delegation_metrics.as_ref());
+    if snapshot.is_zero() {
+        return None;
+    }
+    Some(vec![build_project_response(
+        crate::delegation_telemetry::RepoDelegationTelemetrySnapshot {
+            state_key: state.repo_id.clone(),
+            project: repo_manager::normalize_path(state.indexer.repo_root()),
+            snapshot,
+        },
+    )])
+}
+
+fn build_project_response(
+    project: crate::delegation_telemetry::RepoDelegationTelemetrySnapshot,
+) -> DelegationTelemetryProjectResponse {
+    let avoided_primary_cost = project.snapshot.delegate_local_cost_micros_total
+        + project.snapshot.delegate_cost_savings_micros_total;
+    DelegationTelemetryProjectResponse {
+        project: project.project,
+        state_key: project.state_key,
+        delegate_requests_total: project.snapshot.delegate_requests_total,
+        delegate_offloaded_total: project.snapshot.delegate_offloaded_total,
+        delegate_fallbacks_total: project.snapshot.delegate_fallbacks_total,
+        delegate_token_savings_total: project.snapshot.delegate_token_savings_total,
+        delegate_local_cost_micros_total: project.snapshot.delegate_local_cost_micros_total,
+        delegate_avoided_primary_cost_micros_total: avoided_primary_cost,
+        delegate_avoided_primary_cost_usd: avoided_primary_cost as f64 / 1_000_000.0,
+        delegate_cost_savings_micros_total: project.snapshot.delegate_cost_savings_micros_total,
+        delegate_cost_savings_usd: project.snapshot.delegate_cost_savings_micros_total as f64
+            / 1_000_000.0,
     }
 }
 
@@ -435,6 +530,17 @@ mod tests {
                 .and_then(|value| value.as_u64()),
             Some(5)
         );
+        let projects = payload
+            .get("projects")
+            .and_then(|value| value.as_array())
+            .expect("projects payload");
+        assert_eq!(projects.len(), 2);
+        assert!(projects.iter().any(|project| {
+            project
+                .get("delegate_cost_savings_micros_total")
+                .and_then(|value| value.as_u64())
+                == Some(5)
+        }));
         Ok(())
     }
 

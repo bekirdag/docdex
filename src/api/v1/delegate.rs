@@ -438,8 +438,12 @@ pub async fn delegate_handler(
         repo.delegation_metrics.inc_delegate_fallback();
     }
     let repo_state_root = repo_state_root_from_state_dir(repo.indexer.state_dir());
-    delegation_telemetry::persist_metrics(
+    let telemetry_global_state_dir = delegation_telemetry::effective_global_state_dir(
         state.global_state_dir.as_deref(),
+        repo.indexer.state_dir(),
+    );
+    delegation_telemetry::persist_metrics(
+        telemetry_global_state_dir.as_deref(),
         state.metrics.as_ref(),
         Some(repo_state_root.as_path()),
         Some(repo.delegation_metrics.as_ref()),

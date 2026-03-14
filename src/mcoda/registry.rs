@@ -1062,23 +1062,21 @@ printf '%s' '[{"id":"agent-1","slug":"qwen-3.5-27b","adapter":"ollama-remote","d
         let _guard = ENV_LOCK.lock();
         reset_mcoda_cli_backoff();
         let temp = TempDir::new()?;
-        let counter_path = temp.path().join("mcoda-count.txt");
+        let plain_log_path = temp.path().join("mcoda-plain.log");
         let script_path = temp.path().join("mcoda");
         fs::write(
             &script_path,
             format!(
                 r#"#!/bin/sh
-COUNT_FILE="{}"
-count=$(cat "$COUNT_FILE" 2>/dev/null || echo 0)
-count=$((count + 1))
-printf '%s' "$count" > "$COUNT_FILE"
 if [ "$4" = "--refresh-health" ]; then
   sleep 1
   exit 0
 fi
+LOG_FILE="{}"
+printf '%s\n' "$*" >> "$LOG_FILE"
 printf '%s' '[{{"id":"agent-1","slug":"claude-sonnet","adapter":"claude-cli","defaultModel":"sonnet","capabilities":["code_write"],"health":{{"status":"healthy"}}}}]'
 "#,
-                counter_path.display()
+                plain_log_path.display()
             ),
         )?;
         #[cfg(unix)]
@@ -1098,9 +1096,20 @@ printf '%s' '[{{"id":"agent-1","slug":"claude-sonnet","adapter":"claude-cli","de
         let _disable_guard = EnvVarGuard::set("DOCDEX_DISABLE_MCODA_CLI", "0");
 
         let _first = McodaRegistry::load_from_cli()?.expect("first registry");
+        assert!(
+            should_skip_mcoda_cli_attempt(&MCODA_AGENT_LIST_JSON_REFRESH_ARGS),
+            "expected refresh attempt to remain in backoff after timeout"
+        );
+        assert!(
+            !should_skip_mcoda_cli_attempt(&MCODA_AGENT_LIST_JSON_ARGS),
+            "expected plain attempt to remain available during refresh backoff"
+        );
         let _second = McodaRegistry::load_from_cli()?.expect("second registry");
-        let count = fs::read_to_string(&counter_path)?.trim().parse::<u32>()?;
-        assert_eq!(count, 3, "expected refresh to be skipped during backoff");
+        let count = fs::read_to_string(&plain_log_path)?
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count() as u32;
+        assert_eq!(count, 2, "expected both calls to use the plain fallback");
         Ok(())
     }
 }

@@ -16,7 +16,7 @@ const DEFAULT_LOCAL_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_ZHIPU_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
 const DEFAULT_ZHIPU_CODING_BASE_URL: &str = "https://open.bigmodel.cn/api/coding/paas/v4";
-const CODEX_CLI_TIMEOUT_FLOOR: Duration = Duration::from_secs(120);
+const CODEX_CLI_TIMEOUT_FLOOR: Duration = Duration::from_secs(300);
 const GEMINI_CLI_TIMEOUT_FLOOR: Duration = Duration::from_secs(45);
 const CLI_INLINE_PROMPT_MAX_BYTES: usize = 16 * 1024;
 
@@ -981,8 +981,8 @@ mod tests {
             CODEX_CLI_TIMEOUT_FLOOR
         );
         assert_eq!(
-            codex_cli_timeout(Duration::from_secs(180)),
-            Duration::from_secs(180)
+            codex_cli_timeout(Duration::from_secs(300)),
+            Duration::from_secs(300)
         );
     }
 

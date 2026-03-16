@@ -12,6 +12,8 @@ use toml::map::Map as TomlMap;
 use toml::Value as TomlValue;
 
 const DEFAULT_MCP_BASE_URL: &str = "http://127.0.0.1:28491";
+const CODEX_MCP_TOOL_TIMEOUT_SECS: i64 = 300;
+const CODEX_MCP_STARTUP_TIMEOUT_SECS: i64 = 300;
 const CODEX_RESTART_HINT: &str =
     "[docdexd mcp-add] Restart Codex to reload MCP config in running Codex sessions.";
 
@@ -226,6 +228,16 @@ mod tests {
             docdex.get("url").and_then(|v| v.as_str()),
             Some("http://127.0.0.1:28491/v1/mcp")
         );
+        assert_eq!(
+            docdex.get("tool_timeout_sec").and_then(|v| v.as_integer()),
+            Some(300)
+        );
+        assert_eq!(
+            docdex
+                .get("startup_timeout_sec")
+                .and_then(|v| v.as_integer()),
+            Some(300)
+        );
         Ok(())
     }
 
@@ -251,6 +263,16 @@ mod tests {
         assert_eq!(
             docdex.get("transport").and_then(|v| v.as_str()),
             Some("ipc")
+        );
+        assert_eq!(
+            docdex.get("tool_timeout_sec").and_then(|v| v.as_integer()),
+            Some(300)
+        );
+        assert_eq!(
+            docdex
+                .get("startup_timeout_sec")
+                .and_then(|v| v.as_integer()),
+            Some(300)
         );
         assert_eq!(
             docdex.get("socket_path").and_then(|v| v.as_str()),
@@ -281,6 +303,16 @@ mod tests {
         assert_eq!(
             docdex.get("transport").and_then(|v| v.as_str()),
             Some("ipc")
+        );
+        assert_eq!(
+            docdex.get("tool_timeout_sec").and_then(|v| v.as_integer()),
+            Some(300)
+        );
+        assert_eq!(
+            docdex
+                .get("startup_timeout_sec")
+                .and_then(|v| v.as_integer()),
+            Some(300)
         );
         assert_eq!(
             docdex.get("pipe_name").and_then(|v| v.as_str()),
@@ -594,6 +626,14 @@ fn remove_zed_entry(path: &Path, warn_only: bool) -> Result<()> {
 fn codex_entry_http(url: &str) -> TomlMap<String, TomlValue> {
     let mut entry = TomlMap::new();
     entry.insert("url".to_string(), TomlValue::String(url.to_string()));
+    entry.insert(
+        "tool_timeout_sec".to_string(),
+        TomlValue::Integer(CODEX_MCP_TOOL_TIMEOUT_SECS),
+    );
+    entry.insert(
+        "startup_timeout_sec".to_string(),
+        TomlValue::Integer(CODEX_MCP_STARTUP_TIMEOUT_SECS),
+    );
     entry
 }
 
@@ -602,6 +642,14 @@ fn codex_entry_ipc(endpoint: &mcp_ipc::McpIpcEndpoint) -> TomlMap<String, TomlVa
     entry.insert(
         "transport".to_string(),
         TomlValue::String("ipc".to_string()),
+    );
+    entry.insert(
+        "tool_timeout_sec".to_string(),
+        TomlValue::Integer(CODEX_MCP_TOOL_TIMEOUT_SECS),
+    );
+    entry.insert(
+        "startup_timeout_sec".to_string(),
+        TomlValue::Integer(CODEX_MCP_STARTUP_TIMEOUT_SECS),
     );
     match endpoint {
         mcp_ipc::McpIpcEndpoint::UnixSocket(path) => {

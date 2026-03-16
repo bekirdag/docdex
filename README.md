@@ -147,8 +147,10 @@ If you need to configure your client manually:
 **TOML (Codex):**
 
 ```toml
-[mcp_servers]
-docdex = { url = "http://127.0.0.1:28491/v1/mcp" }
+[mcp_servers.docdex]
+url = "http://127.0.0.1:28491/v1/mcp"
+tool_timeout_sec = 300
+startup_timeout_sec = 300
 
 ```
 

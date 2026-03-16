@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.55
+- Raise Docdex-managed Codex MCP `tool_timeout_sec` and `startup_timeout_sec` defaults to 300 seconds in both `docdexd mcp add` and the npm installer.
+- Raise the Codex/OpenAI CLI local delegation timeout floor to 300 seconds and update the Codex MCP examples accordingly.
+
 ## 0.2.54
 - Add a per-project actual cost savings table to `docdexd delegation savings --all`.
 - Include optional per-project `projects` telemetry entries for `/v1/telemetry/delegation?all=true`, resolving persisted repo telemetry to canonical project paths with live mounted-repo fallback.

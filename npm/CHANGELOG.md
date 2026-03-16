@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.55
+- Raise installer-managed Codex MCP `tool_timeout_sec` and `startup_timeout_sec` defaults to 300 seconds.
+- Update packaged Codex MCP examples to show the 300-second timeout settings.
+
 ## 0.2.54
 - Add a per-project actual cost savings table to `docdexd delegation savings --all`.
 - Include optional per-project `projects` telemetry entries for `/v1/telemetry/delegation?all=true`, resolving persisted repo telemetry to canonical project paths with live mounted-repo fallback.

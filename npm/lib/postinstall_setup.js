@@ -1145,6 +1145,7 @@ function upsertZedConfig(pathname, url) {
 }
 
 function upsertCodexConfig(pathname, url) {
+  const codexTimeoutSec = 300;
   const hasSection = (contents, section) =>
     new RegExp(`^\\s*\\[${section}\\]\\s*$`, "m").test(contents);
   const hasNestedMcpServers = (contents) =>
@@ -1213,13 +1214,20 @@ function upsertCodexConfig(pathname, url) {
   };
 
   const upsertDocdexNested = (contents, urlValue) => {
+    const desiredEntries = [
+      ["url", `"${urlValue}"`],
+      ["tool_timeout_sec", `${codexTimeoutSec}`],
+      ["startup_timeout_sec", `${codexTimeoutSec}`]
+    ];
     const lines = contents.split(/\r?\n/);
     const headerRe = /^\s*\[mcp_servers\.docdex\]\s*$/;
     let start = lines.findIndex((line) => headerRe.test(line));
     if (start === -1) {
       if (lines.length && lines[lines.length - 1].trim()) lines.push("");
       lines.push("[mcp_servers.docdex]");
-      lines.push(`url = "${urlValue}"`);
+      for (const [key, value] of desiredEntries) {
+        lines.push(`${key} = ${value}`);
+      }
       return { contents: lines.join("\n"), updated: true };
     }
     let end = start + 1;
@@ -1227,31 +1235,37 @@ function upsertCodexConfig(pathname, url) {
       end += 1;
     }
     let updated = false;
-    let urlIndex = -1;
-    for (let i = start + 1; i < end; i += 1) {
-      if (/^\s*url\s*=/.test(lines[i])) {
-        urlIndex = i;
-        break;
+    for (const [key, value] of desiredEntries) {
+      const lineValue = `${key} = ${value}`;
+      let keyIndex = -1;
+      for (let i = start + 1; i < end; i += 1) {
+        if (new RegExp(`^\\s*${key}\\s*=`).test(lines[i])) {
+          keyIndex = i;
+          break;
+        }
       }
-    }
-    if (urlIndex === -1) {
-      lines.splice(start + 1, 0, `url = "${urlValue}"`);
-      updated = true;
-    } else if (!lines[urlIndex].includes(`"${urlValue}"`)) {
-      lines[urlIndex] = `url = "${urlValue}"`;
-      updated = true;
+      if (keyIndex === -1) {
+        lines.splice(end, 0, lineValue);
+        end += 1;
+        updated = true;
+      } else if (lines[keyIndex].trim() !== lineValue) {
+        lines[keyIndex] = lineValue;
+        updated = true;
+      }
     }
     return { contents: lines.join("\n"), updated };
   };
 
   const upsertDocdexRoot = (contents, urlValue) => {
+    const entryLine =
+      `docdex = { url = "${urlValue}", tool_timeout_sec = ${codexTimeoutSec}, startup_timeout_sec = ${codexTimeoutSec} }`;
     const lines = contents.split(/\r?\n/);
     const headerRe = /^\s*\[mcp_servers\]\s*$/;
     const start = lines.findIndex((line) => headerRe.test(line));
     if (start === -1) {
       if (lines.length && lines[lines.length - 1].trim()) lines.push("");
       lines.push("[mcp_servers]");
-      lines.push(`docdex = { url = "${urlValue}" }`);
+      lines.push(entryLine);
       return { contents: lines.join("\n"), updated: true };
     }
     let end = start + 1;
@@ -1267,10 +1281,10 @@ function upsertCodexConfig(pathname, url) {
       }
     }
     if (docdexLine === -1) {
-      lines.splice(end, 0, `docdex = { url = "${urlValue}" }`);
+      lines.splice(end, 0, entryLine);
       updated = true;
-    } else if (!lines[docdexLine].includes(`"${urlValue}"`)) {
-      lines[docdexLine] = `docdex = { url = "${urlValue}" }`;
+    } else if (lines[docdexLine].trim() !== entryLine) {
+      lines[docdexLine] = entryLine;
       updated = true;
     }
     return { contents: lines.join("\n"), updated };

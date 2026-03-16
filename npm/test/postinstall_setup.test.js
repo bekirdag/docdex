@@ -143,7 +143,11 @@ test("upsertCodexConfig appends docdex server", () => {
   assert.equal(changed, true);
   const contents = fs.readFileSync(file, "utf8");
   assert.ok(contents.includes("[mcp_servers]"));
-  assert.ok(contents.includes(`docdex = { url = "${url}" }`));
+  assert.ok(
+    contents.includes(
+      `docdex = { url = "${url}", tool_timeout_sec = 300, startup_timeout_sec = 300 }`
+    )
+  );
 });
 
 test("upsertCodexConfig migrates legacy mcp_servers array", () => {
@@ -165,7 +169,31 @@ test("upsertCodexConfig migrates legacy mcp_servers array", () => {
   assert.equal(changed, true);
   const contents = fs.readFileSync(file, "utf8");
   assert.ok(!contents.includes("[[mcp_servers]]"));
-  assert.ok(contents.includes(`docdex = { url = "${url}" }`) || contents.includes("[mcp_servers.docdex]"));
+  assert.ok(contents.includes("[mcp_servers.docdex]"));
+  assert.ok(contents.includes(`url = "${url}"`));
+  assert.ok(contents.includes("tool_timeout_sec = 300"));
+  assert.ok(contents.includes("startup_timeout_sec = 300"));
+});
+
+test("upsertCodexConfig fills timeout fields in nested docdex section", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-codex-nested-"));
+  const file = path.join(dir, "config.toml");
+  fs.writeFileSync(
+    file,
+    [
+      "[mcp_servers.docdex]",
+      'url = "http://localhost:3000/v1/mcp"',
+      ""
+    ].join("\n")
+  );
+  const url = configStreamableUrlForPort(3000);
+  const changed = upsertCodexConfig(file, url);
+  assert.equal(changed, true);
+  const contents = fs.readFileSync(file, "utf8");
+  assert.ok(contents.includes("[mcp_servers.docdex]"));
+  assert.ok(contents.includes(`url = "${url}"`));
+  assert.ok(contents.includes("tool_timeout_sec = 300"));
+  assert.ok(contents.includes("startup_timeout_sec = 300"));
 });
 
 test("upsertCodexConfig removes legacy instructions entry", () => {

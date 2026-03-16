@@ -35,9 +35,25 @@ const DELEGATION_FAILURE_HISTORY_FILE: &str = "delegation_local_failures.jsonl";
 const DEFAULT_LOCAL_TARGET_FAILURE_THRESHOLD: usize = 2;
 const DEFAULT_LOCAL_TARGET_FAILURE_LOOKBACK_SECS: u64 = 6 * 60 * 60;
 const DEFAULT_LOCAL_TARGET_FAILURE_COOLDOWN_SECS: u64 = 30 * 60;
+const LOCAL_DELEGATION_TIMEOUT_FLOOR: Duration = Duration::from_secs(300);
 const LOCAL_TARGET_FAILURE_THRESHOLD_ENV: &str = "DOCDEX_DELEGATION_FAILURE_THRESHOLD";
 const LOCAL_TARGET_FAILURE_LOOKBACK_ENV: &str = "DOCDEX_DELEGATION_FAILURE_LOOKBACK_SECS";
 const LOCAL_TARGET_FAILURE_COOLDOWN_ENV: &str = "DOCDEX_DELEGATION_FAILURE_COOLDOWN_SECS";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DelegationTaskKind {
+    Code,
+    General,
+}
+
+impl DelegationTaskKind {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Code => "code",
+            Self::General => "general",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -47,6 +63,7 @@ pub enum TaskType {
     ScaffoldBoilerplate,
     RefactorSimple,
     FormatCode,
+    GeneralQuestion,
 }
 
 impl TaskType {
@@ -60,6 +77,8 @@ impl TaskType {
             }
             "refactor_simple" | "refactor-simple" | "refactorsimple" => Some(Self::RefactorSimple),
             "format_code" | "format-code" | "formatcode" => Some(Self::FormatCode),
+            "general_question" | "general-question" | "generalquestion" | "answer_question"
+            | "answer-question" | "answerquestion" => Some(Self::GeneralQuestion),
             _ => None,
         }
     }
@@ -71,6 +90,7 @@ impl TaskType {
             TaskType::ScaffoldBoilerplate => "scaffold_boilerplate",
             TaskType::RefactorSimple => "refactor_simple",
             TaskType::FormatCode => "format_code",
+            TaskType::GeneralQuestion => "general_question",
         }
     }
 
@@ -96,8 +116,72 @@ impl TaskType {
                 env!("CARGO_MANIFEST_DIR"),
                 "/prompts/delegation/format_code.txt"
             )),
+            TaskType::GeneralQuestion => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/prompts/delegation/general_question.txt"
+            )),
         }
     }
+
+    fn kind(&self) -> DelegationTaskKind {
+        match self {
+            TaskType::GeneralQuestion => DelegationTaskKind::General,
+            _ => DelegationTaskKind::Code,
+        }
+    }
+}
+
+fn configured_local_agent_id_for_task<'a>(
+    llm_config: &'a LlmConfig,
+    task_type: TaskType,
+) -> Option<&'a str> {
+    let lane_value = match task_type.kind() {
+        DelegationTaskKind::Code => llm_config.delegation.code.local_agent_id.trim(),
+        DelegationTaskKind::General => llm_config.delegation.general.local_agent_id.trim(),
+    };
+    if !lane_value.is_empty() {
+        return Some(lane_value);
+    }
+    let fallback = llm_config.delegation.local_agent_id.trim();
+    if fallback.is_empty() {
+        None
+    } else {
+        Some(fallback)
+    }
+}
+
+fn configured_primary_agent_id_for_task<'a>(
+    llm_config: &'a LlmConfig,
+    task_type: TaskType,
+) -> Option<&'a str> {
+    let lane_value = match task_type.kind() {
+        DelegationTaskKind::Code => llm_config.delegation.code.primary_agent_id.trim(),
+        DelegationTaskKind::General => llm_config.delegation.general.primary_agent_id.trim(),
+    };
+    if !lane_value.is_empty() {
+        return Some(lane_value);
+    }
+    let fallback = llm_config.delegation.primary_agent_id.trim();
+    if fallback.is_empty() {
+        None
+    } else {
+        Some(fallback)
+    }
+}
+
+pub fn resolve_task_scoped_delegation_config(
+    llm_config: &LlmConfig,
+    task_type: TaskType,
+) -> LlmConfig {
+    let mut scoped = llm_config.clone();
+    scoped.delegation.local_agent_id = configured_local_agent_id_for_task(llm_config, task_type)
+        .unwrap_or_default()
+        .to_string();
+    scoped.delegation.primary_agent_id =
+        configured_primary_agent_id_for_task(llm_config, task_type)
+            .unwrap_or_default()
+            .to_string();
+    scoped
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -877,7 +961,8 @@ pub fn validate_output(task_type: TaskType, output: &str) -> Result<(), Delegati
         | TaskType::WriteDocstring
         | TaskType::ScaffoldBoilerplate
         | TaskType::RefactorSimple
-        | TaskType::FormatCode => Ok(()),
+        | TaskType::FormatCode
+        | TaskType::GeneralQuestion => Ok(()),
     }
 }
 
@@ -1265,6 +1350,7 @@ fn rank_task_capability_local_targets(
 }
 
 fn rank_zero_cost_mcoda_agents<'a>(
+    task_type: TaskType,
     library: &'a LocalModelLibrary,
     recent_failures: Option<&HashMap<String, LocalTargetFailureWindow>>,
 ) -> Vec<&'a LocalAgentEntry> {
@@ -1277,24 +1363,28 @@ fn rank_zero_cost_mcoda_agents<'a>(
                 .unwrap_or_else(|| zero_cost_mcoda_agent_eligible(agent))
         })
         .collect();
-    agents.sort_by(|left, right| compare_zero_cost_mcoda_agents(left, right));
+    agents.sort_by(|left, right| compare_zero_cost_mcoda_agents(task_type, left, right));
     agents
 }
 
-fn compare_zero_cost_mcoda_agents(left: &LocalAgentEntry, right: &LocalAgentEntry) -> Ordering {
+fn compare_zero_cost_mcoda_agents(
+    task_type: TaskType,
+    left: &LocalAgentEntry,
+    right: &LocalAgentEntry,
+) -> Ordering {
     let left_key = (
-        zero_cost_mcoda_capability_score(left),
+        zero_cost_mcoda_capability_score_for_task(task_type, left),
         left.max_complexity.unwrap_or(-1),
         scaled_selection_rating(left.reasoning_rating),
         scaled_selection_rating(left.rating),
-        selection_usage_rank(left.usage.as_deref()),
+        selection_usage_rank(task_type, left.usage.as_deref()),
     );
     let right_key = (
-        zero_cost_mcoda_capability_score(right),
+        zero_cost_mcoda_capability_score_for_task(task_type, right),
         right.max_complexity.unwrap_or(-1),
         scaled_selection_rating(right.reasoning_rating),
         scaled_selection_rating(right.rating),
-        selection_usage_rank(right.usage.as_deref()),
+        selection_usage_rank(task_type, right.usage.as_deref()),
     );
     right_key
         .cmp(&left_key)
@@ -1317,7 +1407,9 @@ pub fn build_local_target_candidates_with_config(
 
     let mut targets = Vec::new();
     if llm_config.delegation.use_cached_local_decision {
-        if let Some(agent) = resolve_cached_zero_cost_mcoda_agent(library, &recent_failures) {
+        if let Some(agent) =
+            resolve_cached_zero_cost_mcoda_agent(task_type, library, &recent_failures)
+        {
             push_unique_target(
                 &mut targets,
                 LocalTarget::McodaAgent(agent.agent_id.clone()),
@@ -1325,7 +1417,7 @@ pub fn build_local_target_candidates_with_config(
         }
     }
 
-    for agent in rank_zero_cost_mcoda_agents(library, Some(&recent_failures)) {
+    for agent in rank_zero_cost_mcoda_agents(task_type, library, Some(&recent_failures)) {
         push_unique_target(
             &mut targets,
             LocalTarget::McodaAgent(agent.agent_id.clone()),
@@ -1348,13 +1440,14 @@ pub fn build_local_target_candidates_with_config(
                         policy: LOCAL_SELECTION_POLICY_MCODA_ZERO_COST_MOST_CAPABLE.to_string(),
                         agent_id: agent.agent_id.clone(),
                         agent_slug: agent.agent_slug.clone(),
+                        task_kind: Some(task_type.kind().as_str().to_string()),
                         selected_at_ms: Utc::now().timestamp_millis().max(0) as u128,
                     });
                     let _ = save_local_library(state_dir_override, library);
                 }
             }
             _ => {
-                if clear_cached_zero_cost_mcoda_selection(library) {
+                if clear_cached_zero_cost_mcoda_selection(task_type, library) {
                     let _ = save_local_library(state_dir_override, library);
                 }
             }
@@ -1379,6 +1472,7 @@ pub fn update_cached_local_selection_from_completion(
     state_dir_override: Option<&Path>,
     llm_config: &LlmConfig,
     library: &mut LocalModelLibrary,
+    task_type: TaskType,
     completion: &LlmCompletion,
 ) -> bool {
     if llm_config.delegation.local_selection_policy
@@ -1406,6 +1500,7 @@ pub fn update_cached_local_selection_from_completion(
         policy: LOCAL_SELECTION_POLICY_MCODA_ZERO_COST_MOST_CAPABLE.to_string(),
         agent_id: agent.agent_id.clone(),
         agent_slug: agent.agent_slug.clone(),
+        task_kind: Some(task_type.kind().as_str().to_string()),
         selected_at_ms: Utc::now().timestamp_millis().max(0) as u128,
     });
     let _ = save_local_library(state_dir_override, library);
@@ -1524,12 +1619,26 @@ fn resolve_completion_local_agent<'a>(
     }
 }
 
+fn cached_selection_matches_task_kind(
+    cached: &CachedLocalAgentSelection,
+    task_type: TaskType,
+) -> bool {
+    match cached.task_kind.as_deref() {
+        Some(value) => value.eq_ignore_ascii_case(task_type.kind().as_str()),
+        None => matches!(task_type.kind(), DelegationTaskKind::Code),
+    }
+}
+
 fn resolve_cached_zero_cost_mcoda_agent<'a>(
+    task_type: TaskType,
     library: &'a LocalModelLibrary,
     recent_failures: &HashMap<String, LocalTargetFailureWindow>,
 ) -> Option<&'a LocalAgentEntry> {
     let cached = library.cached_local_agent_selection.as_ref()?;
     if cached.policy != LOCAL_SELECTION_POLICY_MCODA_ZERO_COST_MOST_CAPABLE {
+        return None;
+    }
+    if !cached_selection_matches_task_kind(cached, task_type) {
         return None;
     }
     library
@@ -1563,10 +1672,10 @@ fn paid_or_expensive_local_mcoda_agent(agent: &LocalAgentEntry) -> bool {
 fn zero_cost_mcoda_agent_eligible(agent: &LocalAgentEntry) -> bool {
     automatic_local_mcoda_agent_eligible(agent)
         && matches!(agent.cost_per_million, Some(cost) if cost <= 0.0)
-        && zero_cost_mcoda_capability_score(agent) > 0
+        && zero_cost_mcoda_capability_score_for_task(TaskType::GenerateTests, agent) > 0
 }
 
-fn zero_cost_mcoda_capability_score(agent: &LocalAgentEntry) -> i32 {
+fn zero_cost_mcoda_capability_score_for_task(task_type: TaskType, agent: &LocalAgentEntry) -> i32 {
     let has = |cap: &str| agent.capabilities.iter().any(|value| value == cap);
     let usage = agent
         .usage
@@ -1582,14 +1691,29 @@ fn zero_cost_mcoda_capability_score(agent: &LocalAgentEntry) -> i32 {
     }
 
     let mut score = 0;
-    if has("code_writer") || usage == "code_writer" {
-        score += 4;
-    }
-    if has("code_reviewer") || usage == "code_reviewer" {
-        score += 4;
-    }
-    if has("general_chat") || usage == "general_chat" {
-        score += 1;
+    match task_type.kind() {
+        DelegationTaskKind::Code => {
+            if has("code_writer") || usage == "code_writer" {
+                score += 4;
+            }
+            if has("code_reviewer") || usage == "code_reviewer" {
+                score += 4;
+            }
+            if has("general_chat") || usage == "general_chat" {
+                score += 1;
+            }
+        }
+        DelegationTaskKind::General => {
+            if has("general_chat") || usage == "general_chat" {
+                score += 4;
+            }
+            if has("code_writer") || usage == "code_writer" {
+                score += 1;
+            }
+            if has("code_reviewer") || usage == "code_reviewer" {
+                score += 1;
+            }
+        }
     }
     score
 }
@@ -1601,24 +1725,36 @@ fn scaled_selection_rating(value: Option<f64>) -> i64 {
     }
 }
 
-fn selection_usage_rank(value: Option<&str>) -> i32 {
+fn selection_usage_rank(task_type: TaskType, value: Option<&str>) -> i32 {
     match value
         .map(str::trim)
         .unwrap_or_default()
         .to_ascii_lowercase()
         .as_str()
     {
-        "code_writer" | "code_reviewer" => 2,
-        "general_chat" => 1,
+        "code_writer" | "code_reviewer" => match task_type.kind() {
+            DelegationTaskKind::Code => 2,
+            DelegationTaskKind::General => 1,
+        },
+        "general_chat" => match task_type.kind() {
+            DelegationTaskKind::Code => 1,
+            DelegationTaskKind::General => 2,
+        },
         _ => 0,
     }
 }
 
-fn clear_cached_zero_cost_mcoda_selection(library: &mut LocalModelLibrary) -> bool {
+fn clear_cached_zero_cost_mcoda_selection(
+    task_type: TaskType,
+    library: &mut LocalModelLibrary,
+) -> bool {
     let Some(cached) = library.cached_local_agent_selection.as_ref() else {
         return false;
     };
     if cached.policy != LOCAL_SELECTION_POLICY_MCODA_ZERO_COST_MOST_CAPABLE {
+        return false;
+    }
+    if !cached_selection_matches_task_kind(cached, task_type) {
         return false;
     }
     library.cached_local_agent_selection = None;
@@ -1706,6 +1842,14 @@ fn score_for_task(task_type: TaskType, capabilities: &[String]) -> i32 {
         }
         TaskType::FormatCode => {
             if has("code_reviewer") {
+                score += 4;
+            }
+            if has("code_writer") {
+                score += 1;
+            }
+        }
+        TaskType::GeneralQuestion => {
+            if has("general_chat") {
                 score += 4;
             }
             if has("code_writer") {
@@ -2012,13 +2156,24 @@ pub async fn run_delegated_completion(
     let max_tokens = max_tokens_override
         .unwrap_or(llm_config.delegation.max_tokens)
         .max(1);
+    let client = resolve_delegation_client(llm_config, local_agent_override, local_target)?;
+    client
+        .generate(
+            prompt,
+            max_tokens,
+            resolve_delegation_timeout(llm_config, timeout_ms_override),
+        )
+        .await
+}
+
+pub(crate) fn resolve_delegation_timeout(
+    llm_config: &LlmConfig,
+    timeout_ms_override: Option<u64>,
+) -> Duration {
     let timeout_ms = timeout_ms_override
         .unwrap_or(llm_config.delegation.timeout_ms)
         .max(1);
-    let client = resolve_delegation_client(llm_config, local_agent_override, local_target)?;
-    client
-        .generate(prompt, max_tokens, Duration::from_millis(timeout_ms))
-        .await
+    Duration::from_millis(timeout_ms).max(LOCAL_DELEGATION_TIMEOUT_FLOOR)
 }
 
 pub async fn run_delegation_flow(
@@ -2068,10 +2223,7 @@ pub(crate) async fn run_delegation_flow_with_failure_history(
     let max_tokens = max_tokens_override
         .unwrap_or(llm_config.delegation.max_tokens)
         .max(1);
-    let timeout_ms = timeout_ms_override
-        .unwrap_or(llm_config.delegation.timeout_ms)
-        .max(1);
-    let timeout = Duration::from_millis(timeout_ms);
+    let timeout = resolve_delegation_timeout(llm_config, timeout_ms_override);
     let enforce_local = llm_config.delegation.enforce_local;
     let local_override = local_agent_override
         .map(|value| !value.trim().is_empty())

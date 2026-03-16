@@ -36,6 +36,7 @@ struct DelegationTelemetryResponse {
     delegate_requests_total: u64,
     delegate_offloaded_total: u64,
     delegate_fallbacks_total: u64,
+    delegate_failed_total: u64,
     delegate_token_estimate_total: u64,
     delegate_local_tokens_total: u64,
     delegate_primary_tokens_total: u64,
@@ -60,6 +61,7 @@ struct DelegationTelemetryProjectResponse {
     delegate_requests_total: u64,
     delegate_offloaded_total: u64,
     delegate_fallbacks_total: u64,
+    delegate_failed_total: u64,
     delegate_token_savings_total: u64,
     delegate_local_cost_micros_total: u64,
     delegate_avoided_primary_cost_micros_total: u64,
@@ -154,6 +156,7 @@ fn build_delegation_response(
         delegate_requests_total: metrics.delegate_requests_total,
         delegate_offloaded_total: metrics.delegate_offloaded_total,
         delegate_fallbacks_total: metrics.delegate_fallbacks_total,
+        delegate_failed_total: metrics.delegate_failed_total,
         delegate_token_estimate_total: metrics.delegate_token_estimate_total,
         delegate_local_tokens_total: local_tokens,
         delegate_primary_tokens_total: primary_tokens,
@@ -231,6 +234,7 @@ fn build_project_response(
         delegate_requests_total: project.snapshot.delegate_requests_total,
         delegate_offloaded_total: project.snapshot.delegate_offloaded_total,
         delegate_fallbacks_total: project.snapshot.delegate_fallbacks_total,
+        delegate_failed_total: project.snapshot.delegate_failed_total,
         delegate_token_savings_total: project.snapshot.delegate_token_savings_total,
         delegate_local_cost_micros_total: project.snapshot.delegate_local_cost_micros_total,
         delegate_avoided_primary_cost_micros_total: avoided_primary_cost,
@@ -388,6 +392,7 @@ mod tests {
         let repo_metrics = repo_metrics[0].1.clone();
         repo_metrics.inc_delegate_request();
         repo_metrics.inc_delegate_offloaded();
+        repo_metrics.inc_delegate_failed();
         repo_metrics.record_delegate_local_tokens(100_000);
         repo_metrics.record_delegate_token_savings(100_000);
         repo_metrics.record_delegate_local_cost_micros(25_000);
@@ -428,6 +433,12 @@ mod tests {
                 .and_then(|value| value.as_f64()),
             Some(0.25)
         );
+        assert_eq!(
+            payload
+                .get("delegate_failed_total")
+                .and_then(|value| value.as_u64()),
+            Some(1)
+        );
         Ok(())
     }
 
@@ -447,6 +458,7 @@ mod tests {
         repo_two_metrics.inc_delegate_request();
         repo_two_metrics.inc_delegate_request();
         repo_two_metrics.inc_delegate_offloaded();
+        repo_two_metrics.inc_delegate_failed();
         repo_two_metrics.record_delegate_token_estimate(40);
         repo_two_metrics.record_delegate_local_tokens(25);
         repo_two_metrics.record_delegate_primary_tokens(4);
@@ -479,6 +491,12 @@ mod tests {
         assert_eq!(
             payload
                 .get("delegate_offloaded_total")
+                .and_then(|value| value.as_u64()),
+            Some(1)
+        );
+        assert_eq!(
+            payload
+                .get("delegate_failed_total")
                 .and_then(|value| value.as_u64()),
             Some(1)
         );
@@ -530,17 +548,7 @@ mod tests {
                 .and_then(|value| value.as_u64()),
             Some(5)
         );
-        let projects = payload
-            .get("projects")
-            .and_then(|value| value.as_array())
-            .expect("projects payload");
-        assert_eq!(projects.len(), 2);
-        assert!(projects.iter().any(|project| {
-            project
-                .get("delegate_cost_savings_micros_total")
-                .and_then(|value| value.as_u64())
-                == Some(5)
-        }));
+        assert!(payload.get("projects").is_none());
         Ok(())
     }
 
@@ -559,6 +567,7 @@ mod tests {
         repo_two_metrics.inc_delegate_request();
         repo_two_metrics.inc_delegate_request();
         repo_two_metrics.inc_delegate_offloaded();
+        repo_two_metrics.inc_delegate_failed();
         repo_two_metrics.record_delegate_token_estimate(40);
         repo_two_metrics.record_delegate_local_tokens(25);
         repo_two_metrics.record_delegate_primary_tokens(4);
@@ -589,6 +598,12 @@ mod tests {
         assert_eq!(
             payload
                 .get("delegate_offloaded_total")
+                .and_then(|value| value.as_u64()),
+            Some(1)
+        );
+        assert_eq!(
+            payload
+                .get("delegate_failed_total")
                 .and_then(|value| value.as_u64()),
             Some(1)
         );
@@ -640,6 +655,23 @@ mod tests {
                 .and_then(|value| value.as_u64()),
             Some(5)
         );
+        let projects = payload
+            .get("projects")
+            .and_then(|value| value.as_array())
+            .expect("projects payload");
+        assert_eq!(projects.len(), 2);
+        assert!(projects.iter().any(|project| {
+            project
+                .get("delegate_failed_total")
+                .and_then(|value| value.as_u64())
+                == Some(1)
+        }));
+        assert!(projects.iter().any(|project| {
+            project
+                .get("delegate_cost_savings_micros_total")
+                .and_then(|value| value.as_u64())
+                == Some(5)
+        }));
         Ok(())
     }
 
@@ -651,6 +683,7 @@ mod tests {
         state.metrics.inc_delegate_request();
         state.metrics.inc_delegate_request();
         state.metrics.inc_delegate_offloaded();
+        state.metrics.inc_delegate_failed();
         state.metrics.record_delegate_token_estimate(20);
         state.metrics.record_delegate_local_tokens(18);
         state.metrics.record_delegate_primary_tokens(2);
@@ -681,6 +714,12 @@ mod tests {
         assert_eq!(
             payload
                 .get("delegate_offloaded_total")
+                .and_then(|value| value.as_u64()),
+            Some(1)
+        );
+        assert_eq!(
+            payload
+                .get("delegate_failed_total")
                 .and_then(|value| value.as_u64()),
             Some(1)
         );
@@ -758,6 +797,8 @@ mod tests {
         state.metrics.inc_delegate_request();
         state.metrics.inc_delegate_offloaded();
         state.metrics.inc_delegate_offloaded();
+        state.metrics.inc_delegate_failed();
+        state.metrics.inc_delegate_failed();
         state.metrics.record_delegate_token_estimate(80);
         state.metrics.record_delegate_local_tokens(70);
         state.metrics.record_delegate_primary_tokens(5);
@@ -787,6 +828,12 @@ mod tests {
         assert_eq!(
             payload
                 .get("delegate_offloaded_total")
+                .and_then(|value| value.as_u64()),
+            Some(2)
+        );
+        assert_eq!(
+            payload
+                .get("delegate_failed_total")
                 .and_then(|value| value.as_u64()),
             Some(2)
         );

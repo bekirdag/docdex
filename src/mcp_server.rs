@@ -18,10 +18,10 @@ use crate::llm::delegation::{
     allowlist_allows, build_local_target_candidates_with_config, build_primary_target_candidates,
     compute_cost_micros, compute_delegation_savings, local_selection_policy_requires_fresh_library,
     mode_from_config, parse_local_target_override, resolve_local_cost_per_million,
-    resolve_primary_cost_per_million, run_delegation_flow_with_failure_history,
-    update_cached_local_selection_from_completion, DelegationEnforcementError,
-    DelegationFailureHistoryContext, DelegationMode, DelegationPricingContext, LocalTarget,
-    TaskType,
+    resolve_primary_cost_per_million, resolve_task_scoped_delegation_config,
+    run_delegation_flow_with_failure_history, update_cached_local_selection_from_completion,
+    DelegationEnforcementError, DelegationFailureHistoryContext, DelegationMode,
+    DelegationPricingContext, LocalTarget, TaskType,
 };
 use crate::llm::local_library::{
     delegation_is_enabled, load_local_library, refresh_local_library,
@@ -1140,7 +1140,7 @@ impl McpServer {
                 let protocol_version = init_params
                     .protocol_version
                     .unwrap_or_else(|| "2025-11-25".to_string());
-                let instructions = "Docdex is a local-first repo indexer: use docdex_search for repo docs/code before changing code.\nIf results are weak or the user asks for web context, use docdex_web_research (requires web enabled).\nUse docdex_open for file reads, docdex_files to list indexed docs, docdex_tree for folder structure, and docdex_index to refresh the index when stale.\nFor code intelligence, use docdex_symbols/docdex_ast, docdex_impact_diagnostics for unresolved imports, and docdex_impact_graph for dependency traversal.\nUse docdex_dag_export to export DAG sessions; pass the dag_session_id from docdex_search/docdex_web_research responses (or provide session_id directly).\nUse docdex_local_completion to offload small code tasks to a local model.\nMemory tools (docdex_memory_store/recall) require memory to be enabled.\nProfile tools (docdex_save_preference/docdex_get_profile) use global profile memory and do not require project_root.\nPass project_root/repo_path to match the MCP server repo (or omit if initialize set a default).";
+                let instructions = "Docdex is a local-first repo indexer: use docdex_search for repo docs/code before changing code.\nIf results are weak or the user asks for web context, use docdex_web_research (requires web enabled).\nUse docdex_open for file reads, docdex_files to list indexed docs, docdex_tree for folder structure, and docdex_index to refresh the index when stale.\nFor code intelligence, use docdex_symbols/docdex_ast, docdex_impact_diagnostics for unresolved imports, and docdex_impact_graph for dependency traversal.\nUse docdex_dag_export to export DAG sessions; pass the dag_session_id from docdex_search/docdex_web_research responses (or provide session_id directly).\nUse docdex_local_completion to offload small local tasks to a local model, including code drafting and lightweight general questions.\nMemory tools (docdex_memory_store/recall) require memory to be enabled.\nProfile tools (docdex_save_preference/docdex_get_profile) use global profile memory and do not require project_root.\nPass project_root/repo_path to match the MCP server repo (or omit if initialize set a default).";
                 let mut caps = json!({
                     "tools": { "listChanged": false },
                     "resources": { "listChanged": false },
@@ -2486,7 +2486,7 @@ impl McpServer {
             ToolDefinition {
                 name: "docdex_local_completion",
                 title: "Local Completion",
-                description: "Offload a small code task to a local model and return the draft output.",
+                description: "Offload a small local task to a local model and return the draft output.",
                 annotations: Some(annotations_with_priority(0.4)),
                 input_schema: json!({
                     "type": "object",
@@ -2498,7 +2498,8 @@ impl McpServer {
                                 "write_docstring",
                                 "scaffold_boilerplate",
                                 "refactor_simple",
-                                "format_code"
+                                "format_code",
+                                "general_question"
                             ]
                         },
                         "instruction": { "type": "string", "minLength": 1 },
@@ -3066,6 +3067,9 @@ Produce a phased plan with risks and tests to run."
 
         let task_type = TaskType::parse(&args.task_type)
             .ok_or_else(|| AppError::new(ERR_INVALID_ARGUMENT, "task_type is invalid"))?;
+        let mut llm_config = resolve_task_scoped_delegation_config(&llm_config, task_type);
+        llm_config.delegation.enforce_local = true;
+        llm_config.delegation.allow_fallback_to_primary = false;
         let web_gate = WebGateConfig::from_env();
         let library_result = if web_gate.enabled {
             let indexer = self.indexer.clone();
@@ -3218,18 +3222,39 @@ Produce a phased plan with risks and tests to run."
             .map(|value| !value.trim().is_empty())
             .unwrap_or(false)
             || !llm_config.delegation.local_agent_id.trim().is_empty();
+        let metrics = metrics::global();
+        let started_at = Instant::now();
+        metrics.inc_delegate_request();
+        self.delegation_metrics.inc_delegate_request();
+        let persist_delegation_metrics = || {
+            let repo_state_root = repo_state_root_from_state_dir(self.indexer.state_dir());
+            let telemetry_global_state_dir = delegation_telemetry::effective_global_state_dir(
+                self.global_state_dir.as_deref(),
+                self.indexer.state_dir(),
+            );
+            delegation_telemetry::persist_metrics(
+                telemetry_global_state_dir.as_deref(),
+                metrics.as_ref(),
+                Some(repo_state_root.as_path()),
+                Some(self.delegation_metrics.as_ref()),
+            );
+        };
         if llm_config.delegation.enforce_local && local_targets.is_empty() && !local_override {
-            let metrics = metrics::global();
+            let elapsed_ms = started_at.elapsed().as_millis();
+            metrics.inc_delegate_failed();
+            self.delegation_metrics.inc_delegate_failed();
             metrics.inc_delegate_local_enforced_failure();
             self.delegation_metrics
                 .inc_delegate_local_enforced_failure();
+            metrics.record_delegate_latency(elapsed_ms);
+            self.delegation_metrics.record_delegate_latency(elapsed_ms);
+            persist_delegation_metrics();
             return Err(AppError::new(
                 ERR_DELEGATION_LOCAL_REQUIRED,
                 "local delegation required but no local target is configured",
             )
             .into());
         }
-        let started_at = Instant::now();
         let failure_history = DelegationFailureHistoryContext {
             global_state_dir: self.global_state_dir.clone(),
             repo_id: Some(self.repo_id.clone()),
@@ -3250,17 +3275,28 @@ Produce a phased plan with risks and tests to run."
             mode,
             Some(failure_history),
         )
-        .await
-        .map_err(|err| {
-            if err.downcast_ref::<DelegationEnforcementError>().is_some() {
-                let metrics = metrics::global();
-                metrics.inc_delegate_local_enforced_failure();
-                self.delegation_metrics
-                    .inc_delegate_local_enforced_failure();
-                return AppError::new(ERR_DELEGATION_LOCAL_REQUIRED, err.to_string()).into();
+        .await;
+        let result = match result {
+            Ok(result) => result,
+            Err(err) => {
+                let elapsed_ms = started_at.elapsed().as_millis();
+                metrics.inc_delegate_failed();
+                self.delegation_metrics.inc_delegate_failed();
+                metrics.record_delegate_latency(elapsed_ms);
+                self.delegation_metrics.record_delegate_latency(elapsed_ms);
+                if err.downcast_ref::<DelegationEnforcementError>().is_some() {
+                    metrics.inc_delegate_local_enforced_failure();
+                    self.delegation_metrics
+                        .inc_delegate_local_enforced_failure();
+                    persist_delegation_metrics();
+                    return Err(
+                        AppError::new(ERR_DELEGATION_LOCAL_REQUIRED, err.to_string()).into(),
+                    );
+                }
+                persist_delegation_metrics();
+                return Err(err);
             }
-            err
-        })?;
+        };
 
         if !result.primary_used {
             if let Some(library) = library.as_mut() {
@@ -3268,17 +3304,15 @@ Produce a phased plan with risks and tests to run."
                     self.global_state_dir.as_deref(),
                     &llm_config,
                     library,
+                    task_type,
                     &result.completion,
                 );
             }
         }
 
-        let metrics = metrics::global();
-        metrics.inc_delegate_request();
-        self.delegation_metrics.inc_delegate_request();
-        metrics.record_delegate_latency(started_at.elapsed().as_millis());
-        self.delegation_metrics
-            .record_delegate_latency(started_at.elapsed().as_millis());
+        let elapsed_ms = started_at.elapsed().as_millis();
+        metrics.record_delegate_latency(elapsed_ms);
+        self.delegation_metrics.record_delegate_latency(elapsed_ms);
         metrics.record_delegate_token_estimate(result.token_estimate);
         self.delegation_metrics
             .record_delegate_token_estimate(result.token_estimate);
@@ -3328,17 +3362,7 @@ Produce a phased plan with risks and tests to run."
             metrics.inc_delegate_fallback();
             self.delegation_metrics.inc_delegate_fallback();
         }
-        let repo_state_root = repo_state_root_from_state_dir(self.indexer.state_dir());
-        let telemetry_global_state_dir = delegation_telemetry::effective_global_state_dir(
-            self.global_state_dir.as_deref(),
-            self.indexer.state_dir(),
-        );
-        delegation_telemetry::persist_metrics(
-            telemetry_global_state_dir.as_deref(),
-            metrics.as_ref(),
-            Some(repo_state_root.as_path()),
-            Some(self.delegation_metrics.as_ref()),
-        );
+        persist_delegation_metrics();
 
         Ok(json!({
             "id": Uuid::new_v4().to_string(),

@@ -240,6 +240,7 @@ mod tests {
         let metrics = Metrics::default();
         metrics.inc_delegate_request();
         metrics.inc_delegate_offloaded();
+        metrics.inc_delegate_failed();
         metrics.record_delegate_token_estimate(24);
         metrics.record_delegate_local_tokens(18);
         metrics.record_delegate_primary_tokens(3);
@@ -269,6 +270,7 @@ mod tests {
         let metrics = DelegationMetrics::default();
         metrics.inc_delegate_request();
         metrics.inc_delegate_offloaded();
+        metrics.inc_delegate_failed();
         metrics.record_delegate_token_estimate(11);
         metrics.record_delegate_local_tokens(9);
         metrics.record_delegate_primary_tokens(2);
@@ -338,6 +340,7 @@ mod tests {
             DelegationTelemetrySnapshot {
                 delegate_requests_total: 2,
                 delegate_offloaded_total: 1,
+                delegate_failed_total: 1,
                 delegate_token_savings_total: 12,
                 delegate_cost_savings_micros_total: 34,
                 ..DelegationTelemetrySnapshot::default()

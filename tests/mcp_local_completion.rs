@@ -120,6 +120,12 @@ struct MockOllamaGuard {
     handle: Option<thread::JoinHandle<()>>,
 }
 
+#[derive(Clone, Copy)]
+enum MockGenerateBehavior {
+    Success,
+    Failure,
+}
+
 impl Drop for MockOllamaGuard {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
@@ -129,7 +135,10 @@ impl Drop for MockOllamaGuard {
     }
 }
 
-fn handle_mock_ollama_request(mut stream: TcpStream) -> std::io::Result<()> {
+fn handle_mock_ollama_request(
+    mut stream: TcpStream,
+    generate_behavior: MockGenerateBehavior,
+) -> std::io::Result<()> {
     let mut buffer = [0u8; 4096];
     let read = stream.read(&mut buffer)?;
     if read == 0 {
@@ -144,7 +153,14 @@ fn handle_mock_ollama_request(mut stream: TcpStream) -> std::io::Result<()> {
         ("GET", "/api/tags") => {
             write_http_response(&mut stream, 200, r#"{"models":[{"name":"test-model"}]}"#)
         }
-        ("POST", "/api/generate") => write_http_response(&mut stream, 200, r#"{"response":"ok"}"#),
+        ("POST", "/api/generate") => match generate_behavior {
+            MockGenerateBehavior::Success => {
+                write_http_response(&mut stream, 200, r#"{"response":"ok"}"#)
+            }
+            MockGenerateBehavior::Failure => {
+                write_http_response(&mut stream, 500, r#"{"error":"generate failed"}"#)
+            }
+        },
         _ => write_http_response(&mut stream, 404, r#"{"error":"not found"}"#),
     }
 }
@@ -153,6 +169,7 @@ fn write_http_response(stream: &mut TcpStream, status: u16, body: &str) -> std::
     let status_text = match status {
         200 => "OK",
         404 => "Not Found",
+        500 => "Internal Server Error",
         _ => "OK",
     };
     let response = format!(
@@ -166,7 +183,9 @@ fn write_http_response(stream: &mut TcpStream, status: u16, body: &str) -> std::
     stream.flush()
 }
 
-fn spawn_mock_ollama() -> Result<(u16, MockOllamaGuard), Box<dyn Error>> {
+fn spawn_mock_ollama(
+    generate_behavior: MockGenerateBehavior,
+) -> Result<(u16, MockOllamaGuard), Box<dyn Error>> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     listener.set_nonblocking(true)?;
     let port = listener.local_addr()?.port();
@@ -176,7 +195,7 @@ fn spawn_mock_ollama() -> Result<(u16, MockOllamaGuard), Box<dyn Error>> {
         while !stop_handle.load(Ordering::SeqCst) {
             match listener.accept() {
                 Ok((stream, _)) => {
-                    let _ = handle_mock_ollama_request(stream);
+                    let _ = handle_mock_ollama_request(stream, generate_behavior);
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                     thread::sleep(Duration::from_millis(25));
@@ -213,7 +232,7 @@ fn mcp_local_completion_tool_returns_output() -> Result<(), Box<dyn Error>> {
     write_repo(&repo_root)?;
     run_index(&state_root, &repo_root)?;
 
-    let (ollama_port, _ollama_guard) = spawn_mock_ollama()?;
+    let (ollama_port, _ollama_guard) = spawn_mock_ollama(MockGenerateBehavior::Success)?;
     let config_path = temp.path().join("config.toml");
     write_config(&config_path, ollama_port)?;
 
@@ -292,6 +311,98 @@ fn mcp_local_completion_tool_returns_output() -> Result<(), Box<dyn Error>> {
     assert_eq!(
         all_telemetry
             .get("delegate_offloaded_total")
+            .and_then(|value| value.as_u64()),
+        Some(1)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn mcp_local_completion_failure_updates_telemetry() -> Result<(), Box<dyn Error>> {
+    let temp = TempDir::new()?;
+    let repo_root = temp.path().join("repo");
+    let state_root = temp.path().join("state");
+    std::fs::create_dir_all(&repo_root)?;
+    std::fs::create_dir_all(&state_root)?;
+    write_repo(&repo_root)?;
+    run_index(&state_root, &repo_root)?;
+
+    let (ollama_port, _ollama_guard) = spawn_mock_ollama(MockGenerateBehavior::Failure)?;
+    let config_path = temp.path().join("config.toml");
+    write_config(&config_path, ollama_port)?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let child = spawn_server(&state_root, &repo_root, port, &config_path)?;
+    let _guard = ChildGuard(child);
+    wait_for_health("127.0.0.1", port)?;
+
+    let client = Client::builder().timeout(Duration::from_secs(20)).build()?;
+    let payload = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "docdex_local_completion",
+            "arguments": {
+                "task_type": "format_code",
+                "instruction": "Format",
+                "context": "let  a=1;",
+                "agent": "model:test-model"
+            }
+        }
+    });
+    let resp = client
+        .post(format!("http://127.0.0.1:{port}/v1/mcp"))
+        .json(&payload)
+        .send()?;
+    assert!(resp.status().is_success());
+    let body: Value = resp.json()?;
+    assert!(
+        body.get("error").is_some(),
+        "expected MCP tool error response"
+    );
+
+    let repo_telemetry: Value = client
+        .get(format!("http://127.0.0.1:{port}/v1/telemetry/delegation"))
+        .send()?
+        .json()?;
+    assert_eq!(
+        repo_telemetry
+            .get("delegate_requests_total")
+            .and_then(|value| value.as_u64()),
+        Some(1)
+    );
+    assert_eq!(
+        repo_telemetry
+            .get("delegate_failed_total")
+            .and_then(|value| value.as_u64()),
+        Some(1)
+    );
+    assert_eq!(
+        repo_telemetry
+            .get("delegate_offloaded_total")
+            .and_then(|value| value.as_u64()),
+        Some(0)
+    );
+
+    let all_telemetry: Value = client
+        .get(format!(
+            "http://127.0.0.1:{port}/v1/telemetry/delegation?all=true"
+        ))
+        .send()?
+        .json()?;
+    assert_eq!(
+        all_telemetry
+            .get("delegate_requests_total")
+            .and_then(|value| value.as_u64()),
+        Some(1)
+    );
+    assert_eq!(
+        all_telemetry
+            .get("delegate_failed_total")
             .and_then(|value| value.as_u64()),
         Some(1)
     );

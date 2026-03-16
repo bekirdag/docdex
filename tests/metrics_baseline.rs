@@ -33,6 +33,7 @@ fn metrics_baseline_includes_required_counters() -> Result<(), Box<dyn Error>> {
     metrics.record_delegate_local_cost_micros(1200);
     metrics.record_delegate_primary_cost_micros(300);
     metrics.record_delegate_cost_savings_micros(1500);
+    metrics.inc_delegate_failed();
     metrics.inc_delegate_local_enforced_failure();
 
     let body = metrics.render_prometheus();
@@ -49,6 +50,7 @@ fn metrics_baseline_includes_required_counters() -> Result<(), Box<dyn Error>> {
     let delegate_local_cost = metric_value(&body, "docdex_delegate_local_cost_micros_total")?;
     let delegate_primary_cost = metric_value(&body, "docdex_delegate_primary_cost_micros_total")?;
     let delegate_cost = metric_value(&body, "docdex_delegate_cost_savings_micros_total")?;
+    let delegate_failed = metric_value(&body, "docdex_delegate_failed_total")?;
     let delegate_enforced = metric_value(&body, "docdex_delegate_local_enforced_failures_total")?;
 
     assert!(recall > 0.0, "expected profile recall counter to increment");
@@ -99,6 +101,10 @@ fn metrics_baseline_includes_required_counters() -> Result<(), Box<dyn Error>> {
     assert!(
         delegate_cost > 0.0,
         "expected delegate cost savings counter to increment"
+    );
+    assert!(
+        delegate_failed > 0.0,
+        "expected delegate failed counter to increment"
     );
     assert!(
         delegate_enforced > 0.0,

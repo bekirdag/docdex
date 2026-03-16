@@ -208,6 +208,29 @@ impl Default for LlmConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DelegationLaneConfig {
+    #[serde(default)]
+    pub local_agent_id: String,
+    #[serde(default)]
+    pub primary_agent_id: String,
+}
+
+impl DelegationLaneConfig {
+    fn is_empty(&self) -> bool {
+        self.local_agent_id.trim().is_empty() && self.primary_agent_id.trim().is_empty()
+    }
+}
+
+impl Default for DelegationLaneConfig {
+    fn default() -> Self {
+        Self {
+            local_agent_id: String::new(),
+            primary_agent_id: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DelegationConfig {
     #[serde(default = "default_delegation_enabled")]
     pub enabled: bool,
@@ -223,6 +246,10 @@ pub struct DelegationConfig {
     pub local_agent_id: String,
     #[serde(default)]
     pub primary_agent_id: String,
+    #[serde(default, skip_serializing_if = "DelegationLaneConfig::is_empty")]
+    pub code: DelegationLaneConfig,
+    #[serde(default, skip_serializing_if = "DelegationLaneConfig::is_empty")]
+    pub general: DelegationLaneConfig,
     #[serde(default = "default_delegation_local_selection_policy")]
     pub local_selection_policy: String,
     #[serde(default = "default_delegation_use_cached_local_decision")]
@@ -259,6 +286,8 @@ impl Default for DelegationConfig {
             re_evaluate: default_delegation_re_evaluate(),
             local_agent_id: String::new(),
             primary_agent_id: String::new(),
+            code: DelegationLaneConfig::default(),
+            general: DelegationLaneConfig::default(),
             local_selection_policy: default_delegation_local_selection_policy(),
             use_cached_local_decision: default_delegation_use_cached_local_decision(),
             mode: default_delegation_mode(),
@@ -645,6 +674,18 @@ fn apply_env_overrides(config: &mut AppConfig) {
     }
     if let Some(value) = env_trimmed("DOCDEX_DELEGATION_PRIMARY_AGENT") {
         config.llm.delegation.primary_agent_id = value;
+    }
+    if let Some(value) = env_trimmed("DOCDEX_DELEGATION_CODE_LOCAL_AGENT") {
+        config.llm.delegation.code.local_agent_id = value;
+    }
+    if let Some(value) = env_trimmed("DOCDEX_DELEGATION_CODE_PRIMARY_AGENT") {
+        config.llm.delegation.code.primary_agent_id = value;
+    }
+    if let Some(value) = env_trimmed("DOCDEX_DELEGATION_GENERAL_LOCAL_AGENT") {
+        config.llm.delegation.general.local_agent_id = value;
+    }
+    if let Some(value) = env_trimmed("DOCDEX_DELEGATION_GENERAL_PRIMARY_AGENT") {
+        config.llm.delegation.general.primary_agent_id = value;
     }
     if let Some(value) = env_trimmed("DOCDEX_DELEGATION_LOCAL_SELECTION_POLICY") {
         config.llm.delegation.local_selection_policy =

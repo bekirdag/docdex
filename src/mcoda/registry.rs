@@ -1092,9 +1092,12 @@ printf '%s' '[{{"id":"agent-1","slug":"claude-sonnet","adapter":"claude-cli","de
             std::iter::once(temp.path().to_path_buf()).chain(existing_paths.into_iter()),
         )?;
         let _path_guard = EnvVarGuard::set("PATH", joined_path);
-        let _timeout_guard = EnvVarGuard::set(DOCDEX_MCODA_CLI_TIMEOUT_MS, "200");
         let _disable_guard = EnvVarGuard::set("DOCDEX_DISABLE_MCODA_CLI", "0");
 
+        // The timeout path is covered in load_from_cli_falls_back_when_refresh_hangs.
+        // Seed refresh backoff directly here so the repeated-attempt skip stays deterministic
+        // under full-suite parallel load.
+        note_mcoda_cli_failure(&MCODA_AGENT_LIST_JSON_REFRESH_ARGS);
         let _first = McodaRegistry::load_from_cli()?.expect("first registry");
         assert!(
             should_skip_mcoda_cli_attempt(&MCODA_AGENT_LIST_JSON_REFRESH_ARGS),

@@ -11,6 +11,7 @@ fn render_prometheus_includes_counters() {
     metrics.record_http_request(12, 500);
     metrics.inc_delegate_request();
     metrics.inc_delegate_offloaded();
+    metrics.inc_delegate_failed();
     metrics.record_delegate_latency(8);
     metrics.record_delegate_token_estimate(42);
     metrics.record_delegate_local_tokens(30);
@@ -29,6 +30,7 @@ fn render_prometheus_includes_counters() {
     assert!(payload.contains("docdex_hook_latency_count_total 1"));
     assert!(payload.contains("docdex_delegate_total 1"));
     assert!(payload.contains("docdex_delegate_offloaded_total 1"));
+    assert!(payload.contains("docdex_delegate_failed_total 1"));
     assert!(payload.contains("docdex_delegate_latency_count_total 1"));
     assert!(payload.contains("docdex_delegate_token_estimate_total 42"));
     assert!(payload.contains("docdex_delegate_local_tokens_total 30"));
@@ -55,6 +57,7 @@ fn profile_budget_drop_is_saturating() {
 fn delegation_telemetry_snapshot_merges_counters() {
     let global = Metrics::default();
     global.inc_delegate_request();
+    global.inc_delegate_failed();
     global.record_delegate_token_estimate(10);
     global.record_delegate_local_tokens(8);
 
@@ -71,6 +74,7 @@ fn delegation_telemetry_snapshot_merges_counters() {
 
     assert_eq!(snapshot.delegate_requests_total, 2);
     assert_eq!(snapshot.delegate_offloaded_total, 1);
+    assert_eq!(snapshot.delegate_failed_total, 1);
     assert_eq!(snapshot.delegate_token_estimate_total, 22);
     assert_eq!(snapshot.delegate_local_tokens_total, 17);
     assert_eq!(snapshot.delegate_primary_tokens_total, 3);

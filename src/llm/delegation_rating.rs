@@ -191,6 +191,7 @@ pub fn review_from_output(raw: &str, fallback_quality: f64) -> ReviewOutcome {
 
 pub fn estimate_complexity(task_type: TaskType, context_chars: usize) -> i64 {
     let mut score = match task_type {
+        TaskType::GeneralQuestion => 2,
         TaskType::FormatCode => 2,
         TaskType::WriteDocstring => 3,
         TaskType::ScaffoldBoilerplate => 4,

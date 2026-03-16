@@ -308,6 +308,7 @@ fn metrics_endpoint_exposes_prometheus_counters() -> Result<(), Box<dyn Error>> 
     assert!(payload.contains("docdex_profile_budget_drops_total"));
     assert!(payload.contains("docdex_delegate_token_savings_total"));
     assert!(payload.contains("docdex_delegate_offloaded_total"));
+    assert!(payload.contains("docdex_delegate_failed_total"));
     assert!(payload.contains("docdex_delegate_local_tokens_total"));
     assert!(payload.contains("docdex_delegate_primary_tokens_total"));
     assert!(payload.contains("docdex_delegate_local_cost_micros_total"));

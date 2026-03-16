@@ -60,6 +60,8 @@ pub struct CachedLocalAgentSelection {
     pub policy: String,
     pub agent_id: String,
     pub agent_slug: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_kind: Option<String>,
     #[serde(default)]
     pub selected_at_ms: u128,
 }
@@ -986,6 +988,7 @@ mod tests {
                 policy: "mcoda_zero_cost_most_capable".to_string(),
                 agent_id: "agent-1".to_string(),
                 agent_slug: "agent-one".to_string(),
+                task_kind: Some("code".to_string()),
                 selected_at_ms: 4,
             }),
             ..LocalModelLibrary::default()

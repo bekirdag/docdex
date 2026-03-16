@@ -2,12 +2,13 @@ use super::delegation::{
     allowlist_allows, build_local_target_candidates_with_config, compute_delegation_savings,
     local_selection_policy_requires_fresh_library, mode_from_config, parse_local_target_override,
     reevaluation_should_use_primary_client, render_prompt, resolve_delegation_client,
-    resolve_local_cost_per_million, resolve_primary_cost_per_million,
-    run_flow_with_client_candidates, run_flow_with_client_candidates_with_failure_history,
-    run_flow_with_clients, select_local_target, select_local_target_with_config,
-    select_primary_target, update_cached_local_selection_from_completion, validate_output,
-    DelegationEnforcementError, DelegationFailureHistoryContext, DelegationMode,
-    DelegationPricingContext, DelegationReevaluation, LocalTarget, TaskType,
+    resolve_delegation_timeout, resolve_local_cost_per_million, resolve_primary_cost_per_million,
+    resolve_task_scoped_delegation_config, run_flow_with_client_candidates,
+    run_flow_with_client_candidates_with_failure_history, run_flow_with_clients,
+    select_local_target, select_local_target_with_config, select_primary_target,
+    update_cached_local_selection_from_completion, validate_output, DelegationEnforcementError,
+    DelegationFailureHistoryContext, DelegationMode, DelegationPricingContext,
+    DelegationReevaluation, LocalTarget, TaskType,
 };
 use super::delegation_rating::{
     compute_alpha, compute_run_score, estimate_complexity, fallback_quality_score,
@@ -432,6 +433,14 @@ fn task_type_parse_accepts_variants() {
         Some(TaskType::RefactorSimple)
     );
     assert_eq!(TaskType::parse("format_code"), Some(TaskType::FormatCode));
+    assert_eq!(
+        TaskType::parse("general_question"),
+        Some(TaskType::GeneralQuestion)
+    );
+    assert_eq!(
+        TaskType::parse("answer_question"),
+        Some(TaskType::GeneralQuestion)
+    );
     assert_eq!(TaskType::parse("unknown"), None);
 }
 
@@ -1227,6 +1236,7 @@ fn delegation_updates_cached_zero_cost_agent_after_successful_alternate_completi
             policy: "mcoda_zero_cost_most_capable".to_string(),
             agent_id: "agent-qwen".to_string(),
             agent_slug: "qwen-3.5-27b".to_string(),
+            task_kind: Some("code".to_string()),
             selected_at_ms: 0,
         });
 
@@ -1241,6 +1251,7 @@ fn delegation_updates_cached_zero_cost_agent_after_successful_alternate_completi
         Some(temp.path()),
         &config,
         &mut library,
+        TaskType::WriteDocstring,
         &completion,
     );
 
@@ -1299,6 +1310,7 @@ fn delegation_does_not_cache_expensive_mcoda_completion() -> Result<(), Box<dyn 
             policy: "mcoda_zero_cost_most_capable".to_string(),
             agent_id: "agent-qwen".to_string(),
             agent_slug: "qwen-3.5-27b".to_string(),
+            task_kind: Some("code".to_string()),
             selected_at_ms: 0,
         });
 
@@ -1313,6 +1325,7 @@ fn delegation_does_not_cache_expensive_mcoda_completion() -> Result<(), Box<dyn 
         Some(temp.path()),
         &config,
         &mut library,
+        TaskType::WriteDocstring,
         &completion,
     );
 
@@ -1352,6 +1365,54 @@ fn delegation_selects_code_writer() {
         LocalTarget::OllamaModel(name) => assert_eq!(name, "code-model"),
         _ => panic!("unexpected target selection"),
     }
+}
+
+#[test]
+fn delegation_selects_general_chat_for_general_questions() {
+    let mut library = LocalModelLibrary::default();
+    library.models.push(LocalModelEntry {
+        name: "code-model".to_string(),
+        source: "ollama".to_string(),
+        capabilities: vec!["code_writer".to_string()],
+        notes: None,
+        classification_method: "heuristic".to_string(),
+        last_seen_at_ms: 0,
+        last_classified_at_ms: None,
+    });
+    library.models.push(LocalModelEntry {
+        name: "chat-model".to_string(),
+        source: "ollama".to_string(),
+        capabilities: vec!["general_chat".to_string()],
+        notes: None,
+        classification_method: "heuristic".to_string(),
+        last_seen_at_ms: 0,
+        last_classified_at_ms: None,
+    });
+
+    let selected = select_local_target(TaskType::GeneralQuestion, &library).expect("selection");
+    match selected {
+        LocalTarget::OllamaModel(name) => assert_eq!(name, "chat-model"),
+        _ => panic!("unexpected target selection"),
+    }
+}
+
+#[test]
+fn resolve_task_scoped_delegation_config_prefers_lane_specific_agents() {
+    let mut config = LlmConfig::default();
+    config.delegation.local_agent_id = "fallback-local".to_string();
+    config.delegation.primary_agent_id = "fallback-primary".to_string();
+    config.delegation.code.local_agent_id = "qwen3-coder".to_string();
+    config.delegation.code.primary_agent_id = "qwen3-coder".to_string();
+    config.delegation.general.local_agent_id = "qwen-3.5-35b".to_string();
+    config.delegation.general.primary_agent_id = "qwen-3.5-35b".to_string();
+
+    let code = resolve_task_scoped_delegation_config(&config, TaskType::ScaffoldBoilerplate);
+    assert_eq!(code.delegation.local_agent_id, "qwen3-coder");
+    assert_eq!(code.delegation.primary_agent_id, "qwen3-coder");
+
+    let general = resolve_task_scoped_delegation_config(&config, TaskType::GeneralQuestion);
+    assert_eq!(general.delegation.local_agent_id, "qwen-3.5-35b");
+    assert_eq!(general.delegation.primary_agent_id, "qwen-3.5-35b");
 }
 
 #[test]
@@ -1561,6 +1622,7 @@ fn build_local_target_candidates_replaces_cached_agent_after_recent_failures() {
         policy: "mcoda_zero_cost_most_capable".to_string(),
         agent_id: "agent-1".to_string(),
         agent_slug: "agent-one".to_string(),
+        task_kind: Some("code".to_string()),
         selected_at_ms: 1,
     });
 
@@ -1583,6 +1645,53 @@ fn build_local_target_candidates_replaces_cached_agent_after_recent_failures() {
             .map(|cached| cached.agent_id.as_str()),
         Some("agent-2")
     );
+}
+
+#[test]
+fn general_question_selection_ignores_code_cached_mcoda_agent() {
+    let mut library = LocalModelLibrary::default();
+    library.agents.push(make_local_agent(
+        "agent-code",
+        "agent-code",
+        Some(0.0),
+        Some(5),
+        Some(7.0),
+        Some(7.0),
+        Some("code_writer"),
+        Some("healthy"),
+        &["code_writer"],
+    ));
+    library.agents.push(make_local_agent(
+        "agent-chat",
+        "agent-chat",
+        Some(0.0),
+        Some(5),
+        Some(7.0),
+        Some(7.0),
+        Some("general_chat"),
+        Some("healthy"),
+        &["general_chat"],
+    ));
+    library.cached_local_agent_selection = Some(CachedLocalAgentSelection {
+        policy: "mcoda_zero_cost_most_capable".to_string(),
+        agent_id: "agent-code".to_string(),
+        agent_slug: "agent-code".to_string(),
+        task_kind: Some("code".to_string()),
+        selected_at_ms: 1,
+    });
+
+    let config = zero_cost_policy_config();
+    let targets = build_local_target_candidates_with_config(
+        None,
+        &config,
+        TaskType::GeneralQuestion,
+        &mut library,
+    );
+
+    assert!(matches!(
+        targets.first(),
+        Some(LocalTarget::McodaAgent(id)) if id == "agent-chat"
+    ));
 }
 
 #[test]
@@ -1614,6 +1723,38 @@ fn mode_from_config_falls_back_on_invalid() {
         DelegationMode::DraftThenRefine
     );
     assert_eq!(mode_from_config("invalid"), DelegationMode::DraftOnly);
+}
+
+#[test]
+fn delegation_timeout_applies_cold_start_floor() {
+    let mut config = LlmConfig::default();
+    config.delegation = DelegationConfig::default();
+    config.delegation.timeout_ms = 300_000;
+
+    assert_eq!(
+        resolve_delegation_timeout(&config, Some(30_000)),
+        Duration::from_secs(300)
+    );
+    assert_eq!(
+        resolve_delegation_timeout(&config, Some(240_000)),
+        Duration::from_secs(300)
+    );
+    assert_eq!(
+        resolve_delegation_timeout(&config, Some(420_000)),
+        Duration::from_secs(420)
+    );
+
+    config.delegation.timeout_ms = 60_000;
+    assert_eq!(
+        resolve_delegation_timeout(&config, None),
+        Duration::from_secs(300)
+    );
+
+    config.delegation.timeout_ms = 420_000;
+    assert_eq!(
+        resolve_delegation_timeout(&config, None),
+        Duration::from_secs(420)
+    );
 }
 
 #[tokio::test]

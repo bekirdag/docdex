@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.53
+## 0.2.54
 - Add a per-project actual cost savings table to `docdexd delegation savings --all`.
 - Include optional per-project `projects` telemetry entries for `/v1/telemetry/delegation?all=true`, resolving persisted repo telemetry to canonical project paths with live mounted-repo fallback.
 

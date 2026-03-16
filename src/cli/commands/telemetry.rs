@@ -22,6 +22,8 @@ struct DelegationSavingsResponse {
     delegate_requests_total: u64,
     delegate_offloaded_total: u64,
     delegate_fallbacks_total: u64,
+    #[serde(default)]
+    delegate_failed_total: u64,
     delegate_token_estimate_total: u64,
     delegate_local_tokens_total: u64,
     delegate_primary_tokens_total: u64,
@@ -43,6 +45,8 @@ struct DelegationSavingsProject {
     project: String,
     delegate_requests_total: u64,
     delegate_offloaded_total: u64,
+    #[serde(default)]
+    delegate_failed_total: u64,
     delegate_local_cost_micros_total: u64,
     delegate_avoided_primary_cost_micros_total: u64,
     delegate_cost_savings_micros_total: u64,
@@ -117,6 +121,10 @@ fn render_delegation_savings_table(response: &DelegationSavingsResponse) -> Stri
         (
             "Fallbacks".to_string(),
             format_u64(response.delegate_fallbacks_total),
+        ),
+        (
+            "Failed".to_string(),
+            format_u64(response.delegate_failed_total),
         ),
         (
             "Token Estimate".to_string(),
@@ -252,6 +260,7 @@ fn render_delegation_project_table(projects: &[DelegationSavingsProject]) -> Str
         "PROJECT",
         "REQUESTS",
         "OFFLOADED",
+        "FAILED",
         "LOCAL COST",
         "AVOIDED PRIMARY",
         "COST SAVINGS",
@@ -263,13 +272,18 @@ fn render_delegation_project_table(projects: &[DelegationSavingsProject]) -> Str
                 project.project.clone(),
                 format_u64(project.delegate_requests_total),
                 format_u64(project.delegate_offloaded_total),
+                format_u64(project.delegate_failed_total),
                 format_cost(project.delegate_local_cost_micros_total),
                 format_cost(project.delegate_avoided_primary_cost_micros_total),
                 format_cost(project.delegate_cost_savings_micros_total),
             ]
         })
         .collect::<Vec<_>>();
-    render_boxed_table(&headers, &rows, &[false, true, true, true, true, true])
+    render_boxed_table(
+        &headers,
+        &rows,
+        &[false, true, true, true, true, true, true],
+    )
 }
 
 fn render_boxed_table(headers: &[&str], rows: &[Vec<String>], right_align: &[bool]) -> String {
@@ -559,6 +573,7 @@ mod tests {
             delegate_requests_total: 4,
             delegate_offloaded_total: 4,
             delegate_fallbacks_total: 0,
+            delegate_failed_total: 1,
             delegate_token_estimate_total: 692,
             delegate_local_tokens_total: 610,
             delegate_primary_tokens_total: 0,
@@ -583,6 +598,7 @@ mod tests {
 
         assert!(rendered.starts_with("╭"));
         assert!(rendered.contains("│ METRIC"));
+        assert!(rendered.contains("Failed"));
         assert!(rendered.contains("Token Savings"));
         assert!(rendered.contains("Avoided Primary Cost"));
         assert!(rendered.contains("Effective Avoided Rate"));
@@ -597,6 +613,7 @@ mod tests {
             delegate_requests_total: 4,
             delegate_offloaded_total: 4,
             delegate_fallbacks_total: 0,
+            delegate_failed_total: 2,
             delegate_token_estimate_total: 692,
             delegate_local_tokens_total: 610,
             delegate_primary_tokens_total: 0,
@@ -618,6 +635,7 @@ mod tests {
                 project: "/tmp/demo".to_string(),
                 delegate_requests_total: 4,
                 delegate_offloaded_total: 4,
+                delegate_failed_total: 2,
                 delegate_local_cost_micros_total: 426,
                 delegate_avoided_primary_cost_micros_total: 1_646,
                 delegate_cost_savings_micros_total: 1_220,
@@ -627,6 +645,7 @@ mod tests {
         let rendered = render_delegation_savings_table(&response);
 
         assert!(rendered.contains("│ PROJECT"));
+        assert!(rendered.contains("FAILED"));
         assert!(rendered.contains("COST SAVINGS"));
         assert!(rendered.contains("/tmp/demo"));
         assert!(rendered.contains("$0.00122"));

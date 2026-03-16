@@ -12,8 +12,10 @@ use tokio::time::timeout;
 
 const DEFAULT_CODEX_MODEL: &str = "gpt-5.1-codex-max";
 const DEFAULT_OLLAMA_CLI_MODEL: &str = "llama3";
+const DEFAULT_LOCAL_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_ZHIPU_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
+const DEFAULT_ZHIPU_CODING_BASE_URL: &str = "https://open.bigmodel.cn/api/coding/paas/v4";
 const CODEX_CLI_TIMEOUT_FLOOR: Duration = Duration::from_secs(120);
 const GEMINI_CLI_TIMEOUT_FLOOR: Duration = Duration::from_secs(45);
 const CLI_INLINE_PROMPT_MAX_BYTES: usize = 16 * 1024;
@@ -240,7 +242,10 @@ pub struct OllamaRemoteClient {
 impl OllamaRemoteClient {
     fn new(model: Option<String>, adapter: String, config: Option<&Value>) -> Result<Self> {
         let base_url = normalize_base_url(config_string(config, "baseUrl"))
-            .ok_or_else(|| anyhow!("Ollama baseUrl is not configured; set config.baseUrl"))?;
+            .or_else(default_ollama_base_url)
+            .ok_or_else(|| {
+                anyhow!("Ollama baseUrl is not configured; set config.baseUrl or DOCDEX_OLLAMA_BASE_URL")
+            })?;
         if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
             return Err(anyhow!(
                 "Ollama baseUrl must start with http:// or https://"
@@ -694,13 +699,7 @@ impl LlmClient for OpenAiApiClient {
                 return Err(anyhow!("openai chat failed ({status}): {text}"));
             }
             let data: Value = resp.json().await.unwrap_or_else(|_| json!({}));
-            let output = data
-                .pointer("/choices/0/message/content")
-                .and_then(|value| value.as_str())
-                .or_else(|| {
-                    data.pointer("/choices/0/text")
-                        .and_then(|value| value.as_str())
-                })
+            let output = extract_chat_completion_output(&data)
                 .unwrap_or_default()
                 .trim()
                 .to_string();
@@ -734,7 +733,7 @@ impl ZhipuApiClient {
         api_key: String,
     ) -> Result<Self> {
         let base_url = normalize_base_url(config_string(config, "baseUrl"))
-            .unwrap_or_else(|| DEFAULT_ZHIPU_BASE_URL.to_string());
+            .unwrap_or_else(|| default_zhipu_base_url(model.as_deref()).to_string());
         if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
             return Err(anyhow!("Zhipu baseUrl must start with http:// or https://"));
         }
@@ -798,14 +797,7 @@ impl LlmClient for ZhipuApiClient {
                 return Err(anyhow!("zhipu chat failed ({status}): {text}"));
             }
             let data: Value = resp.json().await.unwrap_or_else(|_| json!({}));
-            let output = data
-                .pointer("/choices/0/message/content")
-                .and_then(|value| value.as_str())
-                .or_else(|| {
-                    data.pointer("/choices/0/message/reasoning_content")
-                        .and_then(|value| value.as_str())
-                })
-                .or_else(|| data.get("output_text").and_then(|value| value.as_str()))
+            let output = extract_chat_completion_output(&data)
                 .unwrap_or_default()
                 .trim()
                 .to_string();
@@ -845,6 +837,47 @@ fn extract_codex_message(raw: &str) -> Option<String> {
     message
 }
 
+fn extract_chat_completion_output(data: &Value) -> Option<String> {
+    data.pointer("/choices/0/message/content")
+        .and_then(extract_text_content)
+        .or_else(|| {
+            data.pointer("/choices/0/message/reasoning_content")
+                .and_then(extract_text_content)
+        })
+        .or_else(|| {
+            data.pointer("/choices/0/text")
+                .and_then(extract_text_content)
+        })
+        .or_else(|| data.get("output_text").and_then(extract_text_content))
+}
+
+fn extract_text_content(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => {
+            if text.trim().is_empty() {
+                None
+            } else {
+                Some(text.clone())
+            }
+        }
+        Value::Array(parts) => {
+            let text = parts
+                .iter()
+                .filter_map(extract_text_content)
+                .collect::<Vec<_>>()
+                .join("");
+            non_empty_trimmed(Some(text.as_str()))
+        }
+        Value::Object(map) => map
+            .get("text")
+            .and_then(extract_text_content)
+            .or_else(|| map.get("content").and_then(extract_text_content))
+            .or_else(|| map.get("reasoning_content").and_then(extract_text_content))
+            .or_else(|| map.get("output_text").and_then(extract_text_content)),
+        _ => None,
+    }
+}
+
 fn build_http_client(verify_tls: Option<bool>) -> Result<Client> {
     let mut builder = Client::builder();
     if verify_tls == Some(false) {
@@ -865,6 +898,22 @@ fn env_trimmed(key: &str) -> Option<String> {
         Ok(value) => non_empty_trimmed(Some(value.as_str())),
         Err(_) => None,
     }
+}
+
+fn default_ollama_base_url() -> Option<String> {
+    default_ollama_base_url_from_env(
+        env_trimmed("DOCDEX_OLLAMA_BASE_URL"),
+        env_trimmed("DOCDEX_EMBEDDING_BASE_URL"),
+    )
+}
+
+fn default_ollama_base_url_from_env(
+    ollama_base_url: Option<String>,
+    embedding_base_url: Option<String>,
+) -> Option<String> {
+    normalize_base_url(ollama_base_url)
+        .or_else(|| normalize_base_url(embedding_base_url))
+        .or_else(|| Some(DEFAULT_LOCAL_OLLAMA_BASE_URL.to_string()))
 }
 
 fn config_string(config: Option<&Value>, key: &str) -> Option<String> {
@@ -982,6 +1031,79 @@ mod tests {
     }
 
     #[test]
+    fn zhipu_glm_47_defaults_to_coding_base_url() {
+        assert_eq!(
+            default_zhipu_base_url(Some("glm-4.7")),
+            DEFAULT_ZHIPU_CODING_BASE_URL
+        );
+        assert_eq!(
+            default_zhipu_base_url(Some("GLM-4.7-FLASH")),
+            DEFAULT_ZHIPU_CODING_BASE_URL
+        );
+    }
+
+    #[test]
+    fn zhipu_non_coding_models_keep_standard_base_url() {
+        assert_eq!(
+            default_zhipu_base_url(Some("glm-4-air")),
+            DEFAULT_ZHIPU_BASE_URL
+        );
+        assert_eq!(default_zhipu_base_url(None), DEFAULT_ZHIPU_BASE_URL);
+    }
+
+    #[test]
+    fn ollama_remote_defaults_to_local_base_url_when_missing() {
+        assert_eq!(
+            default_ollama_base_url_from_env(None, None),
+            Some(DEFAULT_LOCAL_OLLAMA_BASE_URL.to_string())
+        );
+    }
+
+    #[test]
+    fn structured_chat_content_parts_are_flattened() {
+        let payload = json!([
+            { "type": "text", "text": "What" },
+            { "type": "text", "text": " is 2+2?" }
+        ]);
+        assert_eq!(
+            extract_text_content(&payload),
+            Some("What is 2+2?".to_string())
+        );
+    }
+
+    #[test]
+    fn chat_completion_output_accepts_structured_content_and_reasoning_parts() {
+        let openai_payload = json!({
+            "choices": [{
+                "message": {
+                    "content": [
+                        { "type": "text", "text": "4" }
+                    ]
+                }
+            }]
+        });
+        assert_eq!(
+            extract_chat_completion_output(&openai_payload),
+            Some("4".to_string())
+        );
+
+        let zhipu_payload = json!({
+            "choices": [{
+                "message": {
+                    "reasoning_content": [
+                        { "type": "text", "text": "step 1" },
+                        { "type": "text", "text": ", step 2" }
+                    ]
+                }
+            }]
+        });
+        assert_eq!(
+            extract_chat_completion_output(&zhipu_payload),
+            Some("step 1, step 2".to_string())
+        );
+    }
+
+    #[test]
     fn codex_cli_args_do_not_enable_full_auto() {
         let args = codex_cli_args("gpt-5.1-codex-max");
         assert_eq!(args, ["exec", "--model", "gpt-5.1-codex-max", "--json"]);
@@ -1014,6 +1136,21 @@ fn normalize_base_url(value: Option<String>) -> Option<String> {
     value
         .map(|raw| raw.trim().trim_end_matches('/').to_string())
         .filter(|raw| !raw.is_empty())
+}
+
+fn default_zhipu_base_url(model: Option<&str>) -> &'static str {
+    if zhipu_model_uses_coding_endpoint(model) {
+        DEFAULT_ZHIPU_CODING_BASE_URL
+    } else {
+        DEFAULT_ZHIPU_BASE_URL
+    }
+}
+
+fn zhipu_model_uses_coding_endpoint(model: Option<&str>) -> bool {
+    model
+        .map(|value| value.trim().to_ascii_lowercase())
+        .map(|value| value == "glm-4.7" || value.starts_with("glm-4.7-"))
+        .unwrap_or(false)
 }
 
 fn merge_extra_body(target: &mut Map<String, Value>, extra: Option<&Value>) {

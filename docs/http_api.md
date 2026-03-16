@@ -124,7 +124,7 @@ Request body:
     }
   ],
   "limit": 5,
-  "repo_id": "<optional>"
+  "repo_id": "<required in multi-repo mode>"
 }
 ```
 
@@ -243,11 +243,12 @@ Response:
 
 Notes:
 - Requires `[llm.delegation].enabled = true` or `auto_enable = true` with a local model/agent available.
-- `task_type` must be one of: `generate_tests`, `write_docstring`, `scaffold_boilerplate`, `refactor_simple`, `format_code`.
+- `task_type` must be one of: `generate_tests`, `write_docstring`, `scaffold_boilerplate`, `refactor_simple`, `format_code`, `general_question`.
 - `mode` defaults to `[llm.delegation].mode` when omitted.
 - `draft_then_refine` returns a primary-agent refinement when configured; otherwise returns the local draft with a warning.
 - `agent` overrides the local agent id for this request only; otherwise Docdex selects from the local model library.
 - `caller_agent_id` / `caller_model` let Docdex attribute avoided-cost savings to the actual expensive caller.
+- In multi-repo daemon mode, send `repo_id` or `x-docdex-repo-id` just like other repo-scoped endpoints.
 - `primary_cost_per_million` is an explicit override for avoided-cost accounting when caller metadata is unavailable.
 - `x-docdex-agent-id` and `x-docdex-agent-model` headers are accepted as HTTP-side equivalents.
 

@@ -12,6 +12,7 @@ pub struct DelegationMetrics {
     delegate_requests: AtomicU64,
     delegate_offloaded_total: AtomicU64,
     delegate_fallbacks: AtomicU64,
+    delegate_failed_total: AtomicU64,
     delegate_latency_ms_total: AtomicU64,
     delegate_latency_count: AtomicU64,
     delegate_token_estimate_total: AtomicU64,
@@ -36,6 +37,10 @@ impl DelegationMetrics {
 
     pub fn inc_delegate_fallback(&self) {
         self.delegate_fallbacks.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_delegate_failed(&self) {
+        self.delegate_failed_total.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn record_delegate_latency(&self, latency_ms: u128) {
@@ -96,6 +101,10 @@ impl DelegationMetrics {
         self.delegate_fallbacks.load(Ordering::Relaxed)
     }
 
+    pub fn delegate_failed_total(&self) -> u64 {
+        self.delegate_failed_total.load(Ordering::Relaxed)
+    }
+
     pub fn delegate_token_estimate_total(&self) -> u64 {
         self.delegate_token_estimate_total.load(Ordering::Relaxed)
     }
@@ -143,6 +152,8 @@ impl DelegationMetrics {
             .store(snapshot.delegate_offloaded_total, Ordering::Relaxed);
         self.delegate_fallbacks
             .store(snapshot.delegate_fallbacks_total, Ordering::Relaxed);
+        self.delegate_failed_total
+            .store(snapshot.delegate_failed_total, Ordering::Relaxed);
         self.delegate_token_estimate_total
             .store(snapshot.delegate_token_estimate_total, Ordering::Relaxed);
         self.delegate_local_tokens_total
@@ -165,10 +176,12 @@ impl DelegationMetrics {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct DelegationTelemetrySnapshot {
     pub delegate_requests_total: u64,
     pub delegate_offloaded_total: u64,
     pub delegate_fallbacks_total: u64,
+    pub delegate_failed_total: u64,
     pub delegate_token_estimate_total: u64,
     pub delegate_local_tokens_total: u64,
     pub delegate_primary_tokens_total: u64,
@@ -184,6 +197,7 @@ impl DelegationTelemetrySnapshot {
             delegate_requests_total: metrics.delegate_requests_total(),
             delegate_offloaded_total: metrics.delegate_offloaded_total(),
             delegate_fallbacks_total: metrics.delegate_fallbacks_total(),
+            delegate_failed_total: metrics.delegate_failed_total(),
             delegate_token_estimate_total: metrics.delegate_token_estimate_total(),
             delegate_local_tokens_total: metrics.delegate_local_tokens_total(),
             delegate_primary_tokens_total: metrics.delegate_primary_tokens_total(),
@@ -199,6 +213,7 @@ impl DelegationTelemetrySnapshot {
             delegate_requests_total: metrics.delegate_requests_total(),
             delegate_offloaded_total: metrics.delegate_offloaded_total(),
             delegate_fallbacks_total: metrics.delegate_fallbacks_total(),
+            delegate_failed_total: metrics.delegate_failed_total(),
             delegate_token_estimate_total: metrics.delegate_token_estimate_total(),
             delegate_local_tokens_total: metrics.delegate_local_tokens_total(),
             delegate_primary_tokens_total: metrics.delegate_primary_tokens_total(),
@@ -219,6 +234,9 @@ impl DelegationTelemetrySnapshot {
         self.delegate_fallbacks_total = self
             .delegate_fallbacks_total
             .saturating_add(other.delegate_fallbacks_total);
+        self.delegate_failed_total = self
+            .delegate_failed_total
+            .saturating_add(other.delegate_failed_total);
         self.delegate_token_estimate_total = self
             .delegate_token_estimate_total
             .saturating_add(other.delegate_token_estimate_total);
@@ -292,6 +310,7 @@ pub struct Metrics {
     delegate_requests: AtomicU64,
     delegate_offloaded_total: AtomicU64,
     delegate_fallbacks: AtomicU64,
+    delegate_failed_total: AtomicU64,
     delegate_latency_ms_total: AtomicU64,
     delegate_latency_count: AtomicU64,
     delegate_token_estimate_total: AtomicU64,
@@ -357,6 +376,7 @@ impl Default for Metrics {
             delegate_requests: AtomicU64::new(0),
             delegate_offloaded_total: AtomicU64::new(0),
             delegate_fallbacks: AtomicU64::new(0),
+            delegate_failed_total: AtomicU64::new(0),
             delegate_latency_ms_total: AtomicU64::new(0),
             delegate_latency_count: AtomicU64::new(0),
             delegate_token_estimate_total: AtomicU64::new(0),
@@ -545,6 +565,10 @@ impl Metrics {
         self.delegate_fallbacks.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn inc_delegate_failed(&self) {
+        self.delegate_failed_total.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn record_delegate_latency(&self, latency_ms: u128) {
         self.delegate_latency_ms_total
             .fetch_add(latency_ms as u64, Ordering::Relaxed);
@@ -603,6 +627,10 @@ impl Metrics {
         self.delegate_fallbacks.load(Ordering::Relaxed)
     }
 
+    pub fn delegate_failed_total(&self) -> u64 {
+        self.delegate_failed_total.load(Ordering::Relaxed)
+    }
+
     pub fn delegate_token_estimate_total(&self) -> u64 {
         self.delegate_token_estimate_total.load(Ordering::Relaxed)
     }
@@ -650,6 +678,8 @@ impl Metrics {
             .store(snapshot.delegate_offloaded_total, Ordering::Relaxed);
         self.delegate_fallbacks
             .store(snapshot.delegate_fallbacks_total, Ordering::Relaxed);
+        self.delegate_failed_total
+            .store(snapshot.delegate_failed_total, Ordering::Relaxed);
         self.delegate_token_estimate_total
             .store(snapshot.delegate_token_estimate_total, Ordering::Relaxed);
         self.delegate_local_tokens_total
@@ -868,6 +898,9 @@ impl Metrics {
                 "# HELP docdex_delegate_fallback_total Delegation fallbacks\n",
                 "# TYPE docdex_delegate_fallback_total counter\n",
                 "docdex_delegate_fallback_total {}\n",
+                "# HELP docdex_delegate_failed_total Terminal delegation failures\n",
+                "# TYPE docdex_delegate_failed_total counter\n",
+                "docdex_delegate_failed_total {}\n",
                 "# HELP docdex_delegate_latency_ms_total Delegation latency sum in ms\n",
                 "# TYPE docdex_delegate_latency_ms_total counter\n",
                 "docdex_delegate_latency_ms_total {}\n",
@@ -962,6 +995,7 @@ impl Metrics {
             self.delegate_requests.load(Ordering::Relaxed),
             self.delegate_offloaded_total.load(Ordering::Relaxed),
             self.delegate_fallbacks.load(Ordering::Relaxed),
+            self.delegate_failed_total.load(Ordering::Relaxed),
             self.delegate_latency_ms_total.load(Ordering::Relaxed),
             self.delegate_latency_count.load(Ordering::Relaxed),
             self.delegate_token_estimate_total

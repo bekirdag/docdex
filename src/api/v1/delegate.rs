@@ -13,10 +13,10 @@ use crate::llm::delegation::{
     allowlist_allows, build_local_target_candidates_with_config, build_primary_target_candidates,
     compute_cost_micros, compute_delegation_savings, local_selection_policy_requires_fresh_library,
     mode_from_config, parse_local_target_override, resolve_local_cost_per_million,
-    resolve_primary_cost_per_million, run_delegation_flow_with_failure_history,
-    update_cached_local_selection_from_completion, DelegationEnforcementError,
-    DelegationFailureHistoryContext, DelegationMode, DelegationPricingContext, LocalTarget,
-    TaskType,
+    resolve_primary_cost_per_million, resolve_task_scoped_delegation_config,
+    run_delegation_flow_with_failure_history, update_cached_local_selection_from_completion,
+    DelegationEnforcementError, DelegationFailureHistoryContext, DelegationMode,
+    DelegationPricingContext, LocalTarget, TaskType,
 };
 use crate::llm::local_library::resolve_local_ollama_base_url;
 use crate::llm::local_library::{
@@ -108,9 +108,10 @@ pub async fn delegate_handler(
             "task_type is invalid",
         )
     })?;
+    let effective_llm_config = resolve_task_scoped_delegation_config(&state.llm_config, task_type);
 
     let web_gate = WebGateConfig::from_env();
-    let prefer_fresh_library = local_selection_policy_requires_fresh_library(&state.llm_config);
+    let prefer_fresh_library = local_selection_policy_requires_fresh_library(&effective_llm_config);
     let library_result = if web_gate.enabled {
         let indexer = state.indexer.clone();
         let libs_indexer = state.libs_indexer.clone();
@@ -143,7 +144,7 @@ pub async fn delegate_handler(
         if prefer_fresh_library {
             refresh_local_library_with_web(
                 state.global_state_dir.as_deref(),
-                &state.llm_config,
+                &effective_llm_config,
                 true,
                 Some(&mut fetcher),
             )
@@ -151,7 +152,7 @@ pub async fn delegate_handler(
         } else {
             refresh_local_library_if_stale_with_web(
                 state.global_state_dir.as_deref(),
-                &state.llm_config,
+                &effective_llm_config,
                 true,
                 Some(&mut fetcher),
             )
@@ -159,11 +160,16 @@ pub async fn delegate_handler(
         }
     } else {
         if prefer_fresh_library {
-            refresh_local_library(state.global_state_dir.as_deref(), &state.llm_config, true).await
+            refresh_local_library(
+                state.global_state_dir.as_deref(),
+                &effective_llm_config,
+                true,
+            )
+            .await
         } else {
             refresh_local_library_if_stale(
                 state.global_state_dir.as_deref(),
-                &state.llm_config,
+                &effective_llm_config,
                 true,
             )
             .await
@@ -180,7 +186,7 @@ pub async fn delegate_handler(
             load_local_library(state.global_state_dir.as_deref()).ok()
         }
     };
-    if !delegation_is_enabled(&state.llm_config.delegation, library.as_ref()) {
+    if !delegation_is_enabled(&effective_llm_config.delegation, library.as_ref()) {
         return Err(json_error(
             StatusCode::BAD_REQUEST,
             ERR_INVALID_ARGUMENT,
@@ -188,7 +194,7 @@ pub async fn delegate_handler(
         ));
     }
 
-    if !allowlist_allows(task_type, &state.llm_config.delegation.task_allowlist) {
+    if !allowlist_allows(task_type, &effective_llm_config.delegation.task_allowlist) {
         return Err(json_error(
             StatusCode::BAD_REQUEST,
             ERR_INVALID_ARGUMENT,
@@ -204,13 +210,13 @@ pub async fn delegate_handler(
                 "mode is invalid",
             )
         })?,
-        None => mode_from_config(&state.llm_config.delegation.mode),
+        None => mode_from_config(&effective_llm_config.delegation.mode),
     };
 
     let max_context_chars = payload
         .max_context_chars
         .filter(|value| *value > 0)
-        .unwrap_or(state.llm_config.delegation.max_context_chars);
+        .unwrap_or(effective_llm_config.delegation.max_context_chars);
 
     let agent_override = payload
         .agent
@@ -221,21 +227,26 @@ pub async fn delegate_handler(
         agent_override.and_then(|value| parse_local_target_override(value, library.as_ref()));
     let mut local_targets: Vec<LocalTarget> = override_target.clone().into_iter().collect();
     if local_targets.is_empty() {
-        if !state.llm_config.delegation.local_agent_id.trim().is_empty() {
+        if !effective_llm_config
+            .delegation
+            .local_agent_id
+            .trim()
+            .is_empty()
+        {
             local_targets.clear();
         } else if let Some(library) = library.as_ref() {
             let mut library = library.clone();
             local_targets = build_local_target_candidates_with_config(
                 state.global_state_dir.as_deref(),
-                &state.llm_config,
+                &effective_llm_config,
                 task_type,
                 &mut library,
             );
         }
     }
     if local_targets.is_empty() {
-        let model = state.llm_config.default_model.trim();
-        if !model.is_empty() && resolve_local_ollama_base_url(&state.llm_config).is_some() {
+        let model = effective_llm_config.default_model.trim();
+        if !model.is_empty() && resolve_local_ollama_base_url(&effective_llm_config).is_some() {
             local_targets.push(LocalTarget::OllamaModel(model.to_string()));
         }
     }
@@ -243,7 +254,7 @@ pub async fn delegate_handler(
         .as_ref()
         .map(|library| {
             build_primary_target_candidates(
-                &state.llm_config,
+                &effective_llm_config,
                 task_type,
                 library,
                 local_targets.first(),
@@ -294,24 +305,50 @@ pub async fn delegate_handler(
         .as_deref()
         .map(|value| !value.trim().is_empty())
         .unwrap_or(false)
-        || !state.llm_config.delegation.local_agent_id.trim().is_empty();
-    if state.llm_config.delegation.enforce_local && local_targets.is_empty() && !local_override {
+        || !effective_llm_config
+            .delegation
+            .local_agent_id
+            .trim()
+            .is_empty();
+    let started_at = Instant::now();
+    state.metrics.inc_delegate_request();
+    repo.delegation_metrics.inc_delegate_request();
+    let persist_delegation_metrics = || {
+        let repo_state_root = repo_state_root_from_state_dir(repo.indexer.state_dir());
+        let telemetry_global_state_dir = delegation_telemetry::effective_global_state_dir(
+            state.global_state_dir.as_deref(),
+            repo.indexer.state_dir(),
+        );
+        delegation_telemetry::persist_metrics(
+            telemetry_global_state_dir.as_deref(),
+            state.metrics.as_ref(),
+            Some(repo_state_root.as_path()),
+            Some(repo.delegation_metrics.as_ref()),
+        );
+    };
+    if effective_llm_config.delegation.enforce_local && local_targets.is_empty() && !local_override
+    {
+        let elapsed_ms = started_at.elapsed().as_millis();
+        state.metrics.inc_delegate_failed();
+        repo.delegation_metrics.inc_delegate_failed();
         state.metrics.inc_delegate_local_enforced_failure();
         repo.delegation_metrics
             .inc_delegate_local_enforced_failure();
+        state.metrics.record_delegate_latency(elapsed_ms);
+        repo.delegation_metrics.record_delegate_latency(elapsed_ms);
+        persist_delegation_metrics();
         return Err(json_error_with_details(
             StatusCode::BAD_REQUEST,
             ERR_DELEGATION_LOCAL_REQUIRED,
             "local delegation required but no local target is configured",
             serde_json::json!({
-                "enforce_local": state.llm_config.delegation.enforce_local,
-                "allow_fallback_to_primary": state.llm_config.delegation.allow_fallback_to_primary,
+                "enforce_local": effective_llm_config.delegation.enforce_local,
+                "allow_fallback_to_primary": effective_llm_config.delegation.allow_fallback_to_primary,
                 "hint": "Configure a local agent/model or disable enforcement; set DOCDEX_DELEGATION_ALLOW_FALLBACK=1 to permit primary fallback."
             }),
         ));
     }
 
-    let started_at = Instant::now();
     let failure_history = DelegationFailureHistoryContext {
         global_state_dir: state.global_state_dir.clone(),
         repo_id: Some(repo.repo_id.clone()),
@@ -319,7 +356,7 @@ pub async fn delegate_handler(
         source: Some("http".to_string()),
     };
     let result = run_delegation_flow_with_failure_history(
-        &state.llm_config,
+        &effective_llm_config,
         local_agent_override.as_deref(),
         &local_targets,
         &primary_targets,
@@ -332,62 +369,70 @@ pub async fn delegate_handler(
         mode,
         Some(failure_history),
     )
-    .await
-    .map_err(|err| {
-        if let Some(enforcement) = err.downcast_ref::<DelegationEnforcementError>() {
-            state.metrics.inc_delegate_local_enforced_failure();
-            repo.delegation_metrics.inc_delegate_local_enforced_failure();
-            return json_error_with_details(
-                StatusCode::BAD_REQUEST,
-                ERR_DELEGATION_LOCAL_REQUIRED,
-                enforcement.reason.clone(),
-                serde_json::json!({
-                    "enforce_local": state.llm_config.delegation.enforce_local,
-                    "allow_fallback_to_primary": state.llm_config.delegation.allow_fallback_to_primary,
-                    "hint": "Configure a local agent/model or set DOCDEX_DELEGATION_ALLOW_FALLBACK=1 to permit primary fallback."
-                }),
-            );
+    .await;
+    let result = match result {
+        Ok(result) => result,
+        Err(err) => {
+            let elapsed_ms = started_at.elapsed().as_millis();
+            state.metrics.inc_delegate_failed();
+            repo.delegation_metrics.inc_delegate_failed();
+            state.metrics.record_delegate_latency(elapsed_ms);
+            repo.delegation_metrics.record_delegate_latency(elapsed_ms);
+            if let Some(enforcement) = err.downcast_ref::<DelegationEnforcementError>() {
+                state.metrics.inc_delegate_local_enforced_failure();
+                repo.delegation_metrics
+                    .inc_delegate_local_enforced_failure();
+                persist_delegation_metrics();
+                return Err(json_error_with_details(
+                    StatusCode::BAD_REQUEST,
+                    ERR_DELEGATION_LOCAL_REQUIRED,
+                    enforcement.reason.clone(),
+                    serde_json::json!({
+                        "enforce_local": effective_llm_config.delegation.enforce_local,
+                        "allow_fallback_to_primary": effective_llm_config.delegation.allow_fallback_to_primary,
+                        "hint": "Configure a local agent/model or set DOCDEX_DELEGATION_ALLOW_FALLBACK=1 to permit primary fallback."
+                    }),
+                ));
+            }
+            warn!(target: "docdexd", error = ?err, "delegation completion failed");
+            persist_delegation_metrics();
+            let app_error = AppError::new(ERR_INTERNAL_ERROR, "delegation failed");
+            return Err(json_error(
+                status_for_app_error(app_error.code),
+                app_error.code,
+                app_error.message,
+            ));
         }
-        warn!(target: "docdexd", error = ?err, "delegation completion failed");
-        let app_error = AppError::new(ERR_INTERNAL_ERROR, "delegation failed");
-        json_error(
-            status_for_app_error(app_error.code),
-            app_error.code,
-            app_error.message,
-        )
-    })?;
+    };
 
     if !result.primary_used {
         if let Some(library) = library.as_mut() {
             update_cached_local_selection_from_completion(
                 state.global_state_dir.as_deref(),
-                &state.llm_config,
+                &effective_llm_config,
                 library,
+                task_type,
                 &result.completion,
             );
         }
     }
 
-    state.metrics.inc_delegate_request();
-    repo.delegation_metrics.inc_delegate_request();
-    state
-        .metrics
-        .record_delegate_latency(started_at.elapsed().as_millis());
-    repo.delegation_metrics
-        .record_delegate_latency(started_at.elapsed().as_millis());
+    let elapsed_ms = started_at.elapsed().as_millis();
+    state.metrics.record_delegate_latency(elapsed_ms);
+    repo.delegation_metrics.record_delegate_latency(elapsed_ms);
     state
         .metrics
         .record_delegate_token_estimate(result.token_estimate);
     repo.delegation_metrics
         .record_delegate_token_estimate(result.token_estimate);
     let local_cost_per_million = resolve_local_cost_per_million(
-        &state.llm_config,
+        &effective_llm_config,
         local_agent_override.as_deref(),
         local_targets.first(),
         library.as_ref(),
     );
     let primary_cost_per_million = resolve_primary_cost_per_million(
-        &state.llm_config,
+        &effective_llm_config,
         Some(&pricing_context),
         primary_targets.first(),
         library.as_ref(),
@@ -437,17 +482,7 @@ pub async fn delegate_handler(
         state.metrics.inc_delegate_fallback();
         repo.delegation_metrics.inc_delegate_fallback();
     }
-    let repo_state_root = repo_state_root_from_state_dir(repo.indexer.state_dir());
-    let telemetry_global_state_dir = delegation_telemetry::effective_global_state_dir(
-        state.global_state_dir.as_deref(),
-        repo.indexer.state_dir(),
-    );
-    delegation_telemetry::persist_metrics(
-        telemetry_global_state_dir.as_deref(),
-        state.metrics.as_ref(),
-        Some(repo_state_root.as_path()),
-        Some(repo.delegation_metrics.as_ref()),
-    );
+    persist_delegation_metrics();
 
     Ok(Json(DelegateResponse {
         id: Uuid::new_v4().to_string(),

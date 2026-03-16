@@ -1,4 +1,4 @@
----- START OF DOCDEX INFO V0.2.53 ----
+---- START OF DOCDEX INFO V0.2.54 ----
 Docdex URL: http://127.0.0.1:28491
 Use this base URL for Docdex HTTP endpoints.
 Health check endpoint: `GET /healthz` (not `/v1/health`).
@@ -92,14 +92,14 @@ Precision tools for structural analysis. Do not rely on text search for definiti
 
 ### D. Local Delegation (Cheap Models)
 
-Use local delegation for low-complexity, code-generation-oriented tasks to reduce paid-model usage.
+Use local delegation for low-complexity code-writing tasks and lightweight general questions to reduce paid-model usage.
 
 | MCP Tool / HTTP | Purpose |
 | --- | --- |
 | docdex_local_completion | Delegate small tasks to a local model with strict output formats. |
 | HTTP /v1/delegate | HTTP endpoint for delegated completions with structured responses. |
 
-Required fields: `task_type`, `instruction`, `context`. Optional: `max_tokens`, `timeout_ms`, `mode` (`draft_only` or `draft_then_refine`), `agent` (local agent id/slug or `model:<name>` to force an Ollama model; raw model names from `docdexd delegation agents` are also accepted).
+Required fields: `task_type`, `instruction`, `context`. Optional: `max_tokens`, `timeout_ms`, `mode` (`draft_only` or `draft_then_refine`), `agent` (local agent id/slug or `model:<name>` to force an Ollama model; raw model names from `docdexd delegation agents` are also accepted). Use `general_question` for lightweight Q&A and the existing code-oriented task types for code writing/editing.
 Expensive model library: `docs/expensive_models.json` (match by `agent_id`, `agent_slug`, `model`, or adapter type; case-insensitive).
 To choose a local target, run `docdexd delegation agents` (or `--json`) and prefer:
 - `code_writer` for scaffolding/boilerplate/docstrings.
@@ -144,7 +144,7 @@ Use these to verify index coverage, repo binding, and to read precise file slice
 - docdex_open: Read narrow file slices after targets are identified.
 - docdex_tree: Render a filtered folder tree (prefer this over `rg --files` / `find`).
 - docdex_impact_diagnostics: Scan dynamic imports when imports are unclear or failing.
-- docdex_local_completion: Delegate low-complexity codegen tasks (tests, docstrings, boilerplate, simple refactors).
+- docdex_local_completion: Delegate low-complexity local tasks such as codegen work or lightweight general questions.
 - docdex_ast: Use AST queries for precise structure (class/function definitions, call sites, imports).
 - docdex_symbols: Use symbols to confirm exact signatures/locations before edits.
 - docdex_impact_graph: Mandatory before code changes to review inbound/outbound deps (use MCP/IPC if shell networking is blocked).
@@ -325,7 +325,7 @@ Do not guess fields; use these canonical shapes.
 - `docdex_memory_recall`: `{ project_root, query, top_k? }`
 - `docdex_get_profile`: `{ agent_id }`
 - `docdex_save_preference`: `{ agent_id, category, content }`
-- `docdex_local_completion`: `{ task_type, instruction, context, max_tokens?, timeout_ms?, mode?, max_context_chars?, agent?, caller_agent_id?, caller_model?, primary_cost_per_million? }`
+- `docdex_local_completion`: `{ task_type, instruction, context, max_tokens?, timeout_ms?, mode?, max_context_chars?, agent?, caller_agent_id?, caller_model?, primary_cost_per_million?, project_root?, repo_path? }`
 - `docdex_web_research`: `{ project_root, query, force_web, skip_local_search?, web_limit?, no_cache? }`
 
 ### 9) Common error fixes (do not guess)
@@ -371,7 +371,7 @@ Use these when results look incomplete or when the task is about recent changes.
 
 ### 4. Local Delegation Workflow (Cheap Models)
 
-When you are an expensive/paid model, delegate eligible low-complexity tasks first unless the user opts out.
+When you are an expensive/paid model, delegate eligible low-complexity code-writing tasks and lightweight general questions first unless the user opts out.
 Delegation is mandatory for eligible tasks. If you are expensive and delegation is enabled (explicitly or auto-enabled with local candidates), you MUST attempt local delegation before doing the work yourself. Only skip when delegation is disabled, no local candidate exists, or local output fails validation after a retry/fallback.
 
 #### Mandatory Delegation Triggers
@@ -390,7 +390,7 @@ Delegation is mandatory for eligible tasks. If you are expensive and delegation 
 
 1. Determine if you are expensive: load `docs/expensive_models.json` and match your `agent_id`, `agent_slug`, `model`, or adapter type. If you match, continue; if not and you are clearly local/cheap, skip delegation. If unsure, default to expensive.
 2. Check config: Only delegate when `[llm.delegation].enabled` is true or `auto_enable` is true with an eligible local model/agent (and `task_type` is allowed). For automatic mcoda selection, eligible means healthy and not paid/expensive unless the user explicitly overrides the target. If uncertain, attempt delegation and handle the error.
-3. Choose task type: Use one of `GENERATE_TESTS`, `WRITE_DOCSTRING`, `SCAFFOLD_BOILERPLATE`, `REFACTOR_SIMPLE`, `FORMAT_CODE`.
+3. Choose task type: Use one of `GENERATE_TESTS`, `WRITE_DOCSTRING`, `SCAFFOLD_BOILERPLATE`, `REFACTOR_SIMPLE`, `FORMAT_CODE`, `GENERAL_QUESTION`.
 4. Call the tool: `docdex_local_completion` with `task_type`, `instruction`, and minimal `context` (smallest necessary snippet).
 5. Validate output: If the local output is invalid or empty, fall back to the primary agent or handle with the paid model.
 6. Optional refine: If mode is `draft_then_refine`, refine the draft with the primary agent and return a final result.

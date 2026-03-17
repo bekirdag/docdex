@@ -69,6 +69,8 @@ Standard retrieval. The daemon automatically handles the waterfall (Local -> Web
 | docdex_search | Search code, docs, and ingested libraries. Returns ranked snippets. |
 | docdex_web_research | Explicitly trigger Tier 2 web discovery (configured provider + Headless Chrome). Use when you need external docs not present locally. |
 
+When `DOCDEX_WEB_DISCOVERY_PROVIDER=mswarm` or `[web].discovery_provider = "mswarm"`, Docdex's runtime web-discovery adapter sends `POST {base_url}/v1/swarm/web/search` using `[integrations.mswarm].base_url`, adds the `x-api-key` header from `[integrations.mswarm].api_key`, and sends JSON shaped like `{ "query": "<search query>", "tool_id": "docdex" }`. Treat this as a runtime integration detail: agents should normally configure and invoke Docdex search/web tools rather than calling the raw mswarm endpoint directly unless they are debugging the integration itself.
+
 ### B. Code Intelligence (AST & Graph)
 
 Precision tools for structural analysis. Do not rely on text search for definitions or dependencies.

@@ -337,10 +337,9 @@ Configure mswarm web search later:
 ```bash
 docdexd mswarm configure \
   --api-key "<mswarm-api-key>" \
-  --base-url "https://api.mswarm.org/" \
   --enable-web-search
 ```
-This stores the key in `~/.docdex/config.toml` under `[integrations.mswarm]` and sets `[web].discovery_provider = "mswarm"` when `--enable-web-search` is used.
+This stores the key in `~/.docdex/config.toml` under `[integrations.mswarm]`, defaults `[integrations.mswarm].base_url` to `https://api.mswarm.org/`, and sets `[web].discovery_provider = "mswarm"` when `--enable-web-search` is used. Use `--base-url` only when pointing Docdex at a non-default mswarm gateway.
 
 Main LLM config example:
 ```toml

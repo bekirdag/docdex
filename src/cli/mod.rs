@@ -1165,7 +1165,7 @@ pub(crate) enum MswarmCommand {
             long,
             env = "DOCDEX_MSWARM_BASE_URL",
             value_name = "URL",
-            help = "mswarm gateway base URL (default: https://api.mswarm.org/)"
+            help = "mswarm gateway base URL override (default: https://api.mswarm.org/)"
         )]
         base_url: Option<String>,
         #[arg(

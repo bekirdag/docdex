@@ -4,6 +4,8 @@ use std::path::Path;
 use crate::config::{self, AppConfig};
 use toml;
 
+const LEGACY_MSWARM_BASE_URL: &str = "http://127.0.0.1:8080";
+
 pub fn set_default_model(model: &str) -> Result<bool> {
     if model.trim().is_empty() {
         return Ok(false);
@@ -119,6 +121,8 @@ pub fn set_mswarm_config(update: MswarmConfigUpdate) -> Result<bool> {
     let config_path = config::default_config_path()?;
     let mut config_data = load_config_no_browser(&config_path)?;
     let mut changed = false;
+    let default_base_url = config::default_mswarm_base_url();
+    let touched_non_base_url = update.api_key.is_some() || update.use_for_web_search.is_some();
 
     if let Some(value) = update.api_key {
         let normalized = normalize_key(value);
@@ -129,11 +133,17 @@ pub fn set_mswarm_config(update: MswarmConfigUpdate) -> Result<bool> {
     }
     if let Some(value) = update.base_url {
         let normalized = normalize_key(value);
-        let next_base_url = normalized.unwrap_or_else(config::default_mswarm_base_url);
+        let next_base_url = normalized.unwrap_or_else(|| default_base_url.clone());
         if config_data.integrations.mswarm.base_url != next_base_url {
             config_data.integrations.mswarm.base_url = next_base_url;
             changed = true;
         }
+    } else if touched_non_base_url
+        && is_legacy_or_empty_mswarm_base_url(&config_data.integrations.mswarm.base_url)
+        && config_data.integrations.mswarm.base_url != default_base_url
+    {
+        config_data.integrations.mswarm.base_url = default_base_url.clone();
+        changed = true;
     }
     if let Some(use_for_web_search) = update.use_for_web_search {
         let target_provider = if use_for_web_search {
@@ -160,6 +170,12 @@ fn normalize_key(value: String) -> Option<String> {
     } else {
         Some(trimmed)
     }
+}
+
+fn is_legacy_or_empty_mswarm_base_url(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.is_empty()
+        || trimmed.trim_end_matches('/') == LEGACY_MSWARM_BASE_URL.trim_end_matches('/')
 }
 
 fn load_config_no_browser(path: &std::path::Path) -> Result<AppConfig> {
@@ -274,6 +290,61 @@ mod tests {
         assert!(contents.contains("mswarm-key"));
         assert!(contents.contains("https://api.mswarm.org/"));
         assert!(contents.contains("discovery_provider = \"mswarm\""));
+
+        std::env::remove_var("DOCDEX_CONFIG_PATH");
+        Ok(())
+    }
+
+    #[test]
+    fn set_mswarm_config_migrates_legacy_default_base_url_when_omitted() -> Result<()> {
+        let _guard = ENV_LOCK.lock();
+        let dir = TempDir::new()?;
+        let path = dir.path().join("config.toml");
+        std::env::set_var("DOCDEX_CONFIG_PATH", &path);
+        std::fs::write(
+            &path,
+            r#"[integrations.mswarm]
+base_url = "http://127.0.0.1:8080"
+"#,
+        )?;
+
+        let changed = set_mswarm_config(MswarmConfigUpdate {
+            api_key: Some("mswarm-key".to_string()),
+            base_url: None,
+            use_for_web_search: Some(true),
+        })?;
+        assert!(changed);
+        let contents = std::fs::read_to_string(&path)?;
+        assert!(contents.contains("base_url = \"https://api.mswarm.org/\""));
+        assert!(contents.contains("mswarm-key"));
+        assert!(contents.contains("discovery_provider = \"mswarm\""));
+
+        std::env::remove_var("DOCDEX_CONFIG_PATH");
+        Ok(())
+    }
+
+    #[test]
+    fn set_mswarm_config_preserves_custom_base_url_when_omitted() -> Result<()> {
+        let _guard = ENV_LOCK.lock();
+        let dir = TempDir::new()?;
+        let path = dir.path().join("config.toml");
+        std::env::set_var("DOCDEX_CONFIG_PATH", &path);
+        std::fs::write(
+            &path,
+            r#"[integrations.mswarm]
+base_url = "https://custom.mswarm.example/"
+"#,
+        )?;
+
+        let changed = set_mswarm_config(MswarmConfigUpdate {
+            api_key: Some("mswarm-key".to_string()),
+            base_url: None,
+            use_for_web_search: Some(true),
+        })?;
+        assert!(changed);
+        let contents = std::fs::read_to_string(&path)?;
+        assert!(contents.contains("base_url = \"https://custom.mswarm.example/\""));
+        assert!(contents.contains("mswarm-key"));
 
         std::env::remove_var("DOCDEX_CONFIG_PATH");
         Ok(())

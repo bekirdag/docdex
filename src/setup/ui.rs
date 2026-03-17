@@ -1086,7 +1086,7 @@ fn configure_web_providers_section<I: WizardInput, S: WizardServices>(
     )?;
     let mswarm_base_url = input.prompt_text(
         state,
-        "mswarm base URL",
+        "mswarm base URL (leave blank for default)",
         mswarm_base_url_current.as_deref(),
         false,
     )?;

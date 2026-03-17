@@ -369,6 +369,11 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: BrowserCommand,
     },
+    /// Manage mswarm integration settings.
+    Mswarm {
+        #[command(subcommand)]
+        command: MswarmCommand,
+    },
     /// Scan the index for sensitive terms before enabling access.
     SelfCheck {
         #[command(flatten)]
@@ -1146,6 +1151,45 @@ pub(crate) enum BrowserCommand {
 }
 
 #[derive(Subcommand, Debug)]
+pub(crate) enum MswarmCommand {
+    /// Set or update the mswarm API key, base URL, and web-search preference.
+    Configure {
+        #[arg(
+            long,
+            env = "DOCDEX_MSWARM_API_KEY",
+            value_name = "KEY",
+            help = "mswarm runtime API key (sent as x-api-key)"
+        )]
+        api_key: Option<String>,
+        #[arg(
+            long,
+            env = "DOCDEX_MSWARM_BASE_URL",
+            value_name = "URL",
+            help = "mswarm gateway base URL (default: https://api.mswarm.org/)"
+        )]
+        base_url: Option<String>,
+        #[arg(
+            long,
+            default_value_t = false,
+            action = ArgAction::SetTrue,
+            conflicts_with = "disable_web_search",
+            help = "Use mswarm as the primary Docdex web discovery provider"
+        )]
+        enable_web_search: bool,
+        #[arg(
+            long,
+            default_value_t = false,
+            action = ArgAction::SetTrue,
+            conflicts_with = "enable_web_search",
+            help = "Stop using mswarm as the primary Docdex web discovery provider"
+        )]
+        disable_web_search: bool,
+        #[arg(long, default_value_t = false, help = "Emit JSON summary")]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 pub(crate) enum HookCommand {
     /// Validate staged files via the running daemon (fails open if unavailable).
     PreCommit {
@@ -1305,6 +1349,7 @@ fn should_ensure_daemon(command: &Command) -> bool {
             | Command::Daemon { .. }
             | Command::HelpAll
             | Command::Setup { .. }
+            | Command::Mswarm { .. }
             | Command::Tree { .. }
             | Command::Open { .. }
             | Command::File { .. }
@@ -1366,6 +1411,7 @@ fn repo_hint_for_command(command: &Command) -> Option<PathBuf> {
             .map(|root| root.canonicalize().unwrap_or_else(|_| root.to_path_buf())),
         Command::MemoryStore { repo, .. } => Some(repo.repo_root()),
         Command::MemoryRecall { repo, .. } => Some(repo.repo_root()),
+        Command::Mswarm { .. } => None,
         Command::MemoryCompact { repo, .. } => Some(repo.repo_root()),
         Command::WebRag { repo, .. } => Some(repo.repo_root()),
         Command::Repo { command } => match command {

@@ -1,4 +1,4 @@
----- START OF DOCDEX INFO V0.2.55 ----
+---- START OF DOCDEX INFO V0.2.56 ----
 Docdex URL: http://127.0.0.1:28491
 Use this base URL for Docdex HTTP endpoints.
 Health check endpoint: `GET /healthz` (not `/v1/health`).
@@ -29,7 +29,7 @@ Health check endpoint: `GET /healthz` (not `/v1/health`).
 Docdex (Documentation Indexer) serves as your persistent "brain" on the user's machine. It operates on a Waterfall Retrieval model:
 
 1. Local First (Tier 1): Instant search of repo code, symbols, and ingested library documentation.
-2. Web Enrichment (Tier 2): Gated fallback to DuckDuckGo/Headless Chrome only when local confidence is low or explicitly requested.
+2. Web Enrichment (Tier 2): Gated fallback to the configured web provider (DuckDuckGo by default, `mswarm` when selected) plus Headless Chrome when local confidence is low or explicitly requested.
 3. Cognition (Tier 3): Local LLM inference (Ollama) with context assembly.
 
 Key Constraints:
@@ -67,7 +67,7 @@ Standard retrieval. The daemon automatically handles the waterfall (Local -> Web
 | MCP Tool | Purpose |
 | --- | --- |
 | docdex_search | Search code, docs, and ingested libraries. Returns ranked snippets. |
-| docdex_web_research | Explicitly trigger Tier 2 web discovery (DDG + Headless Chrome). Use when you need external docs not present locally. |
+| docdex_web_research | Explicitly trigger Tier 2 web discovery (configured provider + Headless Chrome). Use when you need external docs not present locally. |
 
 ### B. Code Intelligence (AST & Graph)
 
@@ -99,7 +99,7 @@ Use local delegation for low-complexity code-writing tasks and lightweight gener
 | docdex_local_completion | Delegate small tasks to a local model with strict output formats. |
 | HTTP /v1/delegate | HTTP endpoint for delegated completions with structured responses. |
 
-Required fields: `task_type`, `instruction`, `context`. Optional: `max_tokens`, `timeout_ms`, `mode` (`draft_only` or `draft_then_refine`), `agent` (local agent id/slug or `model:<name>` to force an Ollama model; raw model names from `docdexd delegation agents` are also accepted). Use `general_question` for lightweight Q&A and the existing code-oriented task types for code writing/editing.
+Required fields: `task_type`, `instruction`, `context`. Optional: `max_tokens`, `timeout_ms`, `mode` (`draft_only` or `draft_then_refine`), `agent` (local agent id/slug or `model:<name>` to force an Ollama model; raw model names from `docdexd delegation agents` are also accepted). Use `general_question` for lightweight Q&A and the existing code-oriented task types for code writing/editing. Lane-specific defaults come from `[llm.delegation.code]` for code-oriented task types and `[llm.delegation.general]` for `general_question`; flat `local_agent_id` / `primary_agent_id` remain compatibility fallbacks when lane-specific values are unset. This allows a coder-focused local agent for code work and a more general local agent for Q&A.
 Expensive model library: `docs/expensive_models.json` (match by `agent_id`, `agent_slug`, `model`, or adapter type; case-insensitive).
 To choose a local target, run `docdexd delegation agents` (or `--json`) and prefer:
 - `code_writer` for scaffolding/boilerplate/docstrings.

@@ -14,6 +14,7 @@ pub fn run() -> Result<()> {
         "serve",
         "self-check",
         "setup",
+        "mswarm",
         "index",
         "ingest",
         "chat",

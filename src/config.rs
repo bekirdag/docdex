@@ -27,6 +27,7 @@ const DEFAULT_PROFILE_EMBED_DIM: usize = 768;
 const DEFAULT_MEMORY_BACKEND: &str = "sqlite";
 const DEFAULT_DISCOVERY_PROVIDER: &str = "duckduckgo_lite";
 const DEFAULT_WEB_ENGINE: &str = "chromium";
+const DEFAULT_MSWARM_BASE_URL: &str = "https://api.mswarm.org/";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -40,6 +41,8 @@ pub struct AppConfig {
     pub code_intelligence: CodeIntelligenceConfig,
     #[serde(default)]
     pub web: WebConfigSection,
+    #[serde(default)]
+    pub integrations: IntegrationsConfig,
     #[serde(default)]
     pub memory: MemoryConfig,
     #[serde(default)]
@@ -56,6 +59,7 @@ impl Default for AppConfig {
             search: SearchConfig::default(),
             code_intelligence: CodeIntelligenceConfig::default(),
             web: WebConfigSection::default(),
+            integrations: IntegrationsConfig::default(),
             memory: MemoryConfig::default(),
             features: FeatureFlagsConfig::default(),
             server: ServerConfig::default(),
@@ -94,6 +98,9 @@ impl AppConfig {
         }
         if self.web.user_agent.trim().is_empty() {
             self.web.user_agent = default_web_user_agent();
+        }
+        if self.integrations.mswarm.base_url.trim().is_empty() {
+            self.integrations.mswarm.base_url = default_mswarm_base_url();
         }
         if self.web.scraper.engine.trim().is_empty() {
             self.web.scraper.engine = DEFAULT_WEB_ENGINE.to_string();
@@ -482,6 +489,37 @@ impl Default for WebScraperConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntegrationsConfig {
+    #[serde(default)]
+    pub mswarm: MswarmConfig,
+}
+
+impl Default for IntegrationsConfig {
+    fn default() -> Self {
+        Self {
+            mswarm: MswarmConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MswarmConfig {
+    #[serde(default = "default_mswarm_base_url")]
+    pub base_url: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
+impl Default for MswarmConfig {
+    fn default() -> Self {
+        Self {
+            base_url: default_mswarm_base_url(),
+            api_key: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryConfig {
     #[serde(default = "default_memory_enabled")]
     pub enabled: bool,
@@ -654,6 +692,9 @@ fn apply_env_overrides(config: &mut AppConfig) {
     if let Some(value) = env_trimmed("DOCDEX_LLM_AGENT").or_else(|| env_trimmed("DOCDEX_AGENT")) {
         config.llm.agent_id = value;
     }
+    if let Some(value) = env_trimmed("DOCDEX_WEB_DISCOVERY_PROVIDER") {
+        config.web.discovery_provider = value;
+    }
     if let Some(value) = env_bool("DOCDEX_DELEGATION_ENABLED") {
         config.llm.delegation.enabled = value;
     }
@@ -721,6 +762,12 @@ fn apply_env_overrides(config: &mut AppConfig) {
         .or_else(|| env_f64("DOCDEX_DELEGATION_LOCAL_USD_PER_1K_TOKENS"))
     {
         config.llm.delegation.local_usd_per_million_tokens = sanitize_non_negative_f64(value);
+    }
+    if let Some(value) = env_trimmed("DOCDEX_MSWARM_BASE_URL") {
+        config.integrations.mswarm.base_url = value;
+    }
+    if let Some(value) = env_trimmed("DOCDEX_MSWARM_API_KEY") {
+        config.integrations.mswarm.api_key = Some(value);
     }
     if let Some(value) = env_mcp_ipc_mode("DOCDEX_MCP_IPC") {
         config.server.mcp_ipc_mode = value;
@@ -989,12 +1036,16 @@ fn default_local_relevance_threshold() -> f32 {
     0.7
 }
 
-fn default_discovery_provider() -> String {
+pub(crate) fn default_discovery_provider() -> String {
     DEFAULT_DISCOVERY_PROVIDER.to_string()
 }
 
 pub(crate) fn default_web_user_agent() -> String {
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36".to_string()
+}
+
+pub(crate) fn default_mswarm_base_url() -> String {
+    DEFAULT_MSWARM_BASE_URL.to_string()
 }
 
 fn default_web_min_spacing_ms() -> u64 {

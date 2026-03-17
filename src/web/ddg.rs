@@ -27,6 +27,7 @@ const GOOGLE_CSE_PROVIDER: &str = "google_cse";
 const BING_PROVIDER: &str = "bing";
 const TAVILY_PROVIDER: &str = "tavily";
 const EXA_PROVIDER: &str = "exa";
+const MSWARM_PROVIDER: &str = "mswarm";
 const MAX_DDG_RESULTS: usize = 50;
 const DDG_PREFETCH_PAUSE_MIN_MS: u64 = 1_000;
 const DDG_PREFETCH_PAUSE_MAX_MS: u64 = 2_000;
@@ -121,6 +122,10 @@ enum FallbackProvider {
         api_key: String,
         base_url: Url,
     },
+    Mswarm {
+        api_key: String,
+        base_url: Url,
+    },
 }
 
 struct FallbackChain {
@@ -128,10 +133,11 @@ struct FallbackChain {
     next_index: usize,
     skip_ddg: bool,
     prefer_api: bool,
+    preferred_provider: Option<String>,
 }
 
 impl FallbackChain {
-    fn new(config: &WebConfig, prefer_api: bool) -> Self {
+    fn new(config: &WebConfig, prefer_api: bool, preferred_provider: Option<&str>) -> Self {
         let mut providers = Vec::new();
         if is_duckduckgo_host(&config.ddg_base_url) {
             if let Some(ddg_lite) = ddg_lite_fallback_base(&config.ddg_base_url) {
@@ -144,6 +150,12 @@ impl FallbackChain {
 
         free_providers.extend(searxng_fallbacks());
 
+        if let Some(api_key) = config.mswarm_api_key.as_deref().and_then(nonempty_value) {
+            api_providers.push(FallbackProvider::Mswarm {
+                api_key,
+                base_url: config.mswarm_base_url.clone(),
+            });
+        }
         if let Some(api_key) = config.brave_api_key.as_deref().and_then(nonempty_value) {
             let base_url = url_from_env("DOCDEX_BRAVE_API_URL")
                 .or_else(|| Url::parse(BRAVE_API_URL).ok())
@@ -192,11 +204,15 @@ impl FallbackChain {
             providers.extend(free_providers);
             providers.extend(api_providers);
         }
+        if let Some(preferred_provider) = preferred_provider {
+            prioritize_fallback_provider(&mut providers, preferred_provider);
+        }
         Self {
             providers,
             next_index: 0,
             skip_ddg: false,
             prefer_api,
+            preferred_provider: preferred_provider.map(|value| value.to_string()),
         }
     }
 
@@ -218,6 +234,10 @@ impl FallbackChain {
 
     fn prefer_api(&self) -> bool {
         self.prefer_api
+    }
+
+    fn preferred_provider(&self) -> Option<&str> {
+        self.preferred_provider.as_deref()
     }
 }
 
@@ -263,8 +283,15 @@ impl DdgDiscovery {
         let limit = limit.clamp(1, MAX_DDG_RESULTS);
         let cache_limit = self.config.max_results.max(limit).min(MAX_DDG_RESULTS);
         let attempts = self.config.policy.max_attempts.max(1);
+        let selected_provider = normalized_provider_name(&self.config.discovery_provider);
+        let preferred_fallback_provider =
+            if selected_provider == DDG_LITE_PROVIDER || selected_provider == PROVIDER {
+                None
+            } else {
+                Some(selected_provider.as_str())
+            };
         let url = build_ddg_url(&self.config.ddg_base_url, query)?;
-        let cache_key = ddg_cache_key(&self.config.ddg_base_url, query);
+        let cache_key = discovery_cache_key(&self.config, &selected_provider, query);
         let mut proxy_attempted = false;
         let proxy_base_url = self.config.ddg_proxy_base_url.as_ref();
 
@@ -279,7 +306,7 @@ impl DdgDiscovery {
                         .map(|result| result.url)
                         .collect();
                     return Ok(build_response_for_limit(
-                        PROVIDER,
+                        &cached.provider,
                         query,
                         filter_blocked_urls(dedupe_urls(urls), &self.blocklist),
                         limit,
@@ -290,8 +317,29 @@ impl DdgDiscovery {
         let mut last_error: Option<anyhow::Error> = None;
         let mut fallback_chain: Option<FallbackChain> = None;
 
+        if let Some(preferred_provider) = preferred_fallback_provider {
+            if let Some(response) = self
+                .maybe_fallback_discovery(
+                    self.fallback_chain_for(
+                        &mut fallback_chain,
+                        provider_prefers_api(preferred_provider),
+                        Some(preferred_provider),
+                    ),
+                    query,
+                    limit,
+                    cache_limit,
+                    &cache_key,
+                    &mut last_error,
+                )
+                .await
+            {
+                return Ok(response);
+            }
+        }
+
         if self.ddg_blocked() {
-            let chain = self.fallback_chain_for(&mut fallback_chain, true);
+            let chain =
+                self.fallback_chain_for(&mut fallback_chain, true, preferred_fallback_provider);
             chain.skip_ddg();
             if let Some(response) = self
                 .maybe_fallback_discovery(
@@ -333,7 +381,11 @@ impl DdgDiscovery {
                     }
                     if let Some(response) = self
                         .maybe_fallback_discovery(
-                            self.fallback_chain_for(&mut fallback_chain, false),
+                            self.fallback_chain_for(
+                                &mut fallback_chain,
+                                false,
+                                preferred_fallback_provider,
+                            ),
                             query,
                             limit,
                             cache_limit,
@@ -378,11 +430,19 @@ impl DdgDiscovery {
                                 (err, failures, max_failures, stop_backoff)
                             };
                             self.mark_ddg_blocked("anomaly_page");
-                            self.fallback_chain_for(&mut fallback_chain, true)
-                                .skip_ddg();
+                            self.fallback_chain_for(
+                                &mut fallback_chain,
+                                true,
+                                preferred_fallback_provider,
+                            )
+                            .skip_ddg();
                             if let Some(response) = self
                                 .maybe_fallback_discovery(
-                                    self.fallback_chain_for(&mut fallback_chain, true),
+                                    self.fallback_chain_for(
+                                        &mut fallback_chain,
+                                        true,
+                                        preferred_fallback_provider,
+                                    ),
                                     query,
                                     limit,
                                     cache_limit,
@@ -405,7 +465,11 @@ impl DdgDiscovery {
                         let links = extract_links(&body);
                         let filtered = self.filter_links(links);
                         if filtered.is_empty() {
-                            let chain = self.fallback_chain_for(&mut fallback_chain, true);
+                            let chain = self.fallback_chain_for(
+                                &mut fallback_chain,
+                                true,
+                                preferred_fallback_provider,
+                            );
                             chain.skip_ddg();
                             if let Some(response) = self
                                 .maybe_fallback_discovery(
@@ -448,11 +512,19 @@ impl DdgDiscovery {
                     };
                     if is_ddg_block_status(status) {
                         self.mark_ddg_blocked("http_status");
-                        self.fallback_chain_for(&mut fallback_chain, true)
-                            .skip_ddg();
+                        self.fallback_chain_for(
+                            &mut fallback_chain,
+                            true,
+                            preferred_fallback_provider,
+                        )
+                        .skip_ddg();
                         if let Some(response) = self
                             .maybe_fallback_discovery(
-                                self.fallback_chain_for(&mut fallback_chain, true),
+                                self.fallback_chain_for(
+                                    &mut fallback_chain,
+                                    true,
+                                    preferred_fallback_provider,
+                                ),
                                 query,
                                 limit,
                                 cache_limit,
@@ -488,7 +560,11 @@ impl DdgDiscovery {
                     }
                     if let Some(response) = self
                         .maybe_fallback_discovery(
-                            self.fallback_chain_for(&mut fallback_chain, false),
+                            self.fallback_chain_for(
+                                &mut fallback_chain,
+                                false,
+                                preferred_fallback_provider,
+                            ),
                             query,
                             limit,
                             cache_limit,
@@ -541,7 +617,11 @@ impl DdgDiscovery {
                     }
                     if let Some(response) = self
                         .maybe_fallback_discovery(
-                            self.fallback_chain_for(&mut fallback_chain, false),
+                            self.fallback_chain_for(
+                                &mut fallback_chain,
+                                false,
+                                preferred_fallback_provider,
+                            ),
                             query,
                             limit,
                             cache_limit,
@@ -591,10 +671,17 @@ impl DdgDiscovery {
 
         let limit = limit.clamp(1, MAX_DDG_RESULTS);
         let cache_limit = self.config.max_results.max(limit).min(MAX_DDG_RESULTS);
-        let cache_key = ddg_cache_key(&self.config.ddg_base_url, query);
+        let selected_provider = normalized_provider_name(&self.config.discovery_provider);
+        let preferred_fallback_provider =
+            if selected_provider == DDG_LITE_PROVIDER || selected_provider == PROVIDER {
+                None
+            } else {
+                Some(selected_provider.as_str())
+            };
+        let cache_key = discovery_cache_key(&self.config, &selected_provider, query);
         let mut last_error: Option<anyhow::Error> = None;
         let mut fallback_chain = None;
-        let chain = self.fallback_chain_for(&mut fallback_chain, true);
+        let chain = self.fallback_chain_for(&mut fallback_chain, true, preferred_fallback_provider);
         chain.skip_ddg();
         if let Some(response) = self
             .maybe_fallback_discovery(
@@ -636,13 +723,21 @@ impl DdgDiscovery {
         &self,
         chain: &'a mut Option<FallbackChain>,
         prefer_api: bool,
+        preferred_provider: Option<&str>,
     ) -> &'a mut FallbackChain {
         let replace = match chain.as_ref() {
-            Some(existing) => existing.prefer_api() != prefer_api,
+            Some(existing) => {
+                existing.prefer_api() != prefer_api
+                    || existing.preferred_provider() != preferred_provider
+            }
             None => true,
         };
         if replace {
-            *chain = Some(FallbackChain::new(&self.config, prefer_api));
+            *chain = Some(FallbackChain::new(
+                &self.config,
+                prefer_api,
+                preferred_provider,
+            ));
         }
         chain.as_mut().expect("fallback chain must exist")
     }
@@ -761,6 +856,10 @@ impl DdgDiscovery {
             }
             FallbackProvider::Exa { api_key, base_url } => {
                 self.try_exa_discovery(&base_url, &api_key, query, limit, cache_limit, cache_key)
+                    .await
+            }
+            FallbackProvider::Mswarm { api_key, base_url } => {
+                self.try_mswarm_discovery(&base_url, &api_key, query, limit, cache_limit, cache_key)
                     .await
             }
         }
@@ -1031,6 +1130,48 @@ impl DdgDiscovery {
         Ok(Some(responses.response))
     }
 
+    async fn try_mswarm_discovery(
+        &self,
+        base_url: &Url,
+        api_key: &str,
+        query: &str,
+        limit: usize,
+        cache_limit: usize,
+        cache_key: &str,
+    ) -> Result<Option<WebDiscoveryResponse>> {
+        let url = build_mswarm_search_url(base_url)?;
+        let payload = json!({
+            "query": query,
+            "tool_id": "docdex",
+        });
+        let resp = self
+            .client
+            .post(url)
+            .header("x-api-key", api_key)
+            .header(ACCEPT, HeaderValue::from_static("application/json"))
+            .json(&payload)
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Ok(None);
+        }
+        let body: Value = resp.json().await.map_err(|err| {
+            AppError::new(
+                ERR_INTERNAL_ERROR,
+                format!("mswarm discovery failed: {err}"),
+            )
+        })?;
+        let links = extract_json_links(&body);
+        let filtered = self.filter_links(links);
+        if filtered.is_empty() {
+            return Ok(None);
+        }
+        let responses =
+            build_discovery_responses(MSWARM_PROVIDER, query, filtered, limit, cache_limit);
+        self.cache_response(cache_key, &responses.response_for_cache);
+        Ok(Some(responses.response))
+    }
+
     async fn prefetch_homepage(&self, base_url: &Url) {
         let Some(host) = base_url.host_str() else {
             return;
@@ -1182,8 +1323,13 @@ fn is_loopback_url(url: &Url) -> bool {
     }
 }
 
-fn ddg_cache_key(base: &Url, query: &str) -> String {
-    format!("ddg:{}:{}:{}", PROVIDER, base.as_str(), query)
+fn discovery_cache_key(config: &WebConfig, provider: &str, query: &str) -> String {
+    let origin = if provider == MSWARM_PROVIDER {
+        config.mswarm_base_url.as_str()
+    } else {
+        config.ddg_base_url.as_str()
+    };
+    format!("discovery:{provider}:{origin}:{query}")
 }
 
 fn ddg_block_entry(layout: &StateLayout) -> std::path::PathBuf {
@@ -1255,6 +1401,11 @@ fn build_discovery_responses(
         response_for_cache,
         response,
     }
+}
+
+fn build_mswarm_search_url(base: &Url) -> Result<Url> {
+    base.join("/v1/swarm/web/search")
+        .context("build mswarm web search url")
 }
 
 fn extract_links(html: &str) -> Vec<String> {
@@ -1410,6 +1561,55 @@ fn extract_json_links(value: &Value) -> Vec<String> {
                 })
         })
         .collect()
+}
+
+fn normalized_provider_name(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" | "duckduckgo" | "duckduckgo_lite" | "ddg" => DDG_LITE_PROVIDER.to_string(),
+        "searxng" | "searxng_json" => SEARXNG_PROVIDER.to_string(),
+        "brave" => BRAVE_PROVIDER.to_string(),
+        "google" | "google_cse" => GOOGLE_CSE_PROVIDER.to_string(),
+        "bing" => BING_PROVIDER.to_string(),
+        "tavily" => TAVILY_PROVIDER.to_string(),
+        "exa" => EXA_PROVIDER.to_string(),
+        "mswarm" => MSWARM_PROVIDER.to_string(),
+        _ => DDG_LITE_PROVIDER.to_string(),
+    }
+}
+
+fn provider_prefers_api(provider: &str) -> bool {
+    matches!(
+        provider,
+        BRAVE_PROVIDER
+            | GOOGLE_CSE_PROVIDER
+            | BING_PROVIDER
+            | TAVILY_PROVIDER
+            | EXA_PROVIDER
+            | MSWARM_PROVIDER
+    )
+}
+
+fn fallback_provider_name(provider: &FallbackProvider) -> &'static str {
+    match provider {
+        FallbackProvider::DdgLite(_) => DDG_LITE_PROVIDER,
+        FallbackProvider::SearxngJson(_) => SEARXNG_PROVIDER,
+        FallbackProvider::Brave { .. } => BRAVE_PROVIDER,
+        FallbackProvider::GoogleCse { .. } => GOOGLE_CSE_PROVIDER,
+        FallbackProvider::Bing { .. } => BING_PROVIDER,
+        FallbackProvider::Tavily { .. } => TAVILY_PROVIDER,
+        FallbackProvider::Exa { .. } => EXA_PROVIDER,
+        FallbackProvider::Mswarm { .. } => MSWARM_PROVIDER,
+    }
+}
+
+fn prioritize_fallback_provider(providers: &mut Vec<FallbackProvider>, preferred_provider: &str) {
+    if let Some(index) = providers
+        .iter()
+        .position(|provider| fallback_provider_name(provider) == preferred_provider)
+    {
+        let provider = providers.remove(index);
+        providers.insert(0, provider);
+    }
 }
 
 fn is_ddg_anomaly_page(html: &str) -> bool {

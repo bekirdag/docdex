@@ -313,6 +313,7 @@ Setup overrides:
 - `DOCDEX_OLLAMA_MODEL_PROMPT=1|0`: force model prompts on/off.
 - `DOCDEX_OLLAMA_MODEL_ASSUME_Y=1`: auto-accept recommended model installs.
 - `DOCDEX_BROWSER_INSTALL=chromium|skip`: auto-accept or skip the Chromium download prompt.
+- The wizard Web APIs section can also store an `mswarm` API key/base URL under `~/.docdex/config.toml` and optionally switch Docdex web discovery to `mswarm`.
 
 The setup wizard can download Chromium into `~/.docdex/state/bin/chromium/`.
 
@@ -331,6 +332,15 @@ Change the default chat model later:
   - `[llm].base_url` (Ollama base URL)
   - `[llm].provider` (keep `ollama` for built-in fallback and embeddings)
 Restart the daemon after changing config so it reloads the new defaults.
+
+Configure mswarm web search later:
+```bash
+docdexd mswarm configure \
+  --api-key "<mswarm-api-key>" \
+  --base-url "https://api.mswarm.org/" \
+  --enable-web-search
+```
+This stores the key in `~/.docdex/config.toml` under `[integrations.mswarm]` and sets `[web].discovery_provider = "mswarm"` when `--enable-web-search` is used.
 
 Main LLM config example:
 ```toml
@@ -554,10 +564,17 @@ startup_timeout_sec = 300
 ### Web discovery (Tier 2)
 - `DOCDEX_WEB_ENABLED=1` to enable (daemon sets this by default unless overridden).
 - `DOCDEX_OFFLINE=1` to force offline.
+- `DOCDEX_WEB_DISCOVERY_PROVIDER` or `[web].discovery_provider` to choose the discovery backend (`duckduckgo_lite` by default, `mswarm` when configured).
 - `DOCDEX_WEB_*` knobs for thresholds, timeouts, cache TTL, and backoff.
 - `DOCDEX_WEB_BROWSER` / `DOCDEX_CHROME_PATH` to set a Chromium binary.
 - `web.scraper.engine` in `config.toml` is `chromium` (only supported engine).
 - `DOCDEX_BROWSER_AUTO_INSTALL=0` to disable Chromium auto-install.
+- `docdexd mswarm configure` manages `~/.docdex/config.toml` entries for `[integrations.mswarm].api_key`, `[integrations.mswarm].base_url`, and the optional provider switch.
+- mswarm web search settings can also be set manually:
+  - `[integrations.mswarm].base_url`
+  - `[integrations.mswarm].api_key`
+  - `DOCDEX_MSWARM_BASE_URL`
+  - `DOCDEX_MSWARM_API_KEY`
 - Optional API providers (set in `config.toml` under `[web.providers]` or via env):
   - Brave: `DOCDEX_BRAVE_API_KEY`
   - Google CSE: `DOCDEX_GOOGLE_CSE_API_KEY` + `DOCDEX_GOOGLE_CSE_CX`

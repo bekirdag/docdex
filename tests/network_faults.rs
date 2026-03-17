@@ -139,9 +139,12 @@ fn can_bind_localhost() -> Result<bool, std::io::Error> {
 fn build_config(base_url: Url, request_timeout: Duration) -> WebConfig {
     WebConfig {
         enabled: true,
+        discovery_provider: "duckduckgo_lite".to_string(),
         user_agent: "docdexd-test".to_string(),
         ddg_base_url: base_url,
         ddg_proxy_base_url: None,
+        mswarm_base_url: Url::parse("http://127.0.0.1:8080").expect("valid url"),
+        mswarm_api_key: None,
         request_timeout,
         max_results: 5,
         policy: SpacingBackoffPolicy {

@@ -84,6 +84,21 @@ fn ensure_daemon_skips_setup() {
 }
 
 #[test]
+fn ensure_daemon_skips_mswarm_config() {
+    let cmd = Command::Mswarm {
+        command: super::MswarmCommand::Configure {
+            api_key: Some("test-key".to_string()),
+            base_url: None,
+            enable_web_search: true,
+            disable_web_search: false,
+            json: true,
+        },
+    };
+    assert!(!should_ensure_daemon(&cmd));
+    assert!(repo_hint_for_command(&cmd).is_none());
+}
+
+#[test]
 fn ensure_daemon_for_index_and_hint() {
     let temp = TempDir::new().expect("temp dir");
     let repo = repo_args(temp.path().to_path_buf());
@@ -231,5 +246,39 @@ fn parse_delegation_agents_command() {
             _ => panic!("expected delegation agents command"),
         },
         _ => panic!("expected delegation command"),
+    }
+}
+
+#[test]
+fn parse_mswarm_configure_command() {
+    let cli = Cli::try_parse_from([
+        "docdexd",
+        "mswarm",
+        "configure",
+        "--api-key",
+        "test-key",
+        "--base-url",
+        "https://api.mswarm.org/",
+        "--enable-web-search",
+        "--json",
+    ])
+    .expect("parse");
+    match cli.command {
+        Command::Mswarm { command } => match command {
+            super::MswarmCommand::Configure {
+                api_key,
+                base_url,
+                enable_web_search,
+                disable_web_search,
+                json,
+            } => {
+                assert_eq!(api_key.as_deref(), Some("test-key"));
+                assert_eq!(base_url.as_deref(), Some("https://api.mswarm.org/"));
+                assert!(enable_web_search);
+                assert!(!disable_web_search);
+                assert!(json);
+            }
+        },
+        _ => panic!("expected mswarm command"),
     }
 }

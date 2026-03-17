@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use crate::cli::{daemon_spawn, SetupArgs};
 use crate::setup::state::StepSnapshot;
 
-mod config;
+pub(crate) mod config;
 mod hardware;
 mod model;
 pub(crate) mod ollama;

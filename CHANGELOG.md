@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.56
+- Clarify agent-facing local delegation docs for code-oriented tasks versus `general_question`.
+
 ## 0.2.55
 - Raise Docdex-managed Codex MCP `tool_timeout_sec` and `startup_timeout_sec` defaults to 300 seconds in both `docdexd mcp add` and the npm installer.
 - Raise the Codex/OpenAI CLI local delegation timeout floor to 300 seconds and update the Codex MCP examples accordingly.

@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.56
+- Clarify packaged agent-facing local delegation docs for code-oriented tasks versus `general_question`.
+
 ## 0.2.55
 - Raise installer-managed Codex MCP `tool_timeout_sec` and `startup_timeout_sec` defaults to 300 seconds.
 - Update packaged Codex MCP examples to show the 300-second timeout settings.

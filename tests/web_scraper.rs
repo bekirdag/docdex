@@ -42,9 +42,12 @@ fn touch_file(path: &Path) {
 fn base_config(chrome_binary_path: Option<PathBuf>, headless: bool) -> WebConfig {
     WebConfig {
         enabled: true,
+        discovery_provider: "duckduckgo_lite".to_string(),
         user_agent: "docdex-test-agent".to_string(),
         ddg_base_url: Url::parse("https://html.duckduckgo.com/html/").expect("valid url"),
         ddg_proxy_base_url: None,
+        mswarm_base_url: Url::parse("http://127.0.0.1:8080").expect("valid url"),
+        mswarm_api_key: None,
         request_timeout: Duration::from_millis(1000),
         max_results: 5,
         policy: SpacingBackoffPolicy {

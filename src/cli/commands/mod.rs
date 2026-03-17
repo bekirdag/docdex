@@ -12,6 +12,7 @@ pub mod llm;
 pub mod mcoda_eval;
 pub mod mcp_add;
 pub mod memory;
+pub mod mswarm;
 pub mod open;
 pub mod profile;
 pub mod query;
@@ -36,6 +37,7 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
         super::Command::Daemon { args } => serve::run_daemon(args).await,
         super::Command::HelpAll => help_all::run(),
         super::Command::Browser { command } => browser::run(command).await,
+        super::Command::Mswarm { command } => mswarm::run(command).await,
         super::Command::SelfCheck {
             repo,
             terms,

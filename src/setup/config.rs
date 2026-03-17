@@ -67,6 +67,12 @@ pub struct WebProviderKeysUpdate {
     pub bing_api_key: Option<String>,
 }
 
+pub struct MswarmConfigUpdate {
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+    pub use_for_web_search: Option<bool>,
+}
+
 pub fn set_web_provider_keys(update: WebProviderKeysUpdate) -> Result<bool> {
     std::env::set_var("DOCDEX_BROWSER_AUTO_INSTALL", "0");
     let config_path = config::default_config_path()?;
@@ -98,6 +104,45 @@ pub fn set_web_provider_keys(update: WebProviderKeysUpdate) -> Result<bool> {
         let normalized = normalize_key(value);
         if config_data.web.providers.bing_api_key != normalized {
             config_data.web.providers.bing_api_key = normalized;
+            changed = true;
+        }
+    }
+
+    if changed {
+        config::write_config(&config_path, &config_data).context("write config")?;
+    }
+    Ok(changed)
+}
+
+pub fn set_mswarm_config(update: MswarmConfigUpdate) -> Result<bool> {
+    std::env::set_var("DOCDEX_BROWSER_AUTO_INSTALL", "0");
+    let config_path = config::default_config_path()?;
+    let mut config_data = load_config_no_browser(&config_path)?;
+    let mut changed = false;
+
+    if let Some(value) = update.api_key {
+        let normalized = normalize_key(value);
+        if config_data.integrations.mswarm.api_key != normalized {
+            config_data.integrations.mswarm.api_key = normalized;
+            changed = true;
+        }
+    }
+    if let Some(value) = update.base_url {
+        let normalized = normalize_key(value);
+        let next_base_url = normalized.unwrap_or_else(config::default_mswarm_base_url);
+        if config_data.integrations.mswarm.base_url != next_base_url {
+            config_data.integrations.mswarm.base_url = next_base_url;
+            changed = true;
+        }
+    }
+    if let Some(use_for_web_search) = update.use_for_web_search {
+        let target_provider = if use_for_web_search {
+            "mswarm".to_string()
+        } else {
+            config::default_discovery_provider()
+        };
+        if config_data.web.discovery_provider != target_provider {
+            config_data.web.discovery_provider = target_provider;
             changed = true;
         }
     }
@@ -207,6 +252,28 @@ mod tests {
         assert!(contents.contains("google-key"));
         assert!(contents.contains("cx-id"));
         assert!(contents.contains("bing-key"));
+
+        std::env::remove_var("DOCDEX_CONFIG_PATH");
+        Ok(())
+    }
+
+    #[test]
+    fn set_mswarm_config_updates_config() -> Result<()> {
+        let _guard = ENV_LOCK.lock();
+        let dir = TempDir::new()?;
+        let path = dir.path().join("config.toml");
+        std::env::set_var("DOCDEX_CONFIG_PATH", &path);
+
+        let changed = set_mswarm_config(MswarmConfigUpdate {
+            api_key: Some("mswarm-key".to_string()),
+            base_url: Some("https://api.mswarm.org/".to_string()),
+            use_for_web_search: Some(true),
+        })?;
+        assert!(changed);
+        let contents = std::fs::read_to_string(&path)?;
+        assert!(contents.contains("mswarm-key"));
+        assert!(contents.contains("https://api.mswarm.org/"));
+        assert!(contents.contains("discovery_provider = \"mswarm\""));
 
         std::env::remove_var("DOCDEX_CONFIG_PATH");
         Ok(())

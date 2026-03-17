@@ -12,9 +12,12 @@ use crate::state_layout::StateLayout;
 #[derive(Clone, Debug)]
 pub struct WebConfig {
     pub enabled: bool,
+    pub discovery_provider: String,
     pub user_agent: String,
     pub ddg_base_url: Url,
     pub ddg_proxy_base_url: Option<Url>,
+    pub mswarm_base_url: Url,
+    pub mswarm_api_key: Option<String>,
     pub request_timeout: Duration,
     pub max_results: usize,
     pub policy: SpacingBackoffPolicy,
@@ -37,6 +40,11 @@ pub struct WebConfig {
 impl WebConfig {
     pub fn from_env() -> Self {
         let enabled = env_bool("DOCDEX_WEB_ENABLED", false);
+        let discovery_provider = env::var("DOCDEX_WEB_DISCOVERY_PROVIDER")
+            .ok()
+            .and_then(|value| normalize_nonempty(value))
+            .or_else(config_discovery_provider)
+            .unwrap_or_else(config::default_discovery_provider);
         let user_agent = env::var("DOCDEX_WEB_USER_AGENT")
             .ok()
             .and_then(|value| normalize_nonempty(value))
@@ -55,6 +63,15 @@ impl WebConfig {
             .and_then(|value| normalize_nonempty(value))
             .or_else(config_ddg_proxy_base_url)
             .and_then(|value| Url::parse(&value).ok());
+        let mswarm_base_url = env::var("DOCDEX_MSWARM_BASE_URL")
+            .ok()
+            .and_then(|value| normalize_nonempty(value))
+            .or_else(config_mswarm_base_url)
+            .unwrap_or_else(config::default_mswarm_base_url);
+        let mswarm_base_url = Url::parse(&mswarm_base_url).unwrap_or_else(|_| {
+            Url::parse(&config::default_mswarm_base_url()).expect("default mswarm url is valid")
+        });
+        let mswarm_api_key = env_nonempty("DOCDEX_MSWARM_API_KEY").or_else(config_mswarm_api_key);
         let max_results = env_u64("DOCDEX_WEB_MAX_RESULTS", 20).max(1) as usize;
         let request_timeout_ms = env_u64("DOCDEX_WEB_REQUEST_TIMEOUT_MS", 10_000).max(1);
         let min_spacing_ms = env::var("DOCDEX_WEB_MIN_SPACING_MS")
@@ -112,9 +129,12 @@ impl WebConfig {
 
         Self {
             enabled,
+            discovery_provider,
             user_agent,
             ddg_base_url,
             ddg_proxy_base_url,
+            mswarm_base_url,
+            mswarm_api_key,
             request_timeout: Duration::from_millis(request_timeout_ms),
             max_results,
             policy: SpacingBackoffPolicy {
@@ -192,6 +212,15 @@ fn config_user_agent() -> Option<String> {
     normalize_nonempty(config.web.user_agent)
 }
 
+fn config_discovery_provider() -> Option<String> {
+    let path = config::default_config_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let config = config::load_config_from_path(&path).ok()?;
+    normalize_nonempty(config.web.discovery_provider)
+}
+
 fn config_ddg_base_url() -> Option<String> {
     let path = config::default_config_path().ok()?;
     if !path.exists() {
@@ -259,6 +288,28 @@ fn config_bing_api_key() -> Option<String> {
         .web
         .providers
         .bing_api_key
+        .and_then(normalize_nonempty)
+}
+
+fn config_mswarm_base_url() -> Option<String> {
+    let path = config::default_config_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let config = config::load_config_from_path(&path).ok()?;
+    normalize_nonempty(config.integrations.mswarm.base_url)
+}
+
+fn config_mswarm_api_key() -> Option<String> {
+    let path = config::default_config_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let config = config::load_config_from_path(&path).ok()?;
+    config
+        .integrations
+        .mswarm
+        .api_key
         .and_then(normalize_nonempty)
 }
 
@@ -494,6 +545,9 @@ mod tests {
             "DOCDEX_CONFIG_PATH",
             "DOCDEX_BROWSER_AUTO_INSTALL",
             "DOCDEX_BROWSER_USER_DATA_DIR",
+            "DOCDEX_WEB_DISCOVERY_PROVIDER",
+            "DOCDEX_MSWARM_BASE_URL",
+            "DOCDEX_MSWARM_API_KEY",
         ]);
         env.set("DOCDEX_CONFIG_PATH", config_path.to_string_lossy().as_ref());
         env.set("DOCDEX_BROWSER_AUTO_INSTALL", "0");
@@ -502,6 +556,41 @@ mod tests {
         let web_config = WebConfig::from_env();
         let expected = state_dir.join("browser_profiles").join("chrome");
         assert_eq!(web_config.scraper_user_data_dir, Some(expected));
+        Ok(())
+    }
+
+    #[test]
+    fn web_config_reads_mswarm_settings_from_config() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = TempDir::new()?;
+        let config_path = temp.path().join("config.toml");
+
+        let mut config = config::AppConfig::default();
+        config.web.discovery_provider = "mswarm".to_string();
+        config.integrations.mswarm.base_url = "https://api.mswarm.org/".to_string();
+        config.integrations.mswarm.api_key = Some("mswarm-key".to_string());
+        config.apply_defaults()?;
+        config::write_config(&config_path, &config)?;
+
+        let env = EnvSnapshot::new(&[
+            "DOCDEX_CONFIG_PATH",
+            "DOCDEX_BROWSER_AUTO_INSTALL",
+            "DOCDEX_WEB_DISCOVERY_PROVIDER",
+            "DOCDEX_MSWARM_BASE_URL",
+            "DOCDEX_MSWARM_API_KEY",
+        ]);
+        env.set("DOCDEX_CONFIG_PATH", config_path.to_string_lossy().as_ref());
+        env.set("DOCDEX_BROWSER_AUTO_INSTALL", "0");
+        env.clear("DOCDEX_WEB_DISCOVERY_PROVIDER");
+        env.clear("DOCDEX_MSWARM_BASE_URL");
+        env.clear("DOCDEX_MSWARM_API_KEY");
+
+        let web_config = WebConfig::from_env();
+        assert_eq!(web_config.discovery_provider, "mswarm");
+        assert_eq!(
+            web_config.mswarm_base_url,
+            Url::parse("https://api.mswarm.org/").expect("valid url")
+        );
+        assert_eq!(web_config.mswarm_api_key.as_deref(), Some("mswarm-key"));
         Ok(())
     }
 }

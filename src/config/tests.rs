@@ -55,6 +55,7 @@ fn apply_defaults_fills_core_fields() -> Result<(), Box<dyn std::error::Error>> 
         search: SearchConfig::default(),
         code_intelligence: CodeIntelligenceConfig::default(),
         web: WebConfigSection::default(),
+        integrations: IntegrationsConfig::default(),
         memory: MemoryConfig::default(),
         features: FeatureFlagsConfig::default(),
         server: ServerConfig::default(),
@@ -67,6 +68,7 @@ fn apply_defaults_fills_core_fields() -> Result<(), Box<dyn std::error::Error>> 
     assert!(!config.core.log_level.trim().is_empty());
     assert_eq!(config.memory.backend, DEFAULT_MEMORY_BACKEND);
     assert!(config.llm.base_url.starts_with("http"));
+    assert_eq!(config.integrations.mswarm.base_url, DEFAULT_MSWARM_BASE_URL);
     Ok(())
 }
 
@@ -316,6 +318,29 @@ fn load_config_applies_main_llm_agent_env_override() -> Result<(), Box<dyn std::
     let _agent = EnvGuard::set("DOCDEX_LLM_AGENT", "mcoda-main");
     let config = load_config_from_path(&config_path)?;
     assert_eq!(config.llm.agent_id, "mcoda-main");
+    Ok(())
+}
+
+#[test]
+fn load_config_applies_mswarm_env_overrides() -> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let config_path = temp.path().join("config.toml");
+    let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
+    let _provider = EnvGuard::set("DOCDEX_WEB_DISCOVERY_PROVIDER", "mswarm");
+    let _base_url = EnvGuard::set("DOCDEX_MSWARM_BASE_URL", "https://api.mswarm.org/");
+    let _api_key = EnvGuard::set("DOCDEX_MSWARM_API_KEY", "test-mswarm-key");
+
+    let config = load_config_from_path(&config_path)?;
+
+    assert_eq!(config.web.discovery_provider, "mswarm");
+    assert_eq!(
+        config.integrations.mswarm.base_url,
+        "https://api.mswarm.org/"
+    );
+    assert_eq!(
+        config.integrations.mswarm.api_key.as_deref(),
+        Some("test-mswarm-key")
+    );
     Ok(())
 }
 

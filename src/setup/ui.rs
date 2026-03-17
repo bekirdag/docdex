@@ -97,6 +97,7 @@ pub trait WizardServices {
     fn install_chromium(&self) -> Result<browser_install::BrowserInstallResult>;
     fn set_browser_path(&self, path: &Path, kind: &str) -> Result<()>;
     fn set_web_provider_keys(&self, update: config::WebProviderKeysUpdate) -> Result<bool>;
+    fn set_mswarm_config(&self, update: config::MswarmConfigUpdate) -> Result<bool>;
 }
 
 pub struct RealServices;
@@ -151,6 +152,10 @@ impl WizardServices for RealServices {
 
     fn set_web_provider_keys(&self, update: config::WebProviderKeysUpdate) -> Result<bool> {
         config::set_web_provider_keys(update)
+    }
+
+    fn set_mswarm_config(&self, update: config::MswarmConfigUpdate) -> Result<bool> {
+        config::set_mswarm_config(update)
     }
 }
 
@@ -418,7 +423,7 @@ fn build_menu_details<S: WizardServices>(
     let config = load_summary_config();
     let provider_status = resolve_web_provider_status(config.as_ref());
     let provider_count = provider_status.configured_count();
-    let providers_detail = Some(format!("{provider_count}/3 configured"));
+    let providers_detail = Some(format!("{provider_count}/4 configured"));
     let providers_status = if provider_count > 0 {
         StepStatus::Done
     } else {
@@ -539,6 +544,19 @@ fn build_menu_details<S: WizardServices>(
         web_body,
         "- Bing Web Search: {}",
         format_key_status(&provider_status.bing)
+    );
+    let mswarm_base_url = current_key_display(&provider_status.mswarm_base_url, false)
+        .unwrap_or_else(app_config::default_mswarm_base_url);
+    let _ = writeln!(
+        web_body,
+        "- mswarm: key {}, base URL {}, primary {}",
+        format_key_status(&provider_status.mswarm_api_key),
+        mswarm_base_url,
+        if provider_status.mswarm_selected_for_web {
+            "yes"
+        } else {
+            "no"
+        }
     );
     web_body.push_str("\nSelect this section to add or update API keys.");
 
@@ -1028,12 +1046,14 @@ fn configure_web_providers_section<I: WizardInput, S: WizardServices>(
     state.set_current(StepKey::WebProviders);
     let config = load_summary_config();
     let current = resolve_web_provider_status(config.as_ref());
-    let current_detail = format!("{}/3 configured", current.configured_count());
+    let current_detail = format!("{}/4 configured", current.configured_count());
 
     let brave_current = current_key_display(&current.brave, true);
     let google_api_current = current_key_display(&current.google_cse_key, true);
     let google_cse_current = current_key_display(&current.google_cse_cx, false);
     let bing_current = current_key_display(&current.bing, true);
+    let mswarm_key_current = current_key_display(&current.mswarm_api_key, true);
+    let mswarm_base_url_current = current_key_display(&current.mswarm_base_url, false);
     let brave_key = input.prompt_text(
         state,
         "Brave Search API key (X-Subscription-Token)",
@@ -1058,11 +1078,31 @@ fn configure_web_providers_section<I: WizardInput, S: WizardServices>(
         bing_current.as_deref(),
         true,
     )?;
+    let mswarm_api_key = input.prompt_text(
+        state,
+        "mswarm API key (x-api-key)",
+        mswarm_key_current.as_deref(),
+        true,
+    )?;
+    let mswarm_base_url = input.prompt_text(
+        state,
+        "mswarm base URL",
+        mswarm_base_url_current.as_deref(),
+        false,
+    )?;
+    let use_mswarm_for_web = input.confirm(
+        state,
+        "Use mswarm as the primary Docdex web search provider?",
+        current.mswarm_selected_for_web,
+    )?;
 
     if brave_key.is_none()
         && google_api_key.is_none()
         && google_cse_cx.is_none()
         && bing_key.is_none()
+        && mswarm_api_key.is_none()
+        && mswarm_base_url.is_none()
+        && use_mswarm_for_web == current.mswarm_selected_for_web
     {
         let status = if current.configured_count() > 0 {
             StepStatus::Done
@@ -1079,8 +1119,13 @@ fn configure_web_providers_section<I: WizardInput, S: WizardServices>(
         google_cse_cx: google_cse_cx.clone(),
         bing_api_key: bing_key.clone(),
     })?;
+    services.set_mswarm_config(config::MswarmConfigUpdate {
+        api_key: mswarm_api_key.clone(),
+        base_url: mswarm_base_url.clone(),
+        use_for_web_search: Some(use_mswarm_for_web),
+    })?;
     let refreshed = resolve_web_provider_status(load_summary_config().as_ref());
-    let configured_detail = format!("{}/3 configured", refreshed.configured_count());
+    let configured_detail = format!("{}/4 configured", refreshed.configured_count());
     let status = if refreshed.configured_count() > 0 {
         StepStatus::Done
     } else {
@@ -1547,6 +1592,9 @@ struct WebProviderStatus {
     google_cse_key: ProviderKeyStatus,
     google_cse_cx: ProviderKeyStatus,
     bing: ProviderKeyStatus,
+    mswarm_api_key: ProviderKeyStatus,
+    mswarm_base_url: ProviderKeyStatus,
+    mswarm_selected_for_web: bool,
 }
 
 impl WebProviderStatus {
@@ -1559,6 +1607,9 @@ impl WebProviderStatus {
             count += 1;
         }
         if self.bing.configured {
+            count += 1;
+        }
+        if self.mswarm_api_key.configured {
             count += 1;
         }
         count
@@ -1579,7 +1630,27 @@ fn resolve_web_provider_status(config: Option<&app_config::AppConfig>) -> WebPro
         bing: resolve_key_status(config, "DOCDEX_BING_API_KEY", |cfg| {
             cfg.web.providers.bing_api_key.as_ref()
         }),
+        mswarm_api_key: resolve_key_status(config, "DOCDEX_MSWARM_API_KEY", |cfg| {
+            cfg.integrations.mswarm.api_key.as_ref()
+        }),
+        mswarm_base_url: resolve_key_status(config, "DOCDEX_MSWARM_BASE_URL", |cfg| {
+            Some(&cfg.integrations.mswarm.base_url)
+        }),
+        mswarm_selected_for_web: resolve_discovery_provider(config).eq_ignore_ascii_case("mswarm"),
     }
+}
+
+fn resolve_discovery_provider(config: Option<&app_config::AppConfig>) -> String {
+    env::var("DOCDEX_WEB_DISCOVERY_PROVIDER")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            config
+                .map(|cfg| cfg.web.discovery_provider.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or_else(app_config::default_discovery_provider)
 }
 
 fn resolve_key_status(
@@ -2436,6 +2507,10 @@ mod tests {
         }
 
         fn set_web_provider_keys(&self, _update: config::WebProviderKeysUpdate) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn set_mswarm_config(&self, _update: config::MswarmConfigUpdate) -> Result<bool> {
             Ok(false)
         }
     }

@@ -42,7 +42,8 @@
     "mistral-"
   ],
   "agent_ids": [
-    "claude-code"
+    "claude-code",
+    "codex"
   ],
   "agent_slugs": [],
   "adapter_types": [

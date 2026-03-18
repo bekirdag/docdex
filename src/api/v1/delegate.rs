@@ -11,12 +11,13 @@ use crate::error::{
 };
 use crate::llm::delegation::{
     allowlist_allows, build_local_target_candidates_with_config, build_primary_target_candidates,
-    compute_cost_micros, compute_delegation_savings, local_selection_policy_requires_fresh_library,
-    mode_from_config, parse_local_target_override, resolve_local_cost_per_million,
-    resolve_primary_cost_per_million, resolve_task_scoped_delegation_config,
-    run_delegation_flow_with_failure_history, update_cached_local_selection_from_completion,
-    DelegationEnforcementError, DelegationFailureHistoryContext, DelegationMode,
-    DelegationPricingContext, LocalTarget, TaskType,
+    compute_cost_micros, compute_delegation_savings, filter_automatic_local_targets_by_cost,
+    local_selection_policy_requires_fresh_library, mode_from_config, parse_local_target_override,
+    resolve_explicit_target, resolve_local_cost_per_million, resolve_primary_cost_per_million,
+    resolve_task_scoped_delegation_config, run_delegation_flow_with_failure_history,
+    update_cached_local_selection_from_completion, DelegationEnforcementError,
+    DelegationFailureHistoryContext, DelegationMode, DelegationPricingContext, LocalTarget,
+    TaskType,
 };
 use crate::llm::local_library::resolve_local_ollama_base_url;
 use crate::llm::local_library::{
@@ -25,6 +26,7 @@ use crate::llm::local_library::{
     refresh_local_library_with_web,
 };
 use crate::memory::repo_state_root_from_state_dir;
+use crate::metrics::DelegationTelemetrySnapshot;
 use crate::orchestrator::web::{run_web_research, WebResearchResponse};
 use crate::orchestrator::WebGateConfig;
 use crate::search::resolve_repo_context;
@@ -115,17 +117,20 @@ pub async fn delegate_handler(
     let library_result = if web_gate.enabled {
         let indexer = state.indexer.clone();
         let libs_indexer = state.libs_indexer.clone();
+        let global_state_dir = state.global_state_dir.clone();
         let request_id = Uuid::new_v4().to_string();
         let mut fetcher = move |query: String| {
             let indexer = indexer.clone();
             let libs_indexer = libs_indexer.clone();
             let web_gate = web_gate.clone();
             let request_id = request_id.clone();
+            let global_state_dir = global_state_dir.clone();
             async move {
                 let response = run_web_research(
                     &request_id,
                     &indexer,
                     libs_indexer.as_deref(),
+                    global_state_dir.as_deref(),
                     &query,
                     5,
                     Some(3),
@@ -227,14 +232,7 @@ pub async fn delegate_handler(
         agent_override.and_then(|value| parse_local_target_override(value, library.as_ref()));
     let mut local_targets: Vec<LocalTarget> = override_target.clone().into_iter().collect();
     if local_targets.is_empty() {
-        if !effective_llm_config
-            .delegation
-            .local_agent_id
-            .trim()
-            .is_empty()
-        {
-            local_targets.clear();
-        } else if let Some(library) = library.as_ref() {
+        if let Some(library) = library.as_ref() {
             let mut library = library.clone();
             local_targets = build_local_target_candidates_with_config(
                 state.global_state_dir.as_deref(),
@@ -245,22 +243,27 @@ pub async fn delegate_handler(
         }
     }
     if local_targets.is_empty() {
+        if let Some(target) = resolve_explicit_target(
+            &effective_llm_config.delegation.local_agent_id,
+            library.as_ref(),
+        ) {
+            local_targets.push(target);
+        }
+    }
+    if local_targets.is_empty() {
+        if let Some(target) = resolve_explicit_target(
+            &effective_llm_config.delegation.cloud_agent_id,
+            library.as_ref(),
+        ) {
+            local_targets.push(target);
+        }
+    }
+    if local_targets.is_empty() {
         let model = effective_llm_config.default_model.trim();
         if !model.is_empty() && resolve_local_ollama_base_url(&effective_llm_config).is_some() {
             local_targets.push(LocalTarget::OllamaModel(model.to_string()));
         }
     }
-    let primary_targets = library
-        .as_ref()
-        .map(|library| {
-            build_primary_target_candidates(
-                &effective_llm_config,
-                task_type,
-                library,
-                local_targets.first(),
-            )
-        })
-        .unwrap_or_default();
     let local_agent_override = match (&override_target, agent_override) {
         (Some(LocalTarget::OllamaModel(model)), _) => Some(format!("model:{model}")),
         (Some(LocalTarget::McodaAgent(_)), Some(value)) => Some(value.to_string()),
@@ -300,16 +303,50 @@ pub async fn delegate_handler(
         caller_agent_id,
         caller_model,
         primary_cost_per_million: payload.primary_cost_per_million,
+        fallback_primary_cost_per_million: repo
+            .delegation_metrics
+            .snapshot()
+            .effective_avoided_primary_usd_per_million_tokens()
+            .or_else(|| {
+                DelegationTelemetrySnapshot::from_metrics(state.metrics.as_ref())
+                    .effective_avoided_primary_usd_per_million_tokens()
+            }),
     };
     let local_override = local_agent_override
         .as_deref()
         .map(|value| !value.trim().is_empty())
-        .unwrap_or(false)
-        || !effective_llm_config
-            .delegation
-            .local_agent_id
-            .trim()
-            .is_empty();
+        .unwrap_or(false);
+    let mut primary_targets = library
+        .as_ref()
+        .map(|library| {
+            build_primary_target_candidates(
+                &effective_llm_config,
+                task_type,
+                library,
+                local_targets.first(),
+            )
+        })
+        .unwrap_or_default();
+    if !local_override {
+        local_targets = filter_automatic_local_targets_by_cost(
+            &effective_llm_config,
+            Some(&pricing_context),
+            &primary_targets,
+            &local_targets,
+            library.as_ref(),
+        );
+        primary_targets = library
+            .as_ref()
+            .map(|library| {
+                build_primary_target_candidates(
+                    &effective_llm_config,
+                    task_type,
+                    library,
+                    local_targets.first(),
+                )
+            })
+            .unwrap_or_default();
+    }
     let started_at = Instant::now();
     state.metrics.inc_delegate_request();
     repo.delegation_metrics.inc_delegate_request();

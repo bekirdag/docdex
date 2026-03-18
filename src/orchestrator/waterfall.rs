@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
 use serde_json::json;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::task;
@@ -44,6 +44,7 @@ use std::env;
 pub struct WaterfallRequest<'a> {
     pub request_id: &'a str,
     pub dag_session_id: Option<&'a str>,
+    pub global_state_dir: Option<PathBuf>,
     pub query: &'a str,
     pub limit: usize,
     pub diff: Option<crate::diff::DiffRequest>,
@@ -272,6 +273,7 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
             let async_request = WaterfallRequest {
                 request_id: request_id_ref,
                 dag_session_id: Some(dag_session_id_ref),
+                global_state_dir: request.global_state_dir.clone(),
                 query: &query,
                 limit,
                 diff: None,
@@ -650,6 +652,7 @@ async fn run_tier2(
                 request.request_id,
                 request.indexer.as_ref(),
                 request.libs_indexer.as_deref(),
+                request.global_state_dir.as_deref(),
                 request.query,
                 request.limit,
                 request.web_limit,

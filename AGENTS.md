@@ -101,8 +101,9 @@ Use local delegation for low-complexity code-writing tasks and lightweight gener
 | docdex_local_completion | Delegate small tasks to a local model with strict output formats. |
 | HTTP /v1/delegate | HTTP endpoint for delegated completions with structured responses. |
 
-Required fields: `task_type`, `instruction`, `context`. Optional: `max_tokens`, `timeout_ms`, `mode` (`draft_only` or `draft_then_refine`), `agent` (local agent id/slug or `model:<name>` to force an Ollama model; raw model names from `docdexd delegation agents` are also accepted). Use `general_question` for lightweight Q&A and the existing code-oriented task types for code writing/editing. Lane-specific defaults come from `[llm.delegation.code]` for code-oriented task types and `[llm.delegation.general]` for `general_question`; flat `local_agent_id` / `primary_agent_id` remain compatibility fallbacks when lane-specific values are unset. This allows a coder-focused local agent for code work and a more general local agent for Q&A.
+Required fields: `task_type`, `instruction`, `context`. Optional: `max_tokens`, `timeout_ms`, `mode` (`draft_only` or `draft_then_refine`), `agent` (local agent id/slug or `model:<name>` to force an Ollama model; raw model names from `docdexd delegation agents` are also accepted). Use `general_question` for lightweight Q&A and the existing code-oriented task types for code writing/editing. Lane-specific defaults come from `[llm.delegation.code]` for code-oriented task types and `[llm.delegation.general]` for `general_question`; flat `local_agent_id` / `cloud_agent_id` / `primary_agent_id` remain compatibility fallbacks when lane-specific values are unset. This allows a coder-focused local agent for code work, a more general local agent for Q&A, and optional cloud fallbacks for each lane.
 Expensive model library: `docs/expensive_models.json` (match by `agent_id`, `agent_slug`, `model`, or adapter type; case-insensitive).
+If `[llm.delegation.cloud].enabled = true` and `[integrations.mswarm].api_key` is set, Docdex discovers managed cloud fallbacks with `mcoda cloud agent list --json` and materializes them as `mswarm-cloud-<remote-slug>` mcoda agents. Use `[llm.delegation.code].cloud_agent_id` / `[llm.delegation.general].cloud_agent_id` to pin the preferred cloud fallback for each lane.
 To choose a local target, run `docdexd delegation agents` (or `--json`) and prefer:
 - `code_writer` for scaffolding/boilerplate/docstrings.
 - `code_reviewer` for tests/format/refactors.
@@ -111,14 +112,16 @@ For mcoda agents, also consider:
 - `max_complexity`: do not assign tasks above this ceiling.
 - `rating`: prefer higher-rated agents for reliability.
 - `cost_per_million`: USD per 1M tokens; prefer lower cost when ratings/complexity match.
-- Automatic local target selection must exclude mcoda agents that are paid (`cost_per_million > 0`) or otherwise matched by `docs/expensive_models.json`, unless the user explicitly overrides the target.
+- Automatic target selection prefers healthy local Ollama models and local mcoda agents first. Managed `mswarm-cloud-*` agents are only considered after local candidates, or when the user/config explicitly prefers a cloud fallback.
+- Automatic target selection excludes paid mcoda candidates unless they are cheaper than the effective caller/primary model. Explicit per-request `agent` overrides remain hard overrides.
 - `usage`: best-fit role (for example `code_writer` or `code_reviewer`); use this for quick matching.
 - `reasoning_rating`: reasoning score out of 10; prefer higher for complex reasoning tasks.
 - `health_status`: only use agents marked `healthy` (treat `-` as unknown).
-- Docdex refreshes mcoda inventory via `mcoda agent list --json --refresh-health`; it retries with legacy `mcoda agent list --json` if the refresh flag is unavailable.
+- For setup/ops, inspect cloud candidates with `mcoda cloud agent list --json --provider openrouter --limit ... --max-cost-per-1m-token ... --sorted-by-catalog-rating --min-context ... --min-reasoning ...`.
+- Docdex refreshes mcoda inventory via `mcoda agent list --json --refresh-health`; it retries with legacy `mcoda agent list --json` if the refresh flag is unavailable. That refresh also updates `agent_usage_limits`, so managed cloud agents with exhausted quota appear as `limited` and are skipped until reset.
 - Supported mcoda local CLI adapters include `claude-cli` in addition to `codex-cli`/`gemini-cli`/`openai-cli`/`ollama-cli`.
 Table output shows `USAGE`, `COMPLEXITY`, `RATING`, `REASON`, `COST/$1M`, and `HEALTH` for mcoda agents (`-` means unknown).
-- When `llm.delegation.re_evaluate = true` (default), Docdex reviews successful local mcoda runs using the primary agent when available and writes updated ratings to `~/.mcoda/mcoda.db` (disable with `DOCDEX_DELEGATION_REEVALUATE=0`).
+- When `llm.delegation.re_evaluate = true` (default), Docdex reviews successful mcoda delegation runs, including managed cloud agents, using the primary agent when available and writes updated ratings to `~/.mcoda/mcoda.db` (disable with `DOCDEX_DELEGATION_REEVALUATE=0`).
 Use `agent: model:<ollama-model>` to force a specific local model (for example, `model:phi3.5:3.8b`).
 Avoid entries that only advertise `embedding` or `vision`.
 

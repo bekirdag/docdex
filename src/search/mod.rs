@@ -3719,6 +3719,7 @@ async fn search_handler(
     match run_waterfall(WaterfallRequest {
         request_id: request_id_str,
         dag_session_id: Some(dag_session_id),
+        global_state_dir: state.global_state_dir.clone(),
         query,
         limit,
         diff: diff_request,

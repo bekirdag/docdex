@@ -154,9 +154,14 @@ pub async fn run_eval(options: EvalOptions) -> Result<()> {
     };
 
     let queries = eval_queries(options.max_queries);
-    let max_answer_tokens = config::AppConfig::load_default()
+    let loaded_config = config::AppConfig::load_default().ok();
+    let max_answer_tokens = loaded_config
+        .as_ref()
         .map(|cfg| cfg.llm.max_answer_tokens)
         .unwrap_or(1024);
+    let global_state_dir = loaded_config
+        .as_ref()
+        .and_then(|cfg| cfg.core.global_state_dir.clone());
     let mut results = Vec::new();
     for query in queries {
         for agent in &agents {
@@ -175,6 +180,7 @@ pub async fn run_eval(options: EvalOptions) -> Result<()> {
             let request = WaterfallRequest {
                 request_id: &request_id,
                 dag_session_id: None,
+                global_state_dir: global_state_dir.clone(),
                 query: query.text,
                 limit: options.limit,
                 diff: None,

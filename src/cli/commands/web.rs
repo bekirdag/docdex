@@ -235,6 +235,9 @@ pub async fn run_rag(
     let request = WaterfallRequest {
         request_id: &request_id,
         dag_session_id: None,
+        global_state_dir: config
+            .as_ref()
+            .and_then(|cfg| cfg.core.global_state_dir.clone()),
         query: &query,
         limit,
         diff: None,

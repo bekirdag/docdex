@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use tempfile::NamedTempFile;
 use tracing::warn;
 use url::Url;
+use uuid::Uuid;
 
 const MCODA_DIR: &str = ".mcoda";
 const MCODA_DB: &str = "mcoda.db";
@@ -57,6 +58,7 @@ pub struct McodaAgent {
     pub capabilities: Vec<String>,
     pub models: Vec<McodaAgentModel>,
     pub auth: Option<McodaAgentAuth>,
+    pub usage_limits: Vec<McodaAgentUsageLimit>,
 }
 
 #[derive(Debug, Clone)]
@@ -72,6 +74,72 @@ pub struct McodaAgentAuth {
     pub decrypted_secret: Option<String>,
     pub last_verified_at: Option<String>,
     pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct McodaAgentUsageLimit {
+    pub agent_id: String,
+    pub limit_scope: String,
+    pub limit_key: String,
+    pub window_type: String,
+    pub status: String,
+    pub reset_at: Option<String>,
+    pub observed_at: Option<String>,
+    pub source: Option<String>,
+    pub details: Option<Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct McodaCloudAgent {
+    pub slug: String,
+    pub provider: String,
+    pub default_model: String,
+    #[serde(default)]
+    pub cost_per_million: Option<f64>,
+    #[serde(default)]
+    pub rating: Option<f64>,
+    #[serde(default)]
+    pub reasoning_rating: Option<f64>,
+    #[serde(default)]
+    pub max_complexity: Option<i64>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub health_status: Option<String>,
+    #[serde(default)]
+    pub context_window: Option<u64>,
+    #[serde(default)]
+    pub max_output_tokens: Option<u32>,
+    #[serde(default)]
+    pub supports_tools: bool,
+    #[serde(default)]
+    pub best_usage: Option<String>,
+    #[serde(default)]
+    pub model_id: Option<String>,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub supports_reasoning: Option<bool>,
+    #[serde(default)]
+    pub pricing_snapshot_id: Option<String>,
+    #[serde(default)]
+    pub pricing_version: Option<String>,
+    #[serde(default)]
+    pub sync: Option<Value>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct McodaCloudListOptions {
+    pub provider: Option<String>,
+    pub limit: Option<usize>,
+    pub max_cost_per_million: Option<f64>,
+    pub min_context_window: Option<usize>,
+    pub min_reasoning_rating: Option<f64>,
+    pub sort_by_catalog_rating: bool,
+    pub base_url: Option<String>,
+    pub api_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -188,6 +256,7 @@ impl McodaRegistry {
         let mut models = load_models(&conn)?;
         let mut auth = load_auth(&conn, key_path)?;
         let mut health = load_health(&conn)?;
+        let mut usage_limits = load_usage_limits(&conn)?;
 
         for agent in &mut agents {
             if let Some(values) = capabilities.remove(&agent.id) {
@@ -201,6 +270,9 @@ impl McodaRegistry {
             }
             if let Some(value) = health.remove(&agent.id) {
                 agent.health_status = Some(value);
+            }
+            if let Some(values) = usage_limits.remove(&agent.id) {
+                agent.usage_limits = values;
             }
         }
 
@@ -327,6 +399,95 @@ fn run_mcoda_agent_list_json() -> Result<Option<String>> {
     Ok(None)
 }
 
+fn build_mcoda_cloud_list_args(options: &McodaCloudListOptions) -> Vec<String> {
+    let mut args = vec![
+        "cloud".to_string(),
+        "agent".to_string(),
+        "list".to_string(),
+        "--json".to_string(),
+    ];
+    if let Some(provider) = trim_non_empty(options.provider.clone()) {
+        args.push("--provider".to_string());
+        args.push(provider);
+    }
+    if let Some(limit) = options.limit.filter(|value| *value > 0) {
+        args.push("--limit".to_string());
+        args.push(limit.to_string());
+    }
+    if let Some(max_cost) = options
+        .max_cost_per_million
+        .filter(|value| value.is_finite() && *value >= 0.0)
+    {
+        args.push("--max-cost-per-1m-token".to_string());
+        args.push(max_cost.to_string());
+    }
+    if let Some(min_context) = options.min_context_window.filter(|value| *value > 0) {
+        args.push("--min-context".to_string());
+        args.push(min_context.to_string());
+    }
+    if let Some(min_reasoning) = options
+        .min_reasoning_rating
+        .filter(|value| value.is_finite() && *value >= 0.0)
+    {
+        args.push("--min-reasoning".to_string());
+        args.push(min_reasoning.to_string());
+    }
+    if options.sort_by_catalog_rating {
+        args.push("--sorted-by-catalog-rating".to_string());
+    }
+    args
+}
+
+fn cloud_command_envs(options: &McodaCloudListOptions) -> Vec<(&'static str, &str)> {
+    let mut envs = Vec::new();
+    if let Some(base_url) = options
+        .base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        envs.push(("MCODA_MSWARM_BASE_URL", base_url));
+    }
+    if let Some(api_key) = options
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        envs.push(("MCODA_MSWARM_API_KEY", api_key));
+    }
+    envs
+}
+
+fn parse_mcoda_cloud_agents(raw: &str) -> Result<Vec<McodaCloudAgent>> {
+    serde_json::from_str(raw).context("decode mcoda cloud agent payload")
+}
+
+pub fn list_cloud_agents(options: &McodaCloudListOptions) -> Result<Vec<McodaCloudAgent>> {
+    let args = build_mcoda_cloud_list_args(options);
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let envs = cloud_command_envs(options);
+    let output = match run_mcoda_command_with_env(&arg_refs, mcoda_cli_timeout(), &envs) {
+        Ok(Some(output)) => output,
+        Ok(None) => return Ok(Vec::new()),
+        Err(err) => return Err(err).context("run mcoda cloud agent list"),
+    };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!(
+            "mcoda cloud agent list failed (status {:?}): {}",
+            output.status.code(),
+            stderr.trim()
+        ));
+    }
+    let stdout =
+        String::from_utf8(output.stdout).context("decode mcoda cloud agent list --json")?;
+    if stdout.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    parse_mcoda_cloud_agents(&stdout)
+}
+
 fn mcoda_cli_timeout() -> Duration {
     std::env::var(DOCDEX_MCODA_CLI_TIMEOUT_MS)
         .ok()
@@ -400,6 +561,14 @@ fn reset_mcoda_cli_backoff() {
 }
 
 fn run_mcoda_command(args: &[&str], timeout: Duration) -> Result<Option<McodaCliOutput>> {
+    run_mcoda_command_with_env(args, timeout, &[])
+}
+
+fn run_mcoda_command_with_env(
+    args: &[&str],
+    timeout: Duration,
+    envs: &[(&str, &str)],
+) -> Result<Option<McodaCliOutput>> {
     let stdout_file = NamedTempFile::new().context("create mcoda stdout temp file")?;
     let stderr_file = NamedTempFile::new().context("create mcoda stderr temp file")?;
     let stdout_writer = stdout_file
@@ -409,20 +578,24 @@ fn run_mcoda_command(args: &[&str], timeout: Duration) -> Result<Option<McodaCli
         .reopen()
         .context("open mcoda stderr temp file")?;
 
-    let mut child = match Command::new("mcoda")
+    let mut command = Command::new("mcoda");
+    command
         .args(args)
         .stdout(Stdio::from(stdout_writer))
-        .stderr(Stdio::from(stderr_writer))
-        .spawn()
-    {
+        .stderr(Stdio::from(stderr_writer));
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+
+    let mut child = match command.spawn() {
         Ok(child) => child,
         Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(err).context("spawn mcoda agent list --json"),
+        Err(err) => return Err(err).context("spawn mcoda command"),
     };
 
     let deadline = Instant::now() + timeout;
     loop {
-        match child.try_wait().context("poll mcoda agent list --json")? {
+        match child.try_wait().context("poll mcoda command")? {
             Some(status) => {
                 let stdout = fs::read(stdout_file.path()).context("read mcoda stdout temp file")?;
                 let stderr = fs::read(stderr_file.path()).context("read mcoda stderr temp file")?;
@@ -439,7 +612,7 @@ fn run_mcoda_command(args: &[&str], timeout: Duration) -> Result<Option<McodaCli
                         target: "docdexd",
                         args = ?args,
                         error = ?err,
-                        "failed to kill timed out mcoda agent list process"
+                        "failed to kill timed out mcoda process"
                     );
                 }
                 let _ = child.wait();
@@ -447,7 +620,7 @@ fn run_mcoda_command(args: &[&str], timeout: Duration) -> Result<Option<McodaCli
                     target: "docdexd",
                     args = ?args,
                     timeout_ms = timeout.as_millis(),
-                    "mcoda agent list timed out"
+                    "mcoda command timed out"
                 );
                 return Ok(None);
             }
@@ -517,6 +690,7 @@ fn parse_mcoda_cli_agents(raw: &str) -> Result<Vec<McodaAgent>> {
             capabilities: record.capabilities,
             models,
             auth: None,
+            usage_limits: Vec::new(),
         });
     }
     Ok(agents)
@@ -542,6 +716,16 @@ fn hydrate_cli_agents_from_db(agents: &mut [McodaAgent], db_path: &Path, key_pat
         Err(err) => {
             warn!(
                 "failed to load mcoda auth from {} while hydrating CLI agents: {err}",
+                db_path.display()
+            );
+            HashMap::new()
+        }
+    };
+    let mut usage_limits_by_id = match load_usage_limits(&conn) {
+        Ok(usage_limits) => usage_limits,
+        Err(err) => {
+            warn!(
+                "failed to load mcoda usage limits from {} while hydrating CLI agents: {err}",
                 db_path.display()
             );
             HashMap::new()
@@ -595,6 +779,15 @@ fn hydrate_cli_agents_from_db(agents: &mut [McodaAgent], db_path: &Path, key_pat
             } else if let Some(db_id) = db_id_by_slug.get(&agent.slug) {
                 if let Some(auth) = auth_by_id.remove(db_id) {
                     agent.auth = Some(auth);
+                }
+            }
+        }
+        if agent.usage_limits.is_empty() {
+            if let Some(usage_limits) = usage_limits_by_id.remove(&agent.id) {
+                agent.usage_limits = usage_limits;
+            } else if let Some(db_id) = db_id_by_slug.get(&agent.slug) {
+                if let Some(usage_limits) = usage_limits_by_id.remove(db_id) {
+                    agent.usage_limits = usage_limits;
                 }
             }
         }
@@ -733,6 +926,7 @@ fn load_agents(conn: &Connection) -> Result<Vec<McodaAgent>> {
             capabilities: Vec::new(),
             models: Vec::new(),
             auth: None,
+            usage_limits: Vec::new(),
             health_status: None,
             cli_binary,
         });
@@ -898,6 +1092,64 @@ fn load_health(conn: &Connection) -> Result<HashMap<String, String>> {
     Ok(map)
 }
 
+fn load_usage_limits(conn: &Connection) -> Result<HashMap<String, Vec<McodaAgentUsageLimit>>> {
+    if !table_exists(conn, "agent_usage_limits")? {
+        return Ok(HashMap::new());
+    }
+    let mut stmt = conn.prepare(
+        "SELECT agent_id, limit_scope, limit_key, window_type, status, reset_at, observed_at, source, details_json
+         FROM agent_usage_limits
+         ORDER BY datetime(observed_at) DESC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, Option<String>>(5)?,
+            row.get::<_, Option<String>>(6)?,
+            row.get::<_, Option<String>>(7)?,
+            row.get::<_, Option<String>>(8)?,
+        ))
+    })?;
+    let mut map: HashMap<String, Vec<McodaAgentUsageLimit>> = HashMap::new();
+    for row in rows {
+        let (
+            agent_id,
+            limit_scope,
+            limit_key,
+            window_type,
+            status,
+            reset_at,
+            observed_at,
+            source,
+            details_raw,
+        ) = row?;
+        let details = match details_raw {
+            Some(raw) => {
+                Some(serde_json::from_str(&raw).context("parse agent_usage_limits.details_json")?)
+            }
+            None => None,
+        };
+        map.entry(agent_id.clone())
+            .or_default()
+            .push(McodaAgentUsageLimit {
+                agent_id,
+                limit_scope,
+                limit_key,
+                window_type,
+                status,
+                reset_at,
+                observed_at,
+                source,
+                details,
+            });
+    }
+    Ok(map)
+}
+
 fn load_mcoda_key(path: &Path) -> Result<Vec<u8>> {
     let key = fs::read(path).with_context(|| format!("read mcoda key {}", path.display()))?;
     if key.len() != KEY_LEN {
@@ -931,6 +1183,430 @@ fn decrypt_secret(payload: &str, key: &[u8]) -> Result<String> {
         .map_err(|_| anyhow!("decrypt agent_auth secret"))?;
     let decoded = String::from_utf8(plaintext).context("decode agent_auth secret utf8")?;
     Ok(decoded)
+}
+
+fn ensure_mcoda_key(path: &Path) -> Result<Vec<u8>> {
+    if path.exists() {
+        return load_mcoda_key(path);
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create mcoda key dir {}", parent.display()))?;
+    }
+    let mut key = Vec::with_capacity(KEY_LEN);
+    key.extend_from_slice(Uuid::new_v4().as_bytes());
+    key.extend_from_slice(Uuid::new_v4().as_bytes());
+    fs::write(path, &key).with_context(|| format!("write mcoda key {}", path.display()))?;
+    Ok(key)
+}
+
+fn encrypt_secret(secret: &str, key: &[u8]) -> Result<String> {
+    if key.len() != KEY_LEN {
+        return Err(anyhow!(
+            "mcoda key must be {KEY_LEN} bytes, got {}",
+            key.len()
+        ));
+    }
+    let cipher = Aes256Gcm::new_from_slice(key).context("init AES-256-GCM")?;
+    let nonce_bytes = &Uuid::new_v4().into_bytes()[..AUTH_IV_LEN];
+    let nonce = Nonce::from_slice(nonce_bytes);
+    let encrypted = cipher
+        .encrypt(nonce, secret.as_bytes())
+        .map_err(|_| anyhow!("encrypt agent_auth secret"))?;
+    let split_at = encrypted
+        .len()
+        .checked_sub(AUTH_TAG_LEN)
+        .ok_or_else(|| anyhow!("encrypt agent_auth secret: ciphertext too short"))?;
+    let (ciphertext, tag) = encrypted.split_at(split_at);
+    let mut payload = Vec::with_capacity(AUTH_IV_LEN + AUTH_TAG_LEN + ciphertext.len());
+    payload.extend_from_slice(nonce_bytes);
+    payload.extend_from_slice(tag);
+    payload.extend_from_slice(ciphertext);
+    Ok(Base64Engine.encode(payload))
+}
+
+fn managed_cloud_agent_slug(remote_slug: &str) -> String {
+    let normalized = remote_slug
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    format!(
+        "mswarm-cloud-{}",
+        if normalized.is_empty() {
+            "agent"
+        } else {
+            &normalized
+        }
+    )
+}
+
+fn infer_cloud_best_usage(agent: &McodaCloudAgent) -> String {
+    let fragments = [
+        agent.slug.as_str(),
+        agent.default_model.as_str(),
+        agent.display_name.as_deref().unwrap_or_default(),
+        agent.description.as_deref().unwrap_or_default(),
+    ]
+    .join(" ")
+    .to_ascii_lowercase();
+    if fragments.contains("review") {
+        return "code_reviewer".to_string();
+    }
+    if fragments.contains("coder") || fragments.contains("codestral") || fragments.contains("code")
+    {
+        return "code_writer".to_string();
+    }
+    if fragments.contains("thinking") || fragments.contains("reason") {
+        return "general_chat".to_string();
+    }
+    "general_chat".to_string()
+}
+
+fn cloud_capabilities(agent: &McodaCloudAgent, usage: &str) -> Vec<String> {
+    let mut capabilities: Vec<String> = Vec::new();
+    match usage {
+        "code_writer" => {
+            capabilities.push("code_write".to_string());
+            capabilities.push("code_review".to_string());
+            capabilities.push("chat".to_string());
+        }
+        "code_reviewer" => {
+            capabilities.push("code_review".to_string());
+            capabilities.push("chat".to_string());
+        }
+        _ => {
+            capabilities.push("chat".to_string());
+        }
+    }
+    if agent.supports_tools {
+        capabilities.push("tools".to_string());
+    }
+    for capability in &agent.capabilities {
+        if let Some(value) = trim_non_empty_str(Some(capability)) {
+            capabilities.push(value.to_ascii_lowercase());
+        }
+    }
+    capabilities.sort();
+    capabilities.dedup();
+    capabilities
+}
+
+fn managed_cloud_config(base_url: &str, openai_base_url: &str, agent: &McodaCloudAgent) -> Value {
+    serde_json::json!({
+        "baseUrl": openai_base_url,
+        "apiBaseUrl": openai_base_url,
+        "mswarmCloud": {
+            "managed": true,
+            "remoteSlug": agent.slug,
+            "provider": agent.provider,
+            "modelId": agent.model_id,
+            "displayName": agent.display_name,
+            "description": agent.description,
+            "supportsReasoning": agent.supports_reasoning,
+            "pricingSnapshotId": agent.pricing_snapshot_id,
+            "pricingVersion": agent.pricing_version,
+            "catalogBaseUrl": base_url,
+            "openAiBaseUrl": openai_base_url,
+            "sync": agent.sync,
+            "syncedAt": chrono::Utc::now().to_rfc3339(),
+        }
+    })
+}
+
+fn normalized_cloud_health_status(agent: &McodaCloudAgent) -> Option<String> {
+    let status = agent.health_status.as_deref()?.trim().to_ascii_lowercase();
+    if status.is_empty() {
+        None
+    } else {
+        Some(status)
+    }
+}
+
+fn ensure_mcoda_agent_tables(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS agents (
+            id TEXT PRIMARY KEY,
+            slug TEXT NOT NULL,
+            adapter TEXT NOT NULL,
+            default_model TEXT,
+            openai_compatible INTEGER,
+            context_window INTEGER,
+            max_output_tokens INTEGER,
+            supports_tools INTEGER,
+            rating REAL,
+            reasoning_rating REAL,
+            best_usage TEXT,
+            cost_per_million REAL,
+            max_complexity INTEGER,
+            rating_samples INTEGER,
+            rating_last_score REAL,
+            rating_updated_at TEXT,
+            complexity_samples INTEGER,
+            complexity_updated_at TEXT,
+            config_json TEXT,
+            created_at TEXT,
+            updated_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS agent_capabilities (
+            agent_id TEXT NOT NULL,
+            capability TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS agent_models (
+            agent_id TEXT NOT NULL,
+            model_name TEXT NOT NULL,
+            is_default INTEGER NOT NULL,
+            config_json TEXT
+        );
+        CREATE TABLE IF NOT EXISTS agent_auth (
+            agent_id TEXT PRIMARY KEY,
+            encrypted_secret TEXT NOT NULL,
+            last_verified_at TEXT,
+            updated_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS agent_health (
+            agent_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            last_checked_at TEXT,
+            details_json TEXT
+        );",
+    )
+    .context("ensure mcoda agent tables")?;
+    Ok(())
+}
+
+pub fn materialize_cloud_agents(
+    base_url: &str,
+    api_key: &str,
+    agents: &[McodaCloudAgent],
+) -> Result<Vec<String>> {
+    if agents.is_empty() {
+        return Ok(Vec::new());
+    }
+    let db_path = default_db_path()?;
+    let key_path = default_key_path()?;
+    if let Some(parent) = db_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create mcoda db dir {}", parent.display()))?;
+    }
+    let conn = Connection::open(&db_path)
+        .with_context(|| format!("open mcoda registry {}", db_path.display()))?;
+    ensure_mcoda_agent_tables(&conn)?;
+    let key = ensure_mcoda_key(&key_path)?;
+    let encrypted_api_key = encrypt_secret(api_key, &key)?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let openai_base_url = Url::parse(base_url)
+        .and_then(|url| url.join("/v1/swarm/openai/"))
+        .context("derive mswarm openai base url")?
+        .to_string();
+    let existing_agents = load_agents(&conn).unwrap_or_default();
+    let existing_by_slug: HashMap<String, McodaAgent> = existing_agents
+        .into_iter()
+        .map(|agent| (agent.slug.clone(), agent))
+        .collect();
+    let agent_columns = table_columns(&conn, "agents")?;
+    let mut local_slugs = Vec::new();
+
+    for agent in agents {
+        let local_slug = managed_cloud_agent_slug(&agent.slug);
+        let existing = existing_by_slug.get(&local_slug);
+        if let Some(existing) = existing {
+            let managed_slug = existing
+                .config
+                .as_ref()
+                .and_then(|config| config.pointer("/mswarmCloud/remoteSlug"))
+                .and_then(Value::as_str);
+            if managed_slug != Some(agent.slug.as_str()) {
+                return Err(anyhow!(
+                    "refusing to overwrite non-mswarm agent {local_slug}"
+                ));
+            }
+        }
+
+        let agent_id = existing
+            .map(|record| record.id.clone())
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        let usage = agent
+            .best_usage
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| infer_cloud_best_usage(agent));
+        let capabilities = cloud_capabilities(agent, &usage);
+        let config = managed_cloud_config(base_url, &openai_base_url, agent);
+        let config_raw =
+            serde_json::to_string(&config).context("serialize managed cloud config")?;
+        let rating = existing.and_then(|record| record.rating).or(agent.rating);
+        let reasoning_rating = existing
+            .and_then(|record| record.reasoning_rating)
+            .or(agent.reasoning_rating)
+            .or(rating);
+        let max_complexity = existing
+            .and_then(|record| record.max_complexity)
+            .or(agent.max_complexity)
+            .unwrap_or(5);
+        let cost_per_million = existing
+            .and_then(|record| record.cost_per_million)
+            .or(agent.cost_per_million)
+            .unwrap_or(0.0);
+        let created_at = existing
+            .and_then(|record| record.created_at.clone())
+            .unwrap_or_else(|| now.clone());
+
+        let mut fields = vec![
+            ("id", rusqlite::types::Value::from(agent_id.clone())),
+            ("slug", rusqlite::types::Value::from(local_slug.clone())),
+            (
+                "adapter",
+                rusqlite::types::Value::from("openai-api".to_string()),
+            ),
+            (
+                "default_model",
+                rusqlite::types::Value::from(agent.default_model.clone()),
+            ),
+            ("config_json", rusqlite::types::Value::from(config_raw)),
+            ("created_at", rusqlite::types::Value::from(created_at)),
+            ("updated_at", rusqlite::types::Value::from(now.clone())),
+        ];
+        if agent_columns.contains("openai_compatible") {
+            fields.push(("openai_compatible", rusqlite::types::Value::from(1_i64)));
+        }
+        if agent_columns.contains("context_window") {
+            fields.push((
+                "context_window",
+                agent
+                    .context_window
+                    .map(|value| rusqlite::types::Value::from(value as i64))
+                    .unwrap_or(rusqlite::types::Value::Null),
+            ));
+        }
+        if agent_columns.contains("max_output_tokens") {
+            fields.push((
+                "max_output_tokens",
+                agent
+                    .max_output_tokens
+                    .map(|value| rusqlite::types::Value::from(value as i64))
+                    .unwrap_or(rusqlite::types::Value::Null),
+            ));
+        }
+        if agent_columns.contains("supports_tools") {
+            fields.push((
+                "supports_tools",
+                rusqlite::types::Value::from(if agent.supports_tools { 1_i64 } else { 0_i64 }),
+            ));
+        }
+        if agent_columns.contains("rating") {
+            fields.push((
+                "rating",
+                rating
+                    .map(rusqlite::types::Value::from)
+                    .unwrap_or(rusqlite::types::Value::Null),
+            ));
+        }
+        if agent_columns.contains("reasoning_rating") {
+            fields.push((
+                "reasoning_rating",
+                reasoning_rating
+                    .map(rusqlite::types::Value::from)
+                    .unwrap_or(rusqlite::types::Value::Null),
+            ));
+        }
+        if agent_columns.contains("best_usage") {
+            fields.push(("best_usage", rusqlite::types::Value::from(usage.clone())));
+        }
+        if agent_columns.contains("cost_per_million") {
+            fields.push((
+                "cost_per_million",
+                rusqlite::types::Value::from(cost_per_million),
+            ));
+        }
+        if agent_columns.contains("max_complexity") {
+            fields.push((
+                "max_complexity",
+                rusqlite::types::Value::from(max_complexity),
+            ));
+        }
+
+        let field_names = fields.iter().map(|(name, _)| *name).collect::<Vec<_>>();
+        let placeholders = (0..field_names.len())
+            .map(|_| "?".to_string())
+            .collect::<Vec<_>>();
+        let update_assignments = field_names
+            .iter()
+            .filter(|name| **name != "id" && **name != "created_at")
+            .map(|name| format!("{name} = excluded.{name}"))
+            .collect::<Vec<_>>();
+        let sql = format!(
+            "INSERT INTO agents ({}) VALUES ({}) \
+             ON CONFLICT(id) DO UPDATE SET {}",
+            field_names.join(", "),
+            placeholders.join(", "),
+            update_assignments.join(", ")
+        );
+        let values = rusqlite::params_from_iter(fields.iter().map(|(_, value)| value));
+        conn.execute(&sql, values)
+            .context("upsert managed cloud agent")?;
+
+        if table_exists(&conn, "agent_capabilities")? {
+            conn.execute(
+                "DELETE FROM agent_capabilities WHERE agent_id = ?1",
+                params![agent_id],
+            )?;
+            for capability in &capabilities {
+                conn.execute(
+                    "INSERT INTO agent_capabilities (agent_id, capability) VALUES (?1, ?2)",
+                    params![agent_id, capability],
+                )?;
+            }
+        }
+        if table_exists(&conn, "agent_models")? {
+            conn.execute(
+                "DELETE FROM agent_models WHERE agent_id = ?1",
+                params![agent_id],
+            )?;
+            let model_config = serde_json::json!({
+                "provider": agent.provider,
+                "remoteSlug": agent.slug,
+                "modelId": agent.model_id,
+                "pricingVersion": agent.pricing_version,
+            });
+            conn.execute(
+                "INSERT INTO agent_models (agent_id, model_name, is_default, config_json) VALUES (?1, ?2, 1, ?3)",
+                params![agent_id, agent.default_model, serde_json::to_string(&model_config)?],
+            )?;
+        }
+        if table_exists(&conn, "agent_auth")? {
+            conn.execute(
+                "INSERT INTO agent_auth (agent_id, encrypted_secret, last_verified_at, updated_at)
+                 VALUES (?1, ?2, NULL, ?3)
+                 ON CONFLICT(agent_id) DO UPDATE SET encrypted_secret = excluded.encrypted_secret, updated_at = excluded.updated_at",
+                params![agent_id, encrypted_api_key, now],
+            )?;
+        }
+        if table_exists(&conn, "agent_health")? {
+            if let Some(status) = normalized_cloud_health_status(agent) {
+                conn.execute(
+                    "INSERT INTO agent_health (agent_id, status, last_checked_at, details_json)
+                     VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(agent_id) DO UPDATE SET status = excluded.status, last_checked_at = excluded.last_checked_at, details_json = excluded.details_json",
+                    params![
+                        agent_id,
+                        status,
+                        now,
+                        serde_json::to_string(&serde_json::json!({
+                            "source": "docdex.mswarm",
+                            "remoteSlug": agent.slug,
+                            "remoteHealthStatus": agent.health_status,
+                        }))?
+                    ],
+                )?;
+            }
+        }
+        local_slugs.push(local_slug);
+    }
+    Ok(local_slugs)
 }
 
 #[cfg(test)]
@@ -1113,6 +1789,100 @@ printf '%s' '[{{"id":"agent-1","slug":"claude-sonnet","adapter":"claude-cli","de
             .filter(|line| !line.trim().is_empty())
             .count() as u32;
         assert_eq!(count, 2, "expected both calls to use the plain fallback");
+        Ok(())
+    }
+
+    #[test]
+    fn parse_mcoda_cloud_agents_maps_catalog_payload() -> Result<()> {
+        let raw = r#"
+[
+  {
+    "slug": "openrouter-qwen-qwen3-coder",
+    "provider": "openrouter",
+    "default_model": "qwen/qwen3-coder",
+    "cost_per_million": 0.75,
+    "rating": 8.4,
+    "reasoning_rating": 7.0,
+    "max_complexity": 8,
+    "capabilities": ["code_write", "code_review"],
+    "health_status": "healthy",
+    "context_window": 262144,
+    "max_output_tokens": 32768,
+    "supports_tools": true,
+    "best_usage": "code_writer"
+  }
+]
+"#;
+        let agents = parse_mcoda_cloud_agents(raw)?;
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].slug, "openrouter-qwen-qwen3-coder");
+        assert_eq!(agents[0].provider, "openrouter");
+        assert_eq!(agents[0].default_model, "qwen/qwen3-coder");
+        assert_eq!(agents[0].cost_per_million, Some(0.75));
+        assert_eq!(agents[0].context_window, Some(262144));
+        assert!(agents[0].supports_tools);
+        Ok(())
+    }
+
+    #[test]
+    fn materialize_cloud_agents_creates_managed_openai_registry_entries() -> Result<()> {
+        let _guard = ENV_LOCK.lock();
+        let temp = TempDir::new()?;
+        let _home = EnvVarGuard::set("HOME", temp.path());
+        let _userprofile = EnvVarGuard::set("USERPROFILE", temp.path());
+        let slugs = materialize_cloud_agents(
+            "https://api.mswarm.org/",
+            "cloud-key",
+            &[McodaCloudAgent {
+                slug: "openrouter-qwen-qwen3-coder".to_string(),
+                provider: "openrouter".to_string(),
+                default_model: "qwen/qwen3-coder".to_string(),
+                cost_per_million: Some(0.75),
+                rating: Some(8.4),
+                reasoning_rating: Some(7.0),
+                max_complexity: Some(8),
+                capabilities: vec!["code_write".to_string(), "code_review".to_string()],
+                health_status: Some("healthy".to_string()),
+                context_window: Some(262144),
+                max_output_tokens: Some(32768),
+                supports_tools: true,
+                best_usage: Some("code_writer".to_string()),
+                model_id: Some("openrouter/qwen/qwen3-coder".to_string()),
+                display_name: Some("Qwen3 Coder".to_string()),
+                description: Some("Coder model".to_string()),
+                supports_reasoning: Some(true),
+                pricing_snapshot_id: Some("snap-1".to_string()),
+                pricing_version: Some("2026-03-18".to_string()),
+                sync: None,
+            }],
+        )?;
+        assert_eq!(
+            slugs,
+            vec!["mswarm-cloud-openrouter-qwen-qwen3-coder".to_string()]
+        );
+
+        let registry =
+            McodaRegistry::load_default_db_only()?.expect("mcoda registry after materialization");
+        let agent = registry
+            .agent_by_slug("mswarm-cloud-openrouter-qwen-qwen3-coder")
+            .expect("managed cloud agent");
+        assert_eq!(agent.adapter, "openai-api");
+        assert_eq!(agent.default_model.as_deref(), Some("qwen/qwen3-coder"));
+        assert_eq!(agent.cost_per_million, Some(0.75));
+        assert_eq!(agent.health_status.as_deref(), Some("healthy"));
+        assert!(agent
+            .config
+            .as_ref()
+            .and_then(|config| config.pointer("/mswarmCloud/managed"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false));
+        assert_eq!(
+            agent
+                .auth
+                .as_ref()
+                .and_then(|auth| auth.decrypted_secret.as_deref()),
+            Some("cloud-key")
+        );
         Ok(())
     }
 }

@@ -389,6 +389,7 @@ pub(crate) async fn chat_completions_handler(
     let response = match run_waterfall(WaterfallRequest {
         request_id: &request_id,
         dag_session_id: Some(dag_session_id.as_str()),
+        global_state_dir: state.global_state_dir.clone(),
         query: &query_with_context,
         limit,
         diff: diff_request,

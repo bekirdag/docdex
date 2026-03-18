@@ -5,8 +5,8 @@ use crate::llm::delegation_rating::{
     review_from_output, reviewer_prompt, RunScoreInput,
 };
 use crate::llm::local_library::{
-    resolve_local_ollama_base_url, save_local_library, CachedLocalAgentSelection, LocalAgentEntry,
-    LocalModelLibrary,
+    local_agent_is_cloud, resolve_local_ollama_base_url, save_local_library,
+    CachedLocalAgentSelection, LocalAgentEntry, LocalModelLibrary,
 };
 use crate::llm::matches_expensive_delegation_target;
 use crate::max_size::truncate_utf8_chars;
@@ -169,6 +169,25 @@ fn configured_primary_agent_id_for_task<'a>(
     }
 }
 
+fn configured_cloud_agent_id_for_task<'a>(
+    llm_config: &'a LlmConfig,
+    task_type: TaskType,
+) -> Option<&'a str> {
+    let lane_value = match task_type.kind() {
+        DelegationTaskKind::Code => llm_config.delegation.code.cloud_agent_id.trim(),
+        DelegationTaskKind::General => llm_config.delegation.general.cloud_agent_id.trim(),
+    };
+    if !lane_value.is_empty() {
+        return Some(lane_value);
+    }
+    let fallback = llm_config.delegation.cloud_agent_id.trim();
+    if fallback.is_empty() {
+        None
+    } else {
+        Some(fallback)
+    }
+}
+
 pub fn resolve_task_scoped_delegation_config(
     llm_config: &LlmConfig,
     task_type: TaskType,
@@ -181,6 +200,9 @@ pub fn resolve_task_scoped_delegation_config(
         configured_primary_agent_id_for_task(llm_config, task_type)
             .unwrap_or_default()
             .to_string();
+    scoped.delegation.cloud_agent_id = configured_cloud_agent_id_for_task(llm_config, task_type)
+        .unwrap_or_default()
+        .to_string();
     scoped
 }
 
@@ -244,21 +266,12 @@ pub fn parse_local_target_override(
 }
 
 fn resolve_re_evaluation_target(
-    llm_config: &LlmConfig,
     local_agent_override: Option<&str>,
     local_target: Option<&LocalTarget>,
 ) -> Option<DelegationReevaluation> {
     let override_value = local_agent_override
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            let trimmed = llm_config.delegation.local_agent_id.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed)
-            }
-        });
+        .filter(|value| !value.is_empty());
 
     if let Some(value) = override_value {
         if parse_model_override(value).is_some() {
@@ -337,6 +350,7 @@ pub struct DelegationPricingContext {
     pub caller_agent_id: Option<String>,
     pub caller_model: Option<String>,
     pub primary_cost_per_million: Option<f64>,
+    pub fallback_primary_cost_per_million: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -437,6 +451,29 @@ fn configured_cost_per_million(cost: f64) -> Option<f64> {
     normalize_cost_per_million(Some(cost))
 }
 
+fn context_identifies_expensive_caller(pricing_context: Option<&DelegationPricingContext>) -> bool {
+    let Some(pricing_context) = pricing_context else {
+        return false;
+    };
+
+    pricing_context
+        .caller_agent_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            matches_expensive_delegation_target(Some(value), Some(value), Some(value), None)
+        })
+        .unwrap_or(false)
+        || pricing_context
+            .caller_model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| matches_expensive_delegation_target(None, None, Some(value), None))
+            .unwrap_or(false)
+}
+
 fn resolve_cost_per_million_from_library(
     id_or_slug: &str,
     library: Option<&LocalModelLibrary>,
@@ -509,10 +546,9 @@ fn resolve_cost_per_million_from_registry_model(model: &str) -> Option<f64> {
 fn resolve_cost_per_million_for_agent(
     id_or_slug: &str,
     library: Option<&LocalModelLibrary>,
-) -> f64 {
+) -> Option<f64> {
     resolve_cost_per_million_from_library(id_or_slug, library)
         .or_else(|| resolve_cost_per_million_from_registry(id_or_slug))
-        .unwrap_or(0.0)
 }
 
 fn resolve_cost_per_million_for_model(
@@ -545,9 +581,7 @@ fn resolve_cost_per_million_for_target(
 ) -> Option<f64> {
     match target? {
         LocalTarget::OllamaModel(_) => Some(0.0),
-        LocalTarget::McodaAgent(agent_id) => {
-            Some(resolve_cost_per_million_for_agent(agent_id, library))
-        }
+        LocalTarget::McodaAgent(agent_id) => resolve_cost_per_million_for_agent(agent_id, library),
     }
 }
 
@@ -610,6 +644,13 @@ pub fn resolve_primary_cost_per_million(
             return cost;
         }
     }
+    if context_identifies_expensive_caller(pricing_context) {
+        if let Some(cost) = pricing_context.and_then(|context| {
+            normalize_cost_per_million(context.fallback_primary_cost_per_million)
+        }) {
+            return cost;
+        }
+    }
     if let Some(cost) = resolve_cost_per_million_for_target(primary_target, library) {
         return cost;
     }
@@ -634,6 +675,47 @@ pub fn resolve_primary_cost_per_million(
         }
     }
     configured_cost_per_million(llm_config.delegation.primary_usd_per_million_tokens).unwrap_or(0.0)
+}
+
+fn target_is_automatically_affordable(
+    target: &LocalTarget,
+    llm_config: &LlmConfig,
+    pricing_context: Option<&DelegationPricingContext>,
+    primary_target: Option<&LocalTarget>,
+    library: Option<&LocalModelLibrary>,
+) -> bool {
+    let Some(target_cost) = resolve_cost_per_million_for_target(Some(target), library) else {
+        return false;
+    };
+    if target_cost <= 0.0 {
+        return true;
+    }
+    let primary_cost =
+        resolve_primary_cost_per_million(llm_config, pricing_context, primary_target, library);
+    primary_cost > 0.0 && target_cost < primary_cost
+}
+
+pub fn filter_automatic_local_targets_by_cost(
+    llm_config: &LlmConfig,
+    pricing_context: Option<&DelegationPricingContext>,
+    primary_targets: &[LocalTarget],
+    local_targets: &[LocalTarget],
+    library: Option<&LocalModelLibrary>,
+) -> Vec<LocalTarget> {
+    let primary_target = primary_targets.first();
+    local_targets
+        .iter()
+        .filter(|target| {
+            target_is_automatically_affordable(
+                target,
+                llm_config,
+                pricing_context,
+                primary_target,
+                library,
+            )
+        })
+        .cloned()
+        .collect()
 }
 
 #[derive(Debug)]
@@ -971,7 +1053,7 @@ pub fn select_local_target(
     library: &LocalModelLibrary,
 ) -> Option<LocalTarget> {
     let recent_failures = load_recent_local_target_failures(None);
-    rank_task_capability_local_targets(task_type, library, Some(&recent_failures))
+    rank_task_capability_local_targets(task_type, library, true, Some(&recent_failures))
         .into_iter()
         .next()
 }
@@ -1168,6 +1250,28 @@ fn record_local_delegation_failure(
             "failed to write delegation failure history"
         );
     }
+    if let Err(err) = crate::mswarm_telemetry::record_delegation_failure(
+        context.global_state_dir.as_deref(),
+        &record.ts,
+        record.source.as_deref(),
+        &record.kind,
+        &record.task_type,
+        &record.mode,
+        record.repo_id.as_deref(),
+        record.repo_root.as_deref(),
+        &record.local_target,
+        record.attempt,
+        &record.recovery_action,
+        &record.error,
+    ) {
+        warn!(
+            target: "docdexd",
+            error = ?err,
+            failure_kind = kind,
+            local_target = local_target,
+            "failed to write mswarm delegation telemetry event"
+        );
+    }
 }
 
 fn blocking_failure_for_cooldown(kind: &str, error: &str) -> bool {
@@ -1274,9 +1378,10 @@ fn model_has_recent_local_failure(
 
 fn automatic_local_mcoda_agent_selection_eligible(
     agent: &LocalAgentEntry,
+    allow_cloud: bool,
     recent_failures: &HashMap<String, LocalTargetFailureWindow>,
 ) -> bool {
-    automatic_local_mcoda_agent_eligible(agent)
+    automatic_local_mcoda_agent_eligible(agent, allow_cloud)
         && !agent_has_recent_local_failure(agent, recent_failures)
 }
 
@@ -1300,12 +1405,58 @@ fn local_target_sort_key(target: &LocalTarget) -> String {
     }
 }
 
+fn is_cloud_target(target: &LocalTarget, library: &LocalModelLibrary) -> bool {
+    match target {
+        LocalTarget::OllamaModel(_) => false,
+        LocalTarget::McodaAgent(agent_id) => library
+            .agents
+            .iter()
+            .find(|agent| agent.agent_id == *agent_id)
+            .map(local_agent_is_cloud)
+            .unwrap_or(false),
+    }
+}
+
+fn local_target_eligible(
+    target: &LocalTarget,
+    library: &LocalModelLibrary,
+    allow_cloud: bool,
+    recent_failures: Option<&HashMap<String, LocalTargetFailureWindow>>,
+) -> bool {
+    match target {
+        LocalTarget::OllamaModel(model) => !recent_failures
+            .map(|failures| model_has_recent_local_failure(model, failures))
+            .unwrap_or(false),
+        LocalTarget::McodaAgent(agent_id) => library
+            .agents
+            .iter()
+            .find(|agent| agent.agent_id == *agent_id || agent.agent_slug == *agent_id)
+            .map(|agent| {
+                recent_failures
+                    .map(|failures| {
+                        automatic_local_mcoda_agent_selection_eligible(agent, allow_cloud, failures)
+                    })
+                    .unwrap_or_else(|| automatic_local_mcoda_agent_eligible(agent, allow_cloud))
+            })
+            .unwrap_or(false),
+    }
+}
+
+fn automatic_mcoda_agent_tier(agent: &LocalAgentEntry) -> i32 {
+    if local_agent_is_cloud(agent) {
+        0
+    } else {
+        1
+    }
+}
+
 fn rank_task_capability_local_targets(
     task_type: TaskType,
     library: &LocalModelLibrary,
+    allow_cloud: bool,
     recent_failures: Option<&HashMap<String, LocalTargetFailureWindow>>,
 ) -> Vec<LocalTarget> {
-    let mut candidates: Vec<(LocalTarget, i32, bool)> = Vec::new();
+    let mut candidates: Vec<(LocalTarget, i32, i32)> = Vec::new();
     for model in &library.models {
         if recent_failures
             .map(|failures| model_has_recent_local_failure(&model.name, failures))
@@ -1317,12 +1468,14 @@ fn rank_task_capability_local_targets(
         if score <= 0 {
             continue;
         }
-        candidates.push((LocalTarget::OllamaModel(model.name.clone()), score, true));
+        candidates.push((LocalTarget::OllamaModel(model.name.clone()), score, 2));
     }
     for agent in &library.agents {
         if !recent_failures
-            .map(|failures| automatic_local_mcoda_agent_selection_eligible(agent, failures))
-            .unwrap_or_else(|| automatic_local_mcoda_agent_eligible(agent))
+            .map(|failures| {
+                automatic_local_mcoda_agent_selection_eligible(agent, allow_cloud, failures)
+            })
+            .unwrap_or_else(|| automatic_local_mcoda_agent_eligible(agent, allow_cloud))
         {
             continue;
         }
@@ -1333,7 +1486,7 @@ fn rank_task_capability_local_targets(
         candidates.push((
             LocalTarget::McodaAgent(agent.agent_id.clone()),
             score,
-            false,
+            automatic_mcoda_agent_tier(agent) + 1,
         ));
     }
     candidates.sort_by(|left, right| {
@@ -1398,14 +1551,53 @@ pub fn build_local_target_candidates_with_config(
     task_type: TaskType,
     library: &mut LocalModelLibrary,
 ) -> Vec<LocalTarget> {
+    let allow_cloud = llm_config.delegation.cloud.enabled;
     let recent_failures = load_recent_local_target_failures(state_dir_override);
+    let preferred_local =
+        resolve_explicit_target(&llm_config.delegation.local_agent_id, Some(library)).filter(
+            |target| local_target_eligible(target, library, allow_cloud, Some(&recent_failures)),
+        );
+    let preferred_cloud =
+        resolve_explicit_target(&llm_config.delegation.cloud_agent_id, Some(library)).filter(
+            |target| local_target_eligible(target, library, allow_cloud, Some(&recent_failures)),
+        );
     if llm_config.delegation.local_selection_policy
         != LOCAL_SELECTION_POLICY_MCODA_ZERO_COST_MOST_CAPABLE
     {
-        return rank_task_capability_local_targets(task_type, library, Some(&recent_failures));
+        let mut targets = Vec::new();
+        let ranked_targets = rank_task_capability_local_targets(
+            task_type,
+            library,
+            allow_cloud,
+            Some(&recent_failures),
+        );
+        if let Some(target) = preferred_local {
+            push_unique_target(&mut targets, target);
+        }
+        for target in ranked_targets
+            .iter()
+            .filter(|target| !is_cloud_target(target, library))
+        {
+            push_unique_target(&mut targets, target.clone());
+        }
+        if let Some(target) = preferred_cloud {
+            push_unique_target(&mut targets, target);
+        }
+        for target in ranked_targets
+            .iter()
+            .filter(|target| is_cloud_target(target, library))
+        {
+            push_unique_target(&mut targets, target.clone());
+        }
+        return targets;
     }
 
     let mut targets = Vec::new();
+    let ranked_targets =
+        rank_task_capability_local_targets(task_type, library, allow_cloud, Some(&recent_failures));
+    if let Some(target) = preferred_local {
+        push_unique_target(&mut targets, target);
+    }
     if llm_config.delegation.use_cached_local_decision {
         if let Some(agent) =
             resolve_cached_zero_cost_mcoda_agent(task_type, library, &recent_failures)
@@ -1424,8 +1616,20 @@ pub fn build_local_target_candidates_with_config(
         );
     }
 
-    for target in rank_task_capability_local_targets(task_type, library, Some(&recent_failures)) {
+    for target in ranked_targets
+        .iter()
+        .filter(|target| !is_cloud_target(target, library))
+    {
+        push_unique_target(&mut targets, target.clone());
+    }
+    if let Some(target) = preferred_cloud {
         push_unique_target(&mut targets, target);
+    }
+    for target in ranked_targets
+        .iter()
+        .filter(|target| is_cloud_target(target, library))
+    {
+        push_unique_target(&mut targets, target.clone());
     }
 
     if llm_config.delegation.use_cached_local_decision {
@@ -1513,20 +1717,27 @@ pub fn select_primary_target(
     local_target: Option<&LocalTarget>,
 ) -> Option<LocalTarget> {
     let recent_failures = load_recent_local_target_failures(None);
-    rank_primary_targets(task_type, library, local_target, Some(&recent_failures))
-        .into_iter()
-        .next()
+    rank_primary_targets(
+        task_type,
+        library,
+        local_target,
+        true,
+        Some(&recent_failures),
+    )
+    .into_iter()
+    .next()
 }
 
 fn rank_primary_targets(
     task_type: TaskType,
     library: &LocalModelLibrary,
     local_target: Option<&LocalTarget>,
+    allow_cloud: bool,
     recent_failures: Option<&HashMap<String, LocalTargetFailureWindow>>,
 ) -> Vec<LocalTarget> {
-    let mut candidates: Vec<(LocalTarget, i32, bool)> = Vec::new();
+    let mut candidates: Vec<(LocalTarget, i32, i32)> = Vec::new();
     for agent in &library.agents {
-        if !mcoda_agent_health_allows(agent.health_status.as_deref()) {
+        if !automatic_local_mcoda_agent_eligible(agent, allow_cloud) {
             continue;
         }
         if recent_failures
@@ -1539,7 +1750,11 @@ fn rank_primary_targets(
         if score <= 0 {
             continue;
         }
-        candidates.push((LocalTarget::McodaAgent(agent.agent_id.clone()), score, true));
+        candidates.push((
+            LocalTarget::McodaAgent(agent.agent_id.clone()),
+            score,
+            automatic_mcoda_agent_tier(agent),
+        ));
     }
     for model in &library.models {
         if recent_failures
@@ -1552,14 +1767,14 @@ fn rank_primary_targets(
         if score <= 0 {
             continue;
         }
-        candidates.push((LocalTarget::OllamaModel(model.name.clone()), score, false));
+        candidates.push((LocalTarget::OllamaModel(model.name.clone()), score, 0));
     }
     if candidates.is_empty() {
         return Vec::new();
     }
 
     if let Some(local) = local_target {
-        let filtered: Vec<(LocalTarget, i32, bool)> = candidates
+        let filtered: Vec<(LocalTarget, i32, i32)> = candidates
             .iter()
             .cloned()
             .filter(|(target, _, _)| target != local)
@@ -1651,27 +1866,21 @@ fn resolve_cached_zero_cost_mcoda_agent<'a>(
         .filter(|agent| zero_cost_mcoda_agent_selection_eligible(agent, recent_failures))
 }
 
-fn automatic_local_mcoda_agent_eligible(agent: &LocalAgentEntry) -> bool {
+fn automatic_local_mcoda_agent_eligible(agent: &LocalAgentEntry, allow_cloud: bool) -> bool {
     mcoda_agent_health_allows(agent.health_status.as_deref())
-        && !paid_or_expensive_local_mcoda_agent(agent)
+        && (allow_cloud || !local_agent_is_cloud(agent))
 }
 
-fn paid_or_expensive_local_mcoda_agent(agent: &LocalAgentEntry) -> bool {
-    agent
-        .cost_per_million
-        .filter(|value| value.is_finite() && *value > 0.0)
-        .is_some()
-        || matches_expensive_delegation_target(
+fn zero_cost_mcoda_agent_eligible(agent: &LocalAgentEntry) -> bool {
+    !local_agent_is_cloud(agent)
+        && automatic_local_mcoda_agent_eligible(agent, false)
+        && matches!(agent.cost_per_million, Some(cost) if cost <= 0.0)
+        && !matches_expensive_delegation_target(
             Some(&agent.agent_id),
             Some(&agent.agent_slug),
             agent.default_model.as_deref(),
             Some(&agent.adapter),
         )
-}
-
-fn zero_cost_mcoda_agent_eligible(agent: &LocalAgentEntry) -> bool {
-    automatic_local_mcoda_agent_eligible(agent)
-        && matches!(agent.cost_per_million, Some(cost) if cost <= 0.0)
         && zero_cost_mcoda_capability_score_for_task(TaskType::GenerateTests, agent) > 0
 }
 
@@ -1761,7 +1970,7 @@ fn clear_cached_zero_cost_mcoda_selection(
     true
 }
 
-fn resolve_explicit_target(
+pub(crate) fn resolve_explicit_target(
     value: &str,
     library: Option<&LocalModelLibrary>,
 ) -> Option<LocalTarget> {
@@ -1784,6 +1993,7 @@ pub fn build_primary_target_candidates(
     library: &LocalModelLibrary,
     local_target: Option<&LocalTarget>,
 ) -> Vec<LocalTarget> {
+    let allow_cloud = llm_config.delegation.cloud.enabled;
     let recent_failures = load_recent_local_target_failures(None);
     let mut targets = Vec::new();
     if let Some(target) =
@@ -1793,7 +2003,13 @@ pub fn build_primary_target_candidates(
             push_unique_target(&mut targets, target);
         }
     }
-    for target in rank_primary_targets(task_type, library, local_target, Some(&recent_failures)) {
+    for target in rank_primary_targets(
+        task_type,
+        library,
+        local_target,
+        allow_cloud,
+        Some(&recent_failures),
+    ) {
         push_unique_target(&mut targets, target);
     }
     targets
@@ -2007,8 +2223,7 @@ fn resolve_delegation_client_candidates(
     let explicit_override = local_agent_override
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .is_some()
-        || !llm_config.delegation.local_agent_id.trim().is_empty();
+        .is_some();
     if explicit_override {
         return Ok(vec![resolve_delegation_client(
             llm_config,
@@ -2029,7 +2244,7 @@ fn resolve_delegation_client_candidates(
             ),
         }
     }
-    if clients.is_empty() {
+    if clients.is_empty() && llm_config.delegation.local_agent_id.trim().is_empty() {
         clients.push(resolve_delegation_client(llm_config, None, None)?);
     }
     Ok(clients)
@@ -2227,8 +2442,7 @@ pub(crate) async fn run_delegation_flow_with_failure_history(
     let enforce_local = llm_config.delegation.enforce_local;
     let local_override = local_agent_override
         .map(|value| !value.trim().is_empty())
-        .unwrap_or(false)
-        || !llm_config.delegation.local_agent_id.trim().is_empty();
+        .unwrap_or(false);
     let local_available = !local_targets.is_empty() || local_override;
     if enforce_local && !local_available {
         return Err(DelegationEnforcementError {
@@ -2251,7 +2465,7 @@ pub(crate) async fn run_delegation_flow_with_failure_history(
         resolve_primary_client_candidates(llm_config, primary_targets)
     };
     let reevaluation = if llm_config.delegation.re_evaluate {
-        resolve_re_evaluation_target(llm_config, local_agent_override, local_targets.first())
+        resolve_re_evaluation_target(local_agent_override, local_targets.first())
     } else {
         None
     };

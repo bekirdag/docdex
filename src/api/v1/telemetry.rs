@@ -134,10 +134,10 @@ fn build_delegation_response(
     let primary_tokens = metrics.delegate_primary_tokens_total;
     let local_cost = metrics.delegate_local_cost_micros_total;
     let primary_cost = metrics.delegate_primary_cost_micros_total;
-    let avoided_primary_cost = local_cost.saturating_add(cost_micros);
+    let avoided_primary_cost = metrics.avoided_primary_cost_micros_total();
     let avoided_primary_cost_usd = avoided_primary_cost as f64 / 1_000_000.0;
     let effective_avoided_primary_usd_per_million_tokens =
-        effective_cost_per_million(avoided_primary_cost, metrics.delegate_token_savings_total);
+        metrics.effective_avoided_primary_usd_per_million_tokens();
     let effective_local_usd_per_million_tokens =
         effective_cost_per_million(local_cost, local_tokens);
     let pricing = DelegationTelemetryPricing {
@@ -226,8 +226,7 @@ fn delegation_projects_for_all(
 fn build_project_response(
     project: crate::delegation_telemetry::RepoDelegationTelemetrySnapshot,
 ) -> DelegationTelemetryProjectResponse {
-    let avoided_primary_cost = project.snapshot.delegate_local_cost_micros_total
-        + project.snapshot.delegate_cost_savings_micros_total;
+    let avoided_primary_cost = project.snapshot.avoided_primary_cost_micros_total();
     DelegationTelemetryProjectResponse {
         project: project.project,
         state_key: project.state_key,

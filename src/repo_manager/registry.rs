@@ -723,6 +723,7 @@ fn derive_state_paths_debug(
     let cache_dir = base_dir.join("cache");
     let profiles_dir = base_dir.join("profiles");
     let browser_profiles_dir = base_dir.join("browser_profiles");
+    let mswarm_dir = base_dir.join("mswarm");
     crate::state_layout::StatePathsDebug {
         fingerprint: fingerprint_value,
         state_key: state_key_value,
@@ -740,6 +741,9 @@ fn derive_state_paths_debug(
         browser_profiles_dir: browser_profiles_dir.display().to_string(),
         locks_dir: base_dir.join("locks").display().to_string(),
         logs_dir: base_dir.join("logs").display().to_string(),
+        mswarm_dir: mswarm_dir.display().to_string(),
+        mswarm_events_dir: mswarm_dir.join("events").display().to_string(),
+        mswarm_packages_dir: mswarm_dir.join("packages").display().to_string(),
     }
 }
 

@@ -263,6 +263,26 @@ impl DelegationTelemetrySnapshot {
     pub fn is_zero(&self) -> bool {
         self == &Self::default()
     }
+
+    pub fn avoided_primary_cost_micros_total(&self) -> u64 {
+        self.delegate_local_cost_micros_total
+            .saturating_add(self.delegate_cost_savings_micros_total)
+    }
+
+    pub fn effective_avoided_primary_usd_per_million_tokens(&self) -> Option<f64> {
+        effective_cost_per_million(
+            self.avoided_primary_cost_micros_total(),
+            self.delegate_token_savings_total,
+        )
+    }
+}
+
+fn effective_cost_per_million(cost_micros: u64, tokens: u64) -> Option<f64> {
+    if tokens == 0 {
+        None
+    } else {
+        Some(cost_micros as f64 / tokens as f64)
+    }
 }
 
 pub struct Metrics {

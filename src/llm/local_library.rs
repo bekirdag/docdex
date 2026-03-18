@@ -1,9 +1,13 @@
-use crate::config::{DelegationConfig, LlmConfig};
-use crate::mcoda::registry::{McodaAgent, McodaRegistry};
+use crate::config::{AppConfig, DelegationConfig, LlmConfig};
+use crate::mcoda::registry::{
+    list_cloud_agents, materialize_cloud_agents, McodaAgent, McodaAgentUsageLimit,
+    McodaCloudListOptions, McodaRegistry,
+};
 use crate::ollama;
 use crate::setup::ollama as setup_ollama;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::future::{Future, Ready};
@@ -32,6 +36,12 @@ const DEFAULT_LOCAL_TARGET_FAILURE_COOLDOWN_SECS: u64 = 30 * 60;
 const LOCAL_TARGET_FAILURE_THRESHOLD_ENV: &str = "DOCDEX_DELEGATION_FAILURE_THRESHOLD";
 const LOCAL_TARGET_FAILURE_LOOKBACK_ENV: &str = "DOCDEX_DELEGATION_FAILURE_LOOKBACK_SECS";
 const LOCAL_TARGET_FAILURE_COOLDOWN_ENV: &str = "DOCDEX_DELEGATION_FAILURE_COOLDOWN_SECS";
+const LOCAL_AGENT_SOURCE_MCODA_LOCAL: &str = "mcoda-local";
+const LOCAL_AGENT_SOURCE_MCODA_CLOUD: &str = "mcoda-cloud";
+const ROLLING_5H_WINDOW_MS: u128 = 5 * 60 * 60 * 1000;
+const DAILY_WINDOW_MS: u128 = 24 * 60 * 60 * 1000;
+const WEEKLY_WINDOW_MS: u128 = 7 * 24 * 60 * 60 * 1000;
+const OTHER_WINDOW_MS: u128 = 60 * 60 * 1000;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ModelClassification {
@@ -87,6 +97,8 @@ pub struct LocalModelEntry {
 pub struct LocalAgentEntry {
     pub agent_id: String,
     pub agent_slug: String,
+    #[serde(default = "default_local_agent_source")]
+    pub source: String,
     pub adapter: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
@@ -116,6 +128,10 @@ pub struct LocalAgentEntry {
 
 fn default_library_version() -> u32 {
     LIBRARY_VERSION
+}
+
+fn default_local_agent_source() -> String {
+    LOCAL_AGENT_SOURCE_MCODA_LOCAL.to_string()
 }
 
 pub(crate) fn resolve_local_ollama_base_url(llm_config: &LlmConfig) -> Option<String> {
@@ -301,7 +317,82 @@ pub(crate) async fn discover_ollama_models(
     models.into_iter().collect()
 }
 
-pub(crate) fn discover_mcoda_agents(state_dir_override: Option<&Path>) -> Vec<LocalAgentEntry> {
+fn managed_mswarm_cloud_agent(agent: &McodaAgent) -> bool {
+    agent
+        .config
+        .as_ref()
+        .and_then(|config| config.pointer("/mswarmCloud/managed"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+pub(crate) fn local_agent_is_cloud(entry: &LocalAgentEntry) -> bool {
+    entry.source == LOCAL_AGENT_SOURCE_MCODA_CLOUD
+}
+
+fn delegation_cloud_credentials() -> Option<(String, String)> {
+    let config = AppConfig::load_default().ok()?;
+    let api_key = config.integrations.mswarm.api_key?.trim().to_string();
+    if api_key.is_empty() {
+        return None;
+    }
+    let base_url = config.integrations.mswarm.base_url.trim();
+    if base_url.is_empty() {
+        return None;
+    }
+    Some((base_url.to_string(), api_key))
+}
+
+fn refresh_managed_mswarm_cloud_agents(llm_config: &LlmConfig) {
+    if !llm_config.delegation.cloud.enabled {
+        return;
+    }
+    let Some((base_url, api_key)) = delegation_cloud_credentials() else {
+        return;
+    };
+    let sync_limit = llm_config.delegation.cloud.sync_limit.max(1);
+    let options = McodaCloudListOptions {
+        provider: Some(llm_config.delegation.cloud.provider.clone())
+            .filter(|value| !value.trim().is_empty()),
+        limit: Some(llm_config.delegation.cloud.limit.max(sync_limit)),
+        max_cost_per_million: Some(llm_config.delegation.cloud.max_cost_per_million),
+        min_context_window: Some(llm_config.delegation.cloud.min_context.max(1)),
+        min_reasoning_rating: Some(llm_config.delegation.cloud.min_reasoning),
+        sort_by_catalog_rating: llm_config.delegation.cloud.sorted_by_catalog_rating,
+        base_url: Some(base_url.clone()),
+        api_key: Some(api_key.clone()),
+    };
+    let cloud_agents = match list_cloud_agents(&options) {
+        Ok(agents) => agents,
+        Err(err) => {
+            warn!(
+                target: "docdexd",
+                error = ?err,
+                "mcoda cloud agent discovery failed"
+            );
+            return;
+        }
+    };
+    if cloud_agents.is_empty() {
+        return;
+    }
+    let selected: Vec<_> = cloud_agents.into_iter().take(sync_limit).collect();
+    if let Err(err) = materialize_cloud_agents(&base_url, &api_key, &selected) {
+        warn!(
+            target: "docdexd",
+            error = ?err,
+            "failed to materialize mcoda cloud agents for delegation"
+        );
+    }
+}
+
+pub(crate) fn discover_mcoda_agents(
+    state_dir_override: Option<&Path>,
+    llm_config: &LlmConfig,
+) -> Vec<LocalAgentEntry> {
+    refresh_managed_mswarm_cloud_agents(llm_config);
+    let allow_cloud_agents =
+        llm_config.delegation.cloud.enabled && delegation_cloud_credentials().is_some();
     let registry = match McodaRegistry::load_default() {
         Ok(Some(registry)) => registry,
         Ok(None) => return Vec::new(),
@@ -319,6 +410,7 @@ pub(crate) fn discover_mcoda_agents(state_dir_override: Option<&Path>) -> Vec<Lo
     registry
         .agents
         .iter()
+        .filter(|agent| allow_cloud_agents || !managed_mswarm_cloud_agent(agent))
         .map(|agent| mcoda_agent_entry(agent, now, Some(&recent_failures)))
         .collect()
 }
@@ -482,7 +574,7 @@ where
         }
     }
 
-    let agents = discover_mcoda_agents(state_dir_override);
+    let agents = discover_mcoda_agents(state_dir_override, llm_config);
 
     library.updated_at_ms = now;
     library.models = models;
@@ -760,6 +852,71 @@ fn agent_recent_local_failure<'a>(
         .or_else(|| recent_failures.get(&agent.slug))
 }
 
+fn usage_limit_window_ms(window_type: &str) -> u128 {
+    match window_type.trim().to_ascii_lowercase().as_str() {
+        "rolling_5h" => ROLLING_5H_WINDOW_MS,
+        "daily" => DAILY_WINDOW_MS,
+        "weekly" => WEEKLY_WINDOW_MS,
+        _ => OTHER_WINDOW_MS,
+    }
+}
+
+fn parse_timestamp_ms(value: Option<&str>) -> Option<u128> {
+    let value = value?.trim();
+    if value.is_empty() {
+        return None;
+    }
+    chrono::DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|timestamp| timestamp.timestamp_millis().max(0) as u128)
+}
+
+fn usage_limit_reset_at_ms(limit: &McodaAgentUsageLimit) -> Option<u128> {
+    parse_timestamp_ms(limit.reset_at.as_deref())
+        .or_else(|| {
+            limit
+                .details
+                .as_ref()
+                .and_then(|details| details.get("estimatedResetAt"))
+                .and_then(Value::as_str)
+                .and_then(|value| parse_timestamp_ms(Some(value)))
+        })
+        .or_else(|| {
+            parse_timestamp_ms(limit.observed_at.as_deref()).map(|observed_at_ms| {
+                observed_at_ms.saturating_add(usage_limit_window_ms(&limit.window_type))
+            })
+        })
+}
+
+fn active_usage_limit<'a>(
+    agent: &'a McodaAgent,
+    now_ms: u128,
+) -> Option<(&'a McodaAgentUsageLimit, Option<u128>)> {
+    agent.usage_limits.iter().find_map(|limit| {
+        if !limit.status.eq_ignore_ascii_case("exhausted") {
+            return None;
+        }
+        let reset_at_ms = usage_limit_reset_at_ms(limit);
+        match reset_at_ms {
+            Some(reset_at_ms) if reset_at_ms <= now_ms => None,
+            _ => Some((limit, reset_at_ms)),
+        }
+    })
+}
+
+fn usage_limit_note(limit: &McodaAgentUsageLimit, reset_at_ms: Option<u128>) -> String {
+    let scope = format!("{}:{}", limit.limit_scope, limit.limit_key);
+    match reset_at_ms {
+        Some(reset_at_ms) => format!(
+            "usage limit exhausted for {scope}; resets at {}",
+            chrono::DateTime::<chrono::Utc>::from_timestamp_millis(reset_at_ms as i64)
+                .map(|timestamp| timestamp.to_rfc3339())
+                .unwrap_or_else(|| "unknown".to_string())
+        ),
+        None => format!("usage limit exhausted for {scope}"),
+    }
+}
+
 fn mcoda_agent_health_allows(status: Option<&str>) -> bool {
     let Some(status) = status.map(str::trim).filter(|value| !value.is_empty()) else {
         return true;
@@ -849,14 +1006,27 @@ fn mcoda_agent_entry(
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
         .map(|value| value.to_string());
+    let source = if managed_mswarm_cloud_agent(agent) {
+        LOCAL_AGENT_SOURCE_MCODA_CLOUD.to_string()
+    } else {
+        LOCAL_AGENT_SOURCE_MCODA_LOCAL.to_string()
+    };
     let mut notes = None;
+    if let Some((limit, reset_at_ms)) = active_usage_limit(agent, now_ms) {
+        notes = Some(usage_limit_note(limit, reset_at_ms));
+        health_status = Some("limited".to_string());
+    }
     if let Some(failure) =
         recent_failures.and_then(|failures| agent_recent_local_failure(agent, failures))
     {
-        notes = Some(format!(
+        let failure_note = format!(
             "recent local delegation failures: {} (cooldown active)",
             failure.recent_failures
-        ));
+        );
+        notes = Some(match notes.take() {
+            Some(existing) => format!("{existing}; {failure_note}"),
+            None => failure_note,
+        });
         if mcoda_agent_health_allows(health_status.as_deref()) {
             health_status = Some("degraded".to_string());
         }
@@ -864,6 +1034,7 @@ fn mcoda_agent_entry(
     LocalAgentEntry {
         agent_id: agent.id.clone(),
         agent_slug: agent.slug.clone(),
+        source,
         adapter: agent.adapter.clone(),
         default_model: agent.default_model.clone(),
         max_complexity,
@@ -970,6 +1141,7 @@ mod tests {
             agents: vec![LocalAgentEntry {
                 agent_id: "agent-1".to_string(),
                 agent_slug: "agent-one".to_string(),
+                source: LOCAL_AGENT_SOURCE_MCODA_LOCAL.to_string(),
                 adapter: "ollama".to_string(),
                 default_model: Some("phi3.5".to_string()),
                 max_complexity: Some(3),
@@ -1085,9 +1257,11 @@ mod tests {
             ],
             models: Vec::new(),
             auth: None,
+            usage_limits: Vec::new(),
         };
         let entry = mcoda_agent_entry(&agent, 10, None);
         assert_eq!(entry.agent_id, "agent-1");
+        assert_eq!(entry.source, LOCAL_AGENT_SOURCE_MCODA_LOCAL);
         assert!(entry.capabilities.contains(&"code_writer".to_string()));
         assert!(entry.capabilities.contains(&"code_reviewer".to_string()));
         assert!(entry.capabilities.contains(&"general_chat".to_string()));
@@ -1100,6 +1274,54 @@ mod tests {
         assert_eq!(entry.health_status.as_deref(), Some("healthy"));
         assert_eq!(entry.classification_method, "registry");
         assert_eq!(entry.last_seen_at_ms, 10);
+    }
+
+    #[test]
+    fn mcoda_cloud_agent_with_active_usage_limit_is_marked_limited() {
+        let agent = McodaAgent {
+            id: "agent-cloud".to_string(),
+            slug: "cloud-coder".to_string(),
+            adapter: "openai-api".to_string(),
+            default_model: Some("openrouter/qwen3-coder".to_string()),
+            config: Some(serde_json::json!({
+                "mswarmCloud": {
+                    "managed": true,
+                    "remoteSlug": "openrouter-qwen-qwen3-coder"
+                }
+            })),
+            created_at: None,
+            updated_at: None,
+            rating: Some(8.5),
+            cost_per_million: Some(0.25),
+            max_complexity: Some(8),
+            best_usage: Some("code_writer".to_string()),
+            reasoning_rating: Some(8.3),
+            health_status: Some("healthy".to_string()),
+            cli_binary: None,
+            capabilities: vec!["code_write".to_string()],
+            models: Vec::new(),
+            auth: None,
+            usage_limits: vec![McodaAgentUsageLimit {
+                agent_id: "agent-cloud".to_string(),
+                limit_scope: "model".to_string(),
+                limit_key: "openrouter/qwen3-coder".to_string(),
+                window_type: "daily".to_string(),
+                status: "exhausted".to_string(),
+                reset_at: Some((chrono::Utc::now() + chrono::Duration::hours(4)).to_rfc3339()),
+                observed_at: Some(chrono::Utc::now().to_rfc3339()),
+                source: Some("mswarm".to_string()),
+                details: None,
+            }],
+        };
+
+        let entry = mcoda_agent_entry(&agent, now_ms(), None);
+        assert_eq!(entry.source, LOCAL_AGENT_SOURCE_MCODA_CLOUD);
+        assert_eq!(entry.health_status.as_deref(), Some("limited"));
+        assert!(entry
+            .notes
+            .as_deref()
+            .unwrap_or_default()
+            .contains("usage limit exhausted"));
     }
 
     #[test]
@@ -1164,7 +1386,7 @@ mod tests {
 
         let _home = EnvVarGuard::set("HOME", dir.path());
         let _userprofile = EnvVarGuard::set("USERPROFILE", dir.path());
-        let agents = discover_mcoda_agents(None);
+        let agents = discover_mcoda_agents(None, &LlmConfig::default());
 
         assert_eq!(agents.len(), 1);
         let entry = &agents[0];
@@ -1235,7 +1457,7 @@ mod tests {
 
         let _home = EnvVarGuard::set("HOME", dir.path());
         let _userprofile = EnvVarGuard::set("USERPROFILE", dir.path());
-        let agents = discover_mcoda_agents(Some(dir.path()));
+        let agents = discover_mcoda_agents(Some(dir.path()), &LlmConfig::default());
 
         assert_eq!(agents.len(), 1);
         let entry = &agents[0];
@@ -1331,6 +1553,7 @@ mod tests {
         library.agents.push(LocalAgentEntry {
             agent_id: "agent".to_string(),
             agent_slug: "agent".to_string(),
+            source: LOCAL_AGENT_SOURCE_MCODA_LOCAL.to_string(),
             adapter: "openai".to_string(),
             default_model: None,
             max_complexity: None,

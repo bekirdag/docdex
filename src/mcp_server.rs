@@ -16,12 +16,13 @@ use crate::index::{IndexConfig, Indexer};
 use crate::libs;
 use crate::llm::delegation::{
     allowlist_allows, build_local_target_candidates_with_config, build_primary_target_candidates,
-    compute_cost_micros, compute_delegation_savings, local_selection_policy_requires_fresh_library,
-    mode_from_config, parse_local_target_override, resolve_local_cost_per_million,
-    resolve_primary_cost_per_million, resolve_task_scoped_delegation_config,
-    run_delegation_flow_with_failure_history, update_cached_local_selection_from_completion,
-    DelegationEnforcementError, DelegationFailureHistoryContext, DelegationMode,
-    DelegationPricingContext, LocalTarget, TaskType,
+    compute_cost_micros, compute_delegation_savings, filter_automatic_local_targets_by_cost,
+    local_selection_policy_requires_fresh_library, mode_from_config, parse_local_target_override,
+    resolve_explicit_target, resolve_local_cost_per_million, resolve_primary_cost_per_million,
+    resolve_task_scoped_delegation_config, run_delegation_flow_with_failure_history,
+    update_cached_local_selection_from_completion, DelegationEnforcementError,
+    DelegationFailureHistoryContext, DelegationMode, DelegationPricingContext, LocalTarget,
+    TaskType,
 };
 use crate::llm::local_library::{
     delegation_is_enabled, load_local_library, refresh_local_library,
@@ -29,7 +30,7 @@ use crate::llm::local_library::{
     refresh_local_library_with_web, resolve_local_ollama_base_url,
 };
 use crate::memory::{inject_embedding_metadata, repo_state_root_from_state_dir, MemoryStore};
-use crate::metrics::{self, DelegationMetrics};
+use crate::metrics::{self, DelegationMetrics, DelegationTelemetrySnapshot};
 use crate::ollama::OllamaEmbedder;
 use crate::orchestrator::web::{run_web_research, WebResearchResponse};
 use crate::orchestrator::{
@@ -419,6 +420,8 @@ struct InitializeParams {
     auth_token: Option<String>,
     #[serde(default, alias = "agentId")]
     agent_id: Option<String>,
+    #[serde(default, alias = "agentModel", alias = "model")]
+    agent_model: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -909,6 +912,7 @@ impl McpService {
             max_results: max_results.max(1),
             default_project_root: None,
             default_agent_id: None,
+            default_agent_model: None,
             memory,
             max_answer_tokens,
             llm_config,
@@ -985,6 +989,7 @@ struct McpServer {
     max_results: usize,
     default_project_root: Option<PathBuf>,
     default_agent_id: Option<String>,
+    default_agent_model: Option<String>,
     memory: Option<McpMemoryState>,
     max_answer_tokens: u32,
     llm_config: config::LlmConfig,
@@ -1137,10 +1142,18 @@ impl McpServer {
                 {
                     self.default_agent_id = Some(agent_id.to_string());
                 }
+                if let Some(agent_model) = init_params
+                    .agent_model
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    self.default_agent_model = Some(agent_model.to_string());
+                }
                 let protocol_version = init_params
                     .protocol_version
                     .unwrap_or_else(|| "2025-11-25".to_string());
-                let instructions = "Docdex is a local-first repo indexer: use docdex_search for repo docs/code before changing code.\nIf results are weak or the user asks for web context, use docdex_web_research (requires web enabled).\nUse docdex_open for file reads, docdex_files to list indexed docs, docdex_tree for folder structure, and docdex_index to refresh the index when stale.\nFor code intelligence, use docdex_symbols/docdex_ast, docdex_impact_diagnostics for unresolved imports, and docdex_impact_graph for dependency traversal.\nUse docdex_dag_export to export DAG sessions; pass the dag_session_id from docdex_search/docdex_web_research responses (or provide session_id directly).\nUse docdex_local_completion to offload small local tasks to a local model, including code drafting and lightweight general questions.\nMemory tools (docdex_memory_store/recall) require memory to be enabled.\nProfile tools (docdex_save_preference/docdex_get_profile) use global profile memory and do not require project_root.\nPass project_root/repo_path to match the MCP server repo (or omit if initialize set a default).";
+                let instructions = "Docdex is a local-first repo indexer: use docdex_search for repo docs/code before changing code.\nIf results are weak or the user asks for web context, use docdex_web_research (requires web enabled).\nUse docdex_open for file reads, docdex_files to list indexed docs, docdex_tree for folder structure, and docdex_index to refresh the index when stale.\nFor code intelligence, use docdex_symbols/docdex_ast, docdex_impact_diagnostics for unresolved imports, and docdex_impact_graph for dependency traversal.\nUse docdex_dag_export to export DAG sessions; pass the dag_session_id from docdex_search/docdex_web_research responses (or provide session_id directly).\nUse docdex_local_completion to offload small tasks to a local model or managed mcoda cloud agent. Code-oriented task types use the code lane; lightweight Q&A uses general_question. If mswarm is configured and cloud delegation is enabled, Docdex can discover `mswarm-cloud-*` candidates from `mcoda cloud agent list` and automatically skip usage-limited cloud agents.\nMemory tools (docdex_memory_store/recall) require memory to be enabled.\nProfile tools (docdex_save_preference/docdex_get_profile) use global profile memory and do not require project_root.\nPass project_root/repo_path to match the MCP server repo (or omit if initialize set a default).";
                 let mut caps = json!({
                     "tools": { "listChanged": false },
                     "resources": { "listChanged": false },
@@ -2848,6 +2861,7 @@ Produce a phased plan with risks and tests to run."
         let waterfall = run_waterfall(WaterfallRequest {
             request_id: request_id_ref,
             dag_session_id: Some(dag_session_id),
+            global_state_dir: self.global_state_dir.clone(),
             query,
             limit,
             diff: diff_request,
@@ -3074,17 +3088,20 @@ Produce a phased plan with risks and tests to run."
         let library_result = if web_gate.enabled {
             let indexer = self.indexer.clone();
             let libs_indexer = self.libs_indexer.as_deref();
+            let global_state_dir = self.global_state_dir.clone();
             let request_id = Uuid::new_v4().to_string();
             let mut fetcher = move |query: String| {
                 let indexer = indexer.clone();
                 let request_id = request_id.clone();
                 let web_gate = web_gate.clone();
                 let libs_indexer = libs_indexer;
+                let global_state_dir = global_state_dir.clone();
                 async move {
                     let response = run_web_research(
                         &request_id,
                         indexer.as_ref(),
                         libs_indexer,
+                        global_state_dir.as_deref(),
                         &query,
                         5,
                         Some(3),
@@ -3164,9 +3181,7 @@ Produce a phased plan with risks and tests to run."
             agent_override.and_then(|value| parse_local_target_override(value, library.as_ref()));
         let mut local_targets: Vec<LocalTarget> = override_target.clone().into_iter().collect();
         if local_targets.is_empty() {
-            if !llm_config.delegation.local_agent_id.trim().is_empty() {
-                local_targets.clear();
-            } else if let Some(library) = library.as_ref() {
+            if let Some(library) = library.as_ref() {
                 let mut library = library.clone();
                 local_targets = build_local_target_candidates_with_config(
                     self.global_state_dir.as_deref(),
@@ -3177,6 +3192,20 @@ Produce a phased plan with risks and tests to run."
             }
         }
         if local_targets.is_empty() {
+            if let Some(target) =
+                resolve_explicit_target(&llm_config.delegation.local_agent_id, library.as_ref())
+            {
+                local_targets.push(target);
+            }
+        }
+        if local_targets.is_empty() {
+            if let Some(target) =
+                resolve_explicit_target(&llm_config.delegation.cloud_agent_id, library.as_ref())
+            {
+                local_targets.push(target);
+            }
+        }
+        if local_targets.is_empty() {
             let model = llm_config.default_model.trim();
             if model.is_empty() {
                 local_targets.clear();
@@ -3184,17 +3213,6 @@ Produce a phased plan with risks and tests to run."
                 local_targets.push(LocalTarget::OllamaModel(model.to_string()));
             }
         }
-        let primary_targets = library
-            .as_ref()
-            .map(|library| {
-                build_primary_target_candidates(
-                    &llm_config,
-                    task_type,
-                    library,
-                    local_targets.first(),
-                )
-            })
-            .unwrap_or_default();
         let local_agent_override = match (&override_target, agent_override) {
             (Some(LocalTarget::OllamaModel(model)), _) => Some(format!("model:{model}")),
             (Some(LocalTarget::McodaAgent(_)), Some(value)) => Some(value.to_string()),
@@ -3214,14 +3232,53 @@ Produce a phased plan with risks and tests to run."
                 .as_deref()
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
-                .map(str::to_string),
+                .map(str::to_string)
+                .or_else(|| self.default_agent_model.clone()),
             primary_cost_per_million: args.primary_cost_per_million,
+            fallback_primary_cost_per_million: self
+                .delegation_metrics
+                .snapshot()
+                .effective_avoided_primary_usd_per_million_tokens()
+                .or_else(|| {
+                    DelegationTelemetrySnapshot::from_metrics(metrics::global().as_ref())
+                        .effective_avoided_primary_usd_per_million_tokens()
+                }),
         };
         let local_override = local_agent_override
             .as_deref()
             .map(|value| !value.trim().is_empty())
-            .unwrap_or(false)
-            || !llm_config.delegation.local_agent_id.trim().is_empty();
+            .unwrap_or(false);
+        let mut primary_targets = library
+            .as_ref()
+            .map(|library| {
+                build_primary_target_candidates(
+                    &llm_config,
+                    task_type,
+                    library,
+                    local_targets.first(),
+                )
+            })
+            .unwrap_or_default();
+        if !local_override {
+            local_targets = filter_automatic_local_targets_by_cost(
+                &llm_config,
+                Some(&pricing_context),
+                &primary_targets,
+                &local_targets,
+                library.as_ref(),
+            );
+            primary_targets = library
+                .as_ref()
+                .map(|library| {
+                    build_primary_target_candidates(
+                        &llm_config,
+                        task_type,
+                        library,
+                        local_targets.first(),
+                    )
+                })
+                .unwrap_or_default();
+        }
         let metrics = metrics::global();
         let started_at = Instant::now();
         metrics.inc_delegate_request();
@@ -3445,6 +3502,7 @@ Produce a phased plan with risks and tests to run."
             request_id_ref,
             self.indexer.as_ref(),
             libs_indexer,
+            self.global_state_dir.as_deref(),
             query,
             limit,
             web_limit,
@@ -4751,5 +4809,23 @@ mod tests {
         assert_eq!(err.start_line, 1);
         assert_eq!(err.end_line, 10);
         assert_eq!(err.total_lines, 5);
+    }
+
+    #[test]
+    fn initialize_params_accept_agent_model_aliases() {
+        let params: InitializeParams = serde_json::from_value(serde_json::json!({
+            "agentId": "codex",
+            "agentModel": "gpt-5.2-codex"
+        }))
+        .expect("initialize params should parse");
+        assert_eq!(params.agent_id.as_deref(), Some("codex"));
+        assert_eq!(params.agent_model.as_deref(), Some("gpt-5.2-codex"));
+
+        let snake_case: InitializeParams = serde_json::from_value(serde_json::json!({
+            "agent_id": "codex",
+            "agent_model": "gpt-5.2-codex"
+        }))
+        .expect("snake_case initialize params should parse");
+        assert_eq!(snake_case.agent_model.as_deref(), Some("gpt-5.2-codex"));
     }
 }

@@ -1,8 +1,9 @@
 use super::delegation::{
     allowlist_allows, build_local_target_candidates_with_config, compute_delegation_savings,
-    local_selection_policy_requires_fresh_library, mode_from_config, parse_local_target_override,
-    reevaluation_should_use_primary_client, render_prompt, resolve_delegation_client,
-    resolve_delegation_timeout, resolve_local_cost_per_million, resolve_primary_cost_per_million,
+    filter_automatic_local_targets_by_cost, local_selection_policy_requires_fresh_library,
+    mode_from_config, parse_local_target_override, reevaluation_should_use_primary_client,
+    render_prompt, resolve_delegation_client, resolve_delegation_timeout,
+    resolve_local_cost_per_million, resolve_primary_cost_per_million,
     resolve_task_scoped_delegation_config, run_flow_with_client_candidates,
     run_flow_with_client_candidates_with_failure_history, run_flow_with_clients,
     select_local_target, select_local_target_with_config, select_primary_target,
@@ -204,6 +205,7 @@ fn make_local_agent(
     LocalAgentEntry {
         agent_id: agent_id.to_string(),
         agent_slug: agent_slug.to_string(),
+        source: "mcoda-local".to_string(),
         adapter: "ollama-remote".to_string(),
         default_model: None,
         max_complexity,
@@ -512,6 +514,7 @@ fn delegation_primary_cost_prefers_runtime_caller_agent() {
         caller_agent_id: Some("paid-main".to_string()),
         caller_model: None,
         primary_cost_per_million: None,
+        fallback_primary_cost_per_million: None,
     };
 
     let cost =
@@ -541,6 +544,7 @@ fn delegation_primary_cost_resolves_runtime_caller_model_from_registry(
         caller_agent_id: None,
         caller_model: Some("gpt-5.2-codex".to_string()),
         primary_cost_per_million: None,
+        fallback_primary_cost_per_million: None,
     };
 
     let cost = resolve_primary_cost_per_million(&config, Some(&pricing_context), None, None);
@@ -555,6 +559,34 @@ fn delegation_primary_cost_falls_back_to_configured_rate_when_unresolved() {
 
     let cost = resolve_primary_cost_per_million(&config, None, None, None);
     assert!((cost - 12.5).abs() < 1e-6);
+}
+
+#[test]
+fn delegation_primary_cost_uses_historical_fallback_for_expensive_unpriced_caller() {
+    let config = LlmConfig::default();
+    let pricing_context = DelegationPricingContext {
+        caller_agent_id: Some("codex".to_string()),
+        caller_model: None,
+        primary_cost_per_million: None,
+        fallback_primary_cost_per_million: Some(12.25),
+    };
+
+    let cost = resolve_primary_cost_per_million(&config, Some(&pricing_context), None, None);
+    assert!((cost - 12.25).abs() < 1e-6);
+}
+
+#[test]
+fn delegation_primary_cost_ignores_historical_fallback_for_non_expensive_caller() {
+    let config = LlmConfig::default();
+    let pricing_context = DelegationPricingContext {
+        caller_agent_id: Some("local-helper".to_string()),
+        caller_model: None,
+        primary_cost_per_million: None,
+        fallback_primary_cost_per_million: Some(12.25),
+    };
+
+    let cost = resolve_primary_cost_per_million(&config, Some(&pricing_context), None, None);
+    assert_eq!(cost, 0.0);
 }
 
 #[test]
@@ -835,6 +867,7 @@ fn parse_local_target_override_matches_agent_slug() {
     library.agents.push(LocalAgentEntry {
         agent_id: "agent-1".to_string(),
         agent_slug: "devstral-local".to_string(),
+        source: "mcoda-local".to_string(),
         adapter: "ollama-remote".to_string(),
         default_model: None,
         max_complexity: None,
@@ -862,6 +895,7 @@ fn delegation_selects_local_healthy_mcoda_agent() {
     library.agents.push(LocalAgentEntry {
         agent_id: "agent-unhealthy".to_string(),
         agent_slug: "agent-unhealthy".to_string(),
+        source: "mcoda-local".to_string(),
         adapter: "ollama-remote".to_string(),
         default_model: None,
         max_complexity: None,
@@ -879,6 +913,7 @@ fn delegation_selects_local_healthy_mcoda_agent() {
     library.agents.push(LocalAgentEntry {
         agent_id: "agent-healthy".to_string(),
         agent_slug: "agent-healthy".to_string(),
+        source: "mcoda-local".to_string(),
         adapter: "ollama-remote".to_string(),
         default_model: None,
         max_complexity: None,
@@ -902,49 +937,18 @@ fn delegation_selects_local_healthy_mcoda_agent() {
 }
 
 #[test]
-fn delegation_skips_paid_mcoda_agent_for_automatic_local_selection() {
-    let mut library = LocalModelLibrary::default();
-    library.agents.push(make_local_agent(
-        "agent-paid",
-        "agent-paid",
-        Some(2.5),
-        Some(8),
-        Some(8.8),
-        Some(8.9),
-        Some("code_writer"),
-        Some("healthy"),
-        &["code_writer", "code_reviewer"],
-    ));
-    library.agents.push(make_local_agent(
-        "agent-free",
-        "agent-free",
-        Some(0.0),
-        Some(6),
-        Some(7.2),
-        Some(7.4),
-        Some("code_writer"),
-        Some("healthy"),
-        &["code_writer"],
-    ));
-
-    let selected = select_local_target(TaskType::GenerateTests, &library).expect("selection");
-    match selected {
-        LocalTarget::McodaAgent(id) => assert_eq!(id, "agent-free"),
-        _ => panic!("expected free mcoda target"),
-    }
-}
-
-#[test]
-fn delegation_skips_expensive_adapter_for_automatic_local_selection() {
+fn delegation_cost_filter_skips_paid_candidate_when_not_cheaper_than_primary() {
+    let config = LlmConfig::default();
     let mut library = LocalModelLibrary::default();
     library.agents.push(LocalAgentEntry {
         agent_id: "agent-claude".to_string(),
         agent_slug: "claude-sonnet".to_string(),
+        source: "mcoda-local".to_string(),
         adapter: "claude-cli".to_string(),
         default_model: Some("claude-3.7-sonnet".to_string()),
         max_complexity: Some(9),
         rating: Some(9.0),
-        cost_per_million: Some(0.0),
+        cost_per_million: Some(2.5),
         usage: Some("code_writer".to_string()),
         reasoning_rating: Some(9.1),
         health_status: Some("healthy".to_string()),
@@ -954,23 +958,69 @@ fn delegation_skips_expensive_adapter_for_automatic_local_selection() {
         last_seen_at_ms: 0,
         last_classified_at_ms: None,
     });
-    library.agents.push(make_local_agent(
-        "agent-local",
-        "agent-local",
-        Some(0.0),
-        Some(6),
-        Some(7.0),
-        Some(7.2),
-        Some("code_writer"),
-        Some("healthy"),
-        &["code_writer"],
-    ));
+    let local_targets = vec![LocalTarget::McodaAgent("agent-claude".to_string())];
+    let filtered = filter_automatic_local_targets_by_cost(
+        &config,
+        Some(&DelegationPricingContext {
+            caller_agent_id: Some("codex".to_string()),
+            caller_model: None,
+            primary_cost_per_million: Some(1.5),
+            fallback_primary_cost_per_million: None,
+        }),
+        &[],
+        &local_targets,
+        Some(&library),
+    );
+    assert!(filtered.is_empty());
+}
 
-    let selected = select_local_target(TaskType::GenerateTests, &library).expect("selection");
-    match selected {
-        LocalTarget::McodaAgent(id) => assert_eq!(id, "agent-local"),
-        _ => panic!("expected eligible local mcoda target"),
-    }
+#[test]
+fn delegation_prefers_local_candidates_before_cloud_fallback() {
+    let mut config = LlmConfig::default();
+    config.delegation.cloud.enabled = true;
+    config.delegation.cloud_agent_id = "cloud-coder".to_string();
+    let mut library = LocalModelLibrary::default();
+    library.models.push(LocalModelEntry {
+        name: "qwen3-coder".to_string(),
+        source: "ollama".to_string(),
+        capabilities: vec!["code_writer".to_string()],
+        notes: None,
+        classification_method: "heuristic".to_string(),
+        last_seen_at_ms: 0,
+        last_classified_at_ms: None,
+    });
+    library.agents.push(LocalAgentEntry {
+        agent_id: "cloud-1".to_string(),
+        agent_slug: "cloud-coder".to_string(),
+        source: "mcoda-cloud".to_string(),
+        adapter: "openai-api".to_string(),
+        default_model: Some("openrouter/qwen3-coder".to_string()),
+        max_complexity: Some(8),
+        rating: Some(9.0),
+        cost_per_million: Some(0.25),
+        usage: Some("code_writer".to_string()),
+        reasoning_rating: Some(8.8),
+        health_status: Some("healthy".to_string()),
+        capabilities: vec!["code_writer".to_string(), "code_reviewer".to_string()],
+        notes: None,
+        classification_method: "registry".to_string(),
+        last_seen_at_ms: 0,
+        last_classified_at_ms: None,
+    });
+
+    let targets = build_local_target_candidates_with_config(
+        None,
+        &config,
+        TaskType::GenerateTests,
+        &mut library,
+    );
+    assert_eq!(
+        targets,
+        vec![
+            LocalTarget::OllamaModel("qwen3-coder".to_string()),
+            LocalTarget::McodaAgent("cloud-1".to_string()),
+        ]
+    );
 }
 
 #[test]
@@ -1200,6 +1250,7 @@ fn delegation_updates_cached_zero_cost_agent_after_successful_alternate_completi
     library.agents.push(LocalAgentEntry {
         agent_id: "agent-qwen".to_string(),
         agent_slug: "qwen-3.5-27b".to_string(),
+        source: "mcoda-local".to_string(),
         adapter: "ollama-remote".to_string(),
         default_model: Some("qwen3.5:27b".to_string()),
         max_complexity: Some(7),
@@ -1217,6 +1268,7 @@ fn delegation_updates_cached_zero_cost_agent_after_successful_alternate_completi
     library.agents.push(LocalAgentEntry {
         agent_id: "agent-local-alt".to_string(),
         agent_slug: "local-alt".to_string(),
+        source: "mcoda-local".to_string(),
         adapter: "ollama-remote".to_string(),
         default_model: Some("qwen3.5:32b".to_string()),
         max_complexity: Some(6),
@@ -1274,6 +1326,7 @@ fn delegation_does_not_cache_expensive_mcoda_completion() -> Result<(), Box<dyn 
     library.agents.push(LocalAgentEntry {
         agent_id: "agent-qwen".to_string(),
         agent_slug: "qwen-3.5-27b".to_string(),
+        source: "mcoda-local".to_string(),
         adapter: "ollama-remote".to_string(),
         default_model: Some("qwen3.5:27b".to_string()),
         max_complexity: Some(7),
@@ -1291,6 +1344,7 @@ fn delegation_does_not_cache_expensive_mcoda_completion() -> Result<(), Box<dyn 
     library.agents.push(LocalAgentEntry {
         agent_id: "agent-claude".to_string(),
         agent_slug: "claude-sonnet".to_string(),
+        source: "mcoda-local".to_string(),
         adapter: "claude-cli".to_string(),
         default_model: Some("claude-3.7-sonnet".to_string()),
         max_complexity: Some(9),
@@ -1400,18 +1454,23 @@ fn delegation_selects_general_chat_for_general_questions() {
 fn resolve_task_scoped_delegation_config_prefers_lane_specific_agents() {
     let mut config = LlmConfig::default();
     config.delegation.local_agent_id = "fallback-local".to_string();
+    config.delegation.cloud_agent_id = "fallback-cloud".to_string();
     config.delegation.primary_agent_id = "fallback-primary".to_string();
     config.delegation.code.local_agent_id = "qwen3-coder".to_string();
+    config.delegation.code.cloud_agent_id = "openrouter-qwen3-coder".to_string();
     config.delegation.code.primary_agent_id = "qwen3-coder".to_string();
     config.delegation.general.local_agent_id = "qwen-3.5-35b".to_string();
+    config.delegation.general.cloud_agent_id = "openrouter-qwen-plus".to_string();
     config.delegation.general.primary_agent_id = "qwen-3.5-35b".to_string();
 
     let code = resolve_task_scoped_delegation_config(&config, TaskType::ScaffoldBoilerplate);
     assert_eq!(code.delegation.local_agent_id, "qwen3-coder");
+    assert_eq!(code.delegation.cloud_agent_id, "openrouter-qwen3-coder");
     assert_eq!(code.delegation.primary_agent_id, "qwen3-coder");
 
     let general = resolve_task_scoped_delegation_config(&config, TaskType::GeneralQuestion);
     assert_eq!(general.delegation.local_agent_id, "qwen-3.5-35b");
+    assert_eq!(general.delegation.cloud_agent_id, "openrouter-qwen-plus");
     assert_eq!(general.delegation.primary_agent_id, "qwen-3.5-35b");
 }
 
@@ -1446,6 +1505,7 @@ fn delegation_selects_primary_prefers_mcoda_on_tie() {
     library.agents.push(LocalAgentEntry {
         agent_id: "agent-1".to_string(),
         agent_slug: "agent-one".to_string(),
+        source: "mcoda-local".to_string(),
         adapter: "ollama".to_string(),
         default_model: None,
         max_complexity: None,
@@ -1483,6 +1543,7 @@ fn delegation_selects_primary_avoids_local_target_when_possible() {
     library.agents.push(LocalAgentEntry {
         agent_id: "agent-1".to_string(),
         agent_slug: "agent-one".to_string(),
+        source: "mcoda-local".to_string(),
         adapter: "ollama".to_string(),
         default_model: None,
         max_complexity: None,

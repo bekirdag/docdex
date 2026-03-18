@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.57
+- Bump release metadata to 0.2.57.
+
 ## 0.2.56
 - Clarify agent-facing local delegation docs for code-oriented tasks versus `general_question`.
 

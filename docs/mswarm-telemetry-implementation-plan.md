@@ -58,6 +58,8 @@ Docdex:
 mcoda:
 
 - Mirror the consent requirement during install/setup.
+- Show the bundled terms during packaged CLI postinstall when an interactive terminal is available.
+- Provide `mcoda setup` as the guided fallback when install cannot prompt.
 - Persist its local consent state and client identity in `~/.mcoda`.
 - Reuse Docdex daemon for hourly shipping instead of creating a background worker.
 
@@ -145,7 +147,7 @@ mswarm:
 
 mcoda:
 
-- document and scaffold matching consent requirements
+- implement guided install/setup consent bootstrap plus explicit consent lifecycle commands
 
 Acceptance:
 
@@ -216,7 +218,8 @@ Acceptance:
 Status:
 
 - completed for rating export from the local mcoda SQLite store into Docdex packages
-- completed for standalone mcoda consent bootstrap through `mcoda consent accept`, `mcoda consent revoke`, and `mcoda consent request-deletion`
+- completed for packaged mcoda install/setup consent bootstrap through the bundled postinstall prompt and `mcoda setup`
+- completed for standalone mcoda consent lifecycle commands through `mcoda consent accept`, `mcoda consent revoke`, and `mcoda consent request-deletion`
 - mcoda blocks non-exempt commands until telemetry consent has been accepted locally
 
 ### Phase 5: Paid finalized-answer cache reuse

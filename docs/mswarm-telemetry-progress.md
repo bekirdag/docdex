@@ -14,7 +14,7 @@ Related plan: `docs/mswarm-telemetry-implementation-plan.md`
 - Phase 2 local telemetry spooling completed in Docdex.
 - Phase 3 signed packaging + upload completed in Docdex and mswarm.
 - Phase 5 paid finalized-answer cache reuse completed end to end.
-- mcoda standalone consent/bootstrap completed through the CLI consent flow.
+- mcoda install/setup consent bootstrap now covers packaged postinstall, `mcoda setup`, and the CLI consent lifecycle commands.
 - User-facing deletion request workflows now exist in both Docdex and mcoda.
 - The finalized-answer cache now uses provider/context-aware lookup keys with query-only fallback.
 
@@ -137,6 +137,19 @@ Related plan: `docs/mswarm-telemetry-implementation-plan.md`
   - `https://api.mswarm.org/healthz`
   - live `POST /v1/swarm/mcoda/free-client/register`
   - live `POST /v1/swarm/data/deletion-request`
+
+### 2026-03-18 mcoda setup/install alignment
+
+- Added packaged mcoda consent assets and lifecycle hooks:
+  - bundled `packages/cli/MSWARM_DATA_COLLECTION_TERMS.md`
+  - packaged `packages/cli/scripts/postinstall.js`
+  - compiled `packages/cli/src/install/MswarmConsentBootstrap.ts`
+- Added `mcoda setup` as the guided interactive setup fallback when installation cannot prompt.
+- Updated the repo-local install helper `scripts/install-local-packages.js` to run the same consent bootstrap after linking the CLI binary.
+- Added focused mcoda coverage:
+  - `node --test dist/__tests__/MswarmConsentBootstrap.test.js dist/__tests__/McodaEntrypoint.test.js`
+  - `pnpm --filter mcoda run pack:verify`
+  - `pnpm --filter mcoda run test`
 
 ## Next steps
 

@@ -24,6 +24,8 @@ pub mod mcp_proxy;
 pub mod mcp_server;
 pub mod memory;
 pub mod metrics;
+pub mod mswarm;
+pub mod mswarm_telemetry;
 pub mod ollama;
 pub mod orchestrator;
 pub mod profiles;

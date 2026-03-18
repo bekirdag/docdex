@@ -1187,6 +1187,25 @@ pub(crate) enum MswarmCommand {
         #[arg(long, default_value_t = false, help = "Emit JSON summary")]
         json: bool,
     },
+    /// Show the current mswarm integration and telemetry consent state.
+    Status {
+        #[arg(long, default_value_t = false, help = "Emit JSON summary")]
+        json: bool,
+    },
+    /// Revoke the currently stored mswarm consent token.
+    Revoke {
+        #[arg(long, value_name = "TEXT", help = "Optional revoke reason")]
+        reason: Option<String>,
+        #[arg(long, default_value_t = false, help = "Emit JSON summary")]
+        json: bool,
+    },
+    /// Submit a data deletion request to mswarm for the current Docdex identity.
+    RequestDeletion {
+        #[arg(long, value_name = "TEXT", help = "Optional deletion reason")]
+        reason: Option<String>,
+        #[arg(long, default_value_t = false, help = "Emit JSON summary")]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]

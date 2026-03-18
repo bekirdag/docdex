@@ -47,6 +47,9 @@ pub struct StatePathsDebug {
     pub browser_profiles_dir: String,
     pub locks_dir: String,
     pub logs_dir: String,
+    pub mswarm_dir: String,
+    pub mswarm_events_dir: String,
+    pub mswarm_packages_dir: String,
 }
 
 struct StateBaseResolution {
@@ -87,6 +90,42 @@ impl StateLayout {
         self.base_dir.join("logs")
     }
 
+    pub fn mswarm_dir(&self) -> PathBuf {
+        self.base_dir.join("mswarm")
+    }
+
+    pub fn mswarm_clients_dir(&self) -> PathBuf {
+        self.mswarm_dir().join("clients")
+    }
+
+    pub fn mswarm_consent_dir(&self) -> PathBuf {
+        self.mswarm_dir().join("consent")
+    }
+
+    pub fn mswarm_events_dir(&self) -> PathBuf {
+        self.mswarm_dir().join("events")
+    }
+
+    pub fn mswarm_ratings_dir(&self) -> PathBuf {
+        self.mswarm_dir().join("ratings")
+    }
+
+    pub fn mswarm_packages_dir(&self) -> PathBuf {
+        self.mswarm_dir().join("packages")
+    }
+
+    pub fn mswarm_packages_pending_dir(&self) -> PathBuf {
+        self.mswarm_packages_dir().join("pending")
+    }
+
+    pub fn mswarm_packages_failed_dir(&self) -> PathBuf {
+        self.mswarm_packages_dir().join("failed")
+    }
+
+    pub fn mswarm_packages_sent_dir(&self) -> PathBuf {
+        self.mswarm_packages_dir().join("sent")
+    }
+
     pub fn profiles_dir(&self) -> PathBuf {
         self.base_dir.join("profiles")
     }
@@ -110,6 +149,15 @@ impl StateLayout {
         ensure_state_dir_secure(&self.browser_profiles_dir())?;
         ensure_state_dir_secure(&self.locks_dir())?;
         ensure_state_dir_secure(&self.logs_dir())?;
+        ensure_state_dir_secure(&self.mswarm_dir())?;
+        ensure_state_dir_secure(&self.mswarm_clients_dir())?;
+        ensure_state_dir_secure(&self.mswarm_consent_dir())?;
+        ensure_state_dir_secure(&self.mswarm_events_dir())?;
+        ensure_state_dir_secure(&self.mswarm_ratings_dir())?;
+        ensure_state_dir_secure(&self.mswarm_packages_dir())?;
+        ensure_state_dir_secure(&self.mswarm_packages_pending_dir())?;
+        ensure_state_dir_secure(&self.mswarm_packages_failed_dir())?;
+        ensure_state_dir_secure(&self.mswarm_packages_sent_dir())?;
         Ok(())
     }
 }
@@ -175,6 +223,9 @@ impl StatePaths {
             browser_profiles_dir: self.layout.browser_profiles_dir().display().to_string(),
             locks_dir: self.layout.locks_dir().display().to_string(),
             logs_dir: self.layout.logs_dir().display().to_string(),
+            mswarm_dir: self.layout.mswarm_dir().display().to_string(),
+            mswarm_events_dir: self.layout.mswarm_events_dir().display().to_string(),
+            mswarm_packages_dir: self.layout.mswarm_packages_dir().display().to_string(),
         }
     }
 }

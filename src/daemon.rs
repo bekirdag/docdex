@@ -650,6 +650,7 @@ pub async fn serve(
         }
         (None, delegation_metrics)
     };
+    start_mswarm_telemetry_housekeeping(telemetry_global_state_dir.clone());
 
     let mut mcp_router = None;
     if enable_mcp {
@@ -968,6 +969,54 @@ pub async fn serve(
             Err(err.into())
         }
     }
+}
+
+fn start_mswarm_telemetry_housekeeping(global_state_dir: Option<PathBuf>) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(60 * 60));
+        loop {
+            ticker.tick().await;
+            let state_dir = global_state_dir.clone();
+            let cycle = tokio::task::spawn_blocking(move || {
+                crate::mswarm_telemetry::run_housekeeping_cycle(state_dir.as_deref())
+            })
+            .await;
+            match cycle {
+                Ok(Ok(summary)) => {
+                    if summary.exported_ratings > 0
+                        || summary.created_packages > 0
+                        || summary.uploaded_packages > 0
+                        || summary.failed_packages > 0
+                        || summary.pruned_paths > 0
+                    {
+                        info!(
+                            target: "docdexd",
+                            exported_ratings = summary.exported_ratings,
+                            created_packages = summary.created_packages,
+                            uploaded_packages = summary.uploaded_packages,
+                            failed_packages = summary.failed_packages,
+                            pruned_paths = summary.pruned_paths,
+                            "completed mswarm telemetry housekeeping cycle"
+                        );
+                    }
+                }
+                Ok(Err(err)) => {
+                    warn!(
+                        target: "docdexd",
+                        error = ?err,
+                        "mswarm telemetry housekeeping cycle failed"
+                    );
+                }
+                Err(err) => {
+                    warn!(
+                        target: "docdexd",
+                        error = ?err,
+                        "mswarm telemetry housekeeping task join failed"
+                    );
+                }
+            }
+        }
+    });
 }
 
 #[cfg(test)]

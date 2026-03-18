@@ -199,6 +199,32 @@ pub async fn web_fetch_handler(
             web::cache::read_cache_entry_with_ttl(layout, url.as_str(), config.cache_ttl)
         {
             if let Ok(entry) = serde_json::from_slice::<WebFetchCacheEntry>(&payload) {
+                let telemetry_fetch = crate::orchestrator::web::WebFetchResult {
+                    url: entry.url.clone(),
+                    status: entry.status,
+                    fetched_at_epoch_ms: Some(entry.fetched_at_epoch_ms),
+                    cached: true,
+                    content: Some(entry.content.clone()),
+                    ai_digested_content: None,
+                    ai_digested_kind: None,
+                    relevance_score: None,
+                    debug_html: None,
+                    debug_dom_text: None,
+                    error: None,
+                    debug: None,
+                };
+                if let Err(err) = crate::mswarm_telemetry::record_direct_web_fetch(
+                    state.global_state_dir.as_deref(),
+                    Some(state.indexer.repo_root()),
+                    &telemetry_fetch,
+                ) {
+                    warn!(
+                        target: "docdexd",
+                        error = ?err,
+                        url = %telemetry_fetch.url,
+                        "failed to record cached mswarm direct web fetch telemetry"
+                    );
+                }
                 return Json(entry).into_response();
             }
             if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&payload) {
@@ -253,6 +279,32 @@ pub async fn web_fetch_handler(
                 let _ = web::cache::write_cache_entry(layout, url.as_str(), &serialized);
             }
         }
+    }
+    let telemetry_fetch = crate::orchestrator::web::WebFetchResult {
+        url: entry.url.clone(),
+        status: entry.status,
+        fetched_at_epoch_ms: Some(entry.fetched_at_epoch_ms),
+        cached: false,
+        content: Some(entry.content.clone()),
+        ai_digested_content: None,
+        ai_digested_kind: None,
+        relevance_score: None,
+        debug_html: None,
+        debug_dom_text: None,
+        error: None,
+        debug: None,
+    };
+    if let Err(err) = crate::mswarm_telemetry::record_direct_web_fetch(
+        state.global_state_dir.as_deref(),
+        Some(state.indexer.repo_root()),
+        &telemetry_fetch,
+    ) {
+        warn!(
+            target: "docdexd",
+            error = ?err,
+            url = %telemetry_fetch.url,
+            "failed to record mswarm direct web fetch telemetry"
+        );
     }
     Json(entry).into_response()
 }

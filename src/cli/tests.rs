@@ -99,6 +99,15 @@ fn ensure_daemon_skips_mswarm_config() {
 }
 
 #[test]
+fn ensure_daemon_skips_mswarm_status() {
+    let cmd = Command::Mswarm {
+        command: super::MswarmCommand::Status { json: true },
+    };
+    assert!(!should_ensure_daemon(&cmd));
+    assert!(repo_hint_for_command(&cmd).is_none());
+}
+
+#[test]
 fn ensure_daemon_for_index_and_hint() {
     let temp = TempDir::new().expect("temp dir");
     let repo = repo_args(temp.path().to_path_buf());
@@ -278,6 +287,65 @@ fn parse_mswarm_configure_command() {
                 assert!(!disable_web_search);
                 assert!(json);
             }
+            _ => panic!("expected mswarm configure command"),
+        },
+        _ => panic!("expected mswarm command"),
+    }
+}
+
+#[test]
+fn parse_mswarm_status_command() {
+    let cli = Cli::try_parse_from(["docdexd", "mswarm", "status", "--json"]).expect("parse");
+    match cli.command {
+        Command::Mswarm { command } => match command {
+            super::MswarmCommand::Status { json } => assert!(json),
+            _ => panic!("expected mswarm status command"),
+        },
+        _ => panic!("expected mswarm command"),
+    }
+}
+
+#[test]
+fn parse_mswarm_revoke_command() {
+    let cli = Cli::try_parse_from([
+        "docdexd",
+        "mswarm",
+        "revoke",
+        "--reason",
+        "user-request",
+        "--json",
+    ])
+    .expect("parse");
+    match cli.command {
+        Command::Mswarm { command } => match command {
+            super::MswarmCommand::Revoke { reason, json } => {
+                assert_eq!(reason.as_deref(), Some("user-request"));
+                assert!(json);
+            }
+            _ => panic!("expected mswarm revoke command"),
+        },
+        _ => panic!("expected mswarm command"),
+    }
+}
+
+#[test]
+fn parse_mswarm_request_deletion_command() {
+    let cli = Cli::try_parse_from([
+        "docdexd",
+        "mswarm",
+        "request-deletion",
+        "--reason",
+        "gdpr",
+        "--json",
+    ])
+    .expect("parse");
+    match cli.command {
+        Command::Mswarm { command } => match command {
+            super::MswarmCommand::RequestDeletion { reason, json } => {
+                assert_eq!(reason.as_deref(), Some("gdpr"));
+                assert!(json);
+            }
+            _ => panic!("expected mswarm request-deletion command"),
         },
         _ => panic!("expected mswarm command"),
     }

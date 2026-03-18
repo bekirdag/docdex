@@ -341,6 +341,16 @@ docdexd mswarm configure \
 ```
 This stores the key in `~/.docdex/config.toml` under `[integrations.mswarm]`, defaults `[integrations.mswarm].base_url` to `https://api.mswarm.org/`, and sets `[web].discovery_provider = "mswarm"` when `--enable-web-search` is used. Use `--base-url` only when pointing Docdex at a non-default mswarm gateway.
 
+Inspect or manage consent later:
+```bash
+docdexd mswarm status --json
+docdexd mswarm request-deletion --reason "privacy request"
+docdexd mswarm revoke --reason "opt-out"
+```
+Notes:
+- `request-deletion` submits the current Docdex identity to mswarm using the persisted consent token.
+- For free Docdex installs, request deletion before revoking consent, because the deletion flow uses the currently stored consent token as proof of ownership.
+
 Main LLM config example:
 ```toml
 [llm]
@@ -366,8 +376,8 @@ Run Docdex with Ollama:
 DOCDEX_OLLAMA_BASE_URL=http://127.0.0.1:11434 docdex start --host 127.0.0.1 --port 28491
 ```
 
-## Local delegation (cheap agents)
-Docdex can offload small local tasks to a local model (Ollama or a mcoda agent) to reduce paid-token usage. This powers `/v1/delegate` and the MCP tool `docdex_local_completion` for both code-writing tasks and lightweight general questions.
+## Delegation (local-first plus cloud fallback)
+Docdex can offload small tasks to a local model (Ollama or a mcoda agent) to reduce paid-token usage. When mswarm is configured, it can also materialize managed mcoda cloud agents and use them as cloud fallbacks for `/v1/delegate` and the MCP tool `docdex_local_completion`.
 
 Config (`~/.docdex/config.toml`):
 ```toml
@@ -378,6 +388,7 @@ enforce_local = false
 allow_fallback_to_primary = false
 re_evaluate = true
 local_agent_id = "" # compatibility fallback when a lane-specific default is unset
+cloud_agent_id = "" # compatibility fallback when a lane-specific cloud fallback is unset
 primary_agent_id = "" # compatibility fallback when a lane-specific primary is unset
 local_selection_policy = "task_capability" # or "mcoda_zero_cost_most_capable"
 use_cached_local_decision = true
@@ -391,28 +402,44 @@ task_allowlist = ["generate_tests", "write_docstring", "scaffold_boilerplate", "
 
 [llm.delegation.code]
 local_agent_id = "qwen3-coder"
+cloud_agent_id = "mswarm-cloud-openrouter-kwaipilot-kat-coder-pro"
 primary_agent_id = "qwen3-coder"
 
 [llm.delegation.general]
 local_agent_id = "qwen-3.5-35b"
+cloud_agent_id = "mswarm-cloud-openrouter-qwen-qwen3-235b-a22b-thinking-2507"
 primary_agent_id = "qwen-3.5-35b"
+
+[llm.delegation.cloud]
+enabled = true
+provider = "openrouter"
+limit = 12
+sync_limit = 12
+sorted_by_catalog_rating = true
+max_cost_per_million = 1.0
+min_context = 128000
+min_reasoning = 6.5
 ```
 
 Notes:
 - `auto_enable` defaults to true; delegation auto-enables when local models or mcoda agents are present (opt out with `auto_enable = false`).
-- Task lanes: the code-oriented task types use `[llm.delegation.code]` first, while `general_question` uses `[llm.delegation.general]` first. The flat `local_agent_id` / `primary_agent_id` remain compatibility fallbacks when the lane-specific values are empty.
-- If the effective `local_agent_id` is empty, Docdex defaults to selecting a local model/agent from the library by task type; fallback is the configured Ollama model.
-- Automatic local target selection skips paid mcoda agents (`cost_per_million > 0`) and mcoda agents that match the expensive-model library (`docs/expensive_models.json`); explicit lane-specific config, flat `local_agent_id`, or per-request `agent` overrides still take precedence.
+- Task lanes: the code-oriented task types use `[llm.delegation.code]` first, while `general_question` uses `[llm.delegation.general]` first. The flat `local_agent_id` / `cloud_agent_id` / `primary_agent_id` remain compatibility fallbacks when the lane-specific values are empty.
+- If the effective local lane is empty, Docdex selects candidates from the library by task type. Local Ollama models and local mcoda agents are ranked ahead of managed cloud agents; if nothing local qualifies, Docdex can fall back to the configured cloud lane and then the configured Ollama model.
+- If `[llm.delegation.cloud].enabled = true` and `[integrations.mswarm].api_key` is set, Docdex runs `mcoda cloud agent list --json` with the configured provider/price/context/reasoning filters, materializes the top `sync_limit` results as managed `mswarm-cloud-*` mcoda agents, and exposes them through `docdexd delegation agents`.
+- `cloud_agent_id` under `[llm.delegation.code]` or `[llm.delegation.general]` is the preferred cloud fallback for that lane. The flat `[llm.delegation].cloud_agent_id` is a compatibility fallback when the lane-specific cloud value is empty.
+- Automatic target selection excludes paid mcoda candidates unless they are cheaper than the effective caller/primary model. Explicit per-request `agent` overrides remain hard overrides, while lane-specific `local_agent_id` / `cloud_agent_id` are tried first within their local or cloud tier.
+- If the same family exists both locally and in the managed cloud catalog, the local target wins because local candidates are ranked ahead of cloud candidates.
 - Set `local_selection_policy = "mcoda_zero_cost_most_capable"` to prefer mcoda when it is installed, inspect the mcoda inventory, find healthy zero-cost agents, choose the most capable one by delegation capabilities plus `max_complexity`/`reasoning_rating`/`rating`, and delegate local jobs to that agent.
-- When `use_cached_local_decision = true`, Docdex stores the chosen mcoda agent in `~/.docdex/state/llm/local_model_library.json` and reuses it on later runs. If the cached agent disappears, becomes unhealthy, or is no longer zero-cost, Docdex refreshes the mcoda inventory and chooses a new one automatically.
+- When `use_cached_local_decision = true`, Docdex stores the chosen zero-cost local mcoda agent in `~/.docdex/state/llm/local_model_library.json` and reuses it on later runs. If the cached agent disappears, becomes unhealthy, or is no longer zero-cost, Docdex refreshes the mcoda inventory and chooses a new one automatically. Managed cloud agents are not cached as zero-cost decisions.
 - If the effective `primary_agent_id` is empty, Docdex selects a primary model/agent from the local library by task type (preferring mcoda agents) for refinement/fallback.
 - To force an Ollama model, set a lane-specific or flat `*_agent_id` to `model:<name>` or `ollama:<name>`. Per-request `agent` also accepts model names listed by `docdexd delegation agents`.
-- Use `docdexd delegation agents --json` to verify whether mcoda is installed, list mcoda agents, and inspect `cost_per_million` alongside `max_complexity`, `rating`, `usage`, `reasoning_rating`, and `health_status`.
-- mcoda inventory refresh path: Docdex first runs `mcoda agent list --json --refresh-health` for fresh status and falls back to `mcoda agent list --json` for backward compatibility before DB fallback.
+- Use `docdexd delegation agents --json` to verify whether mcoda is installed, list local plus managed cloud mcoda agents, and inspect `cost_per_million` alongside `max_complexity`, `rating`, `usage`, `reasoning_rating`, `health_status`, and `source`.
+- Cloud catalog discovery mirrors mcoda’s filters: `provider`, `limit`, `max_cost_per_million`, `sorted_by_catalog_rating`, `min_context`, and `min_reasoning`. For setup/ops outside Docdex, the equivalent command is `mcoda cloud agent list --json --provider openrouter --limit ... --max-cost-per-1m-token ... --sorted-by-catalog-rating --min-context ... --min-reasoning ...`.
+- mcoda inventory refresh path: Docdex first runs `mcoda agent list --json --refresh-health` for fresh status and falls back to `mcoda agent list --json` for backward compatibility before DB fallback. For managed cloud agents, that refresh also updates `agent_usage_limits`; exhausted agents are marked `limited` and skipped until their reset window passes.
 - Supported local CLI adapters for mcoda agent resolution include `codex-cli`, `gemini-cli`, `openai-cli`, `ollama-cli`, and `claude-cli`.
 - Prefer agents whose `usage` matches the task, whose `reasoning_rating` is higher for complex work, and whose `health_status` is `healthy`.
 - Table output shows `USAGE`, `COMPLEXITY`, `RATING`, `REASON`, `COST/$1M`, and `HEALTH` for mcoda agents (`-` means unknown).
-- When `re_evaluate = true`, Docdex reviews successful local mcoda outputs (using the primary agent when available) and updates the mcoda ratings in `~/.mcoda/mcoda.db`. Review failures fall back to a heuristic score and never block delegation responses.
+- When `re_evaluate = true`, Docdex reviews successful mcoda outputs, including managed cloud delegations, using the primary agent when available and updates the mcoda ratings in `~/.mcoda/mcoda.db`. Review failures fall back to a heuristic score and never block delegation responses.
 - `task_allowlist` is optional; an empty list allows all task types, including `general_question`.
 - `draft_then_refine` returns a primary-agent refinement when available; otherwise returns the local draft with a warning.
 - If local delegation execution fails at runtime (for example missing local CLI binary), Docdex returns a warning and uses the configured/selected primary target when fallback is enabled.
@@ -420,7 +447,7 @@ Notes:
 - `enforce_local = true` requires a local agent/model to be available; if `allow_fallback_to_primary = false`, primary usage (fallback/refine) is disabled and the local draft is returned.
 - Local model library: `~/.docdex/state/llm/local_model_library.json` (or under `DOCDEX_STATE_DIR`).
 - Config compatibility: legacy config keys `primary_usd_per_1k_tokens` and `local_usd_per_1k_tokens` are still accepted on read, but Docdex now writes the canonical `*_usd_per_million_tokens` names.
-- Env overrides: `DOCDEX_DELEGATION_ENABLED`, `DOCDEX_DELEGATION_AUTO_ENABLE`, `DOCDEX_DELEGATION_ENFORCE_LOCAL`, `DOCDEX_DELEGATION_ALLOW_FALLBACK`, `DOCDEX_DELEGATION_REEVALUATE`, `DOCDEX_DELEGATION_LOCAL_AGENT`, `DOCDEX_DELEGATION_PRIMARY_AGENT`, `DOCDEX_DELEGATION_CODE_LOCAL_AGENT`, `DOCDEX_DELEGATION_CODE_PRIMARY_AGENT`, `DOCDEX_DELEGATION_GENERAL_LOCAL_AGENT`, `DOCDEX_DELEGATION_GENERAL_PRIMARY_AGENT`, `DOCDEX_DELEGATION_LOCAL_SELECTION_POLICY`, `DOCDEX_DELEGATION_USE_CACHED_LOCAL_DECISION`, `DOCDEX_DELEGATION_MODE`, `DOCDEX_DELEGATION_TIMEOUT_MS`, `DOCDEX_DELEGATION_MAX_TOKENS`, `DOCDEX_DELEGATION_PRIMARY_USD_PER_MILLION_TOKENS`, `DOCDEX_DELEGATION_LOCAL_USD_PER_MILLION_TOKENS`.
+- Env overrides: `DOCDEX_DELEGATION_ENABLED`, `DOCDEX_DELEGATION_AUTO_ENABLE`, `DOCDEX_DELEGATION_ENFORCE_LOCAL`, `DOCDEX_DELEGATION_ALLOW_FALLBACK`, `DOCDEX_DELEGATION_REEVALUATE`, `DOCDEX_DELEGATION_LOCAL_AGENT`, `DOCDEX_DELEGATION_CLOUD_AGENT`, `DOCDEX_DELEGATION_PRIMARY_AGENT`, `DOCDEX_DELEGATION_CODE_LOCAL_AGENT`, `DOCDEX_DELEGATION_CODE_CLOUD_AGENT`, `DOCDEX_DELEGATION_CODE_PRIMARY_AGENT`, `DOCDEX_DELEGATION_GENERAL_LOCAL_AGENT`, `DOCDEX_DELEGATION_GENERAL_CLOUD_AGENT`, `DOCDEX_DELEGATION_GENERAL_PRIMARY_AGENT`, `DOCDEX_DELEGATION_LOCAL_SELECTION_POLICY`, `DOCDEX_DELEGATION_USE_CACHED_LOCAL_DECISION`, `DOCDEX_DELEGATION_MODE`, `DOCDEX_DELEGATION_TIMEOUT_MS`, `DOCDEX_DELEGATION_MAX_TOKENS`, `DOCDEX_DELEGATION_PRIMARY_USD_PER_MILLION_TOKENS`, `DOCDEX_DELEGATION_LOCAL_USD_PER_MILLION_TOKENS`, `DOCDEX_DELEGATION_CLOUD_ENABLED`, `DOCDEX_DELEGATION_CLOUD_PROVIDER`, `DOCDEX_DELEGATION_CLOUD_LIMIT`, `DOCDEX_DELEGATION_CLOUD_SYNC_LIMIT`, `DOCDEX_DELEGATION_CLOUD_SORTED_BY_CATALOG_RATING`, `DOCDEX_DELEGATION_CLOUD_MAX_COST_PER_MILLION`, `DOCDEX_DELEGATION_CLOUD_MIN_CONTEXT`, `DOCDEX_DELEGATION_CLOUD_MIN_REASONING`.
 - Env compatibility: legacy `DOCDEX_DELEGATION_PRIMARY_USD_PER_1K_TOKENS` and `DOCDEX_DELEGATION_LOCAL_USD_PER_1K_TOKENS` are still accepted as aliases. When both forms are set, the canonical per-million env vars win.
 - Expensive model library: `docs/expensive_models.json`. Agents should match `agent_id`, `agent_slug`, `model`, or adapter type (case-insensitive) to decide whether to delegate.
 - Delegation callers can supply `caller_agent_id`, `caller_model`, or `primary_cost_per_million` per request so avoided-cost telemetry is attributed to the actual expensive caller instead of the static delegation fallback target.
@@ -568,7 +595,7 @@ startup_timeout_sec = 300
 - `DOCDEX_WEB_BROWSER` / `DOCDEX_CHROME_PATH` to set a Chromium binary.
 - `web.scraper.engine` in `config.toml` is `chromium` (only supported engine).
 - `DOCDEX_BROWSER_AUTO_INSTALL=0` to disable Chromium auto-install.
-- `docdexd mswarm configure` manages `~/.docdex/config.toml` entries for `[integrations.mswarm].api_key`, `[integrations.mswarm].base_url`, and the optional provider switch.
+- `docdexd mswarm configure|status|request-deletion|revoke` manages `~/.docdex/config.toml` entries for `[integrations.mswarm]` and the local telemetry-consent workflow.
 - mswarm web search settings can also be set manually:
   - `[integrations.mswarm].base_url`
   - `[integrations.mswarm].api_key`

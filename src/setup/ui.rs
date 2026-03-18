@@ -31,6 +31,7 @@ use crate::util;
 use crate::web::browser_install;
 use std::env;
 
+const MSWARM_TERMS: &str = include_str!("../../docs/mswarm-data-collection-terms.md");
 const MENU_STEPS: [StepKey; 5] = [
     StepKey::Ollama,
     StepKey::EmbedModel,
@@ -98,6 +99,10 @@ pub trait WizardServices {
     fn set_browser_path(&self, path: &Path, kind: &str) -> Result<()>;
     fn set_web_provider_keys(&self, update: config::WebProviderKeysUpdate) -> Result<bool>;
     fn set_mswarm_config(&self, update: config::MswarmConfigUpdate) -> Result<bool>;
+    fn ensure_mswarm_consent(
+        &self,
+        accepted_at_ms: u128,
+    ) -> Result<config::MswarmTelemetryConsentStatus>;
 }
 
 pub struct RealServices;
@@ -157,6 +162,13 @@ impl WizardServices for RealServices {
     fn set_mswarm_config(&self, update: config::MswarmConfigUpdate) -> Result<bool> {
         config::set_mswarm_config(update)
     }
+
+    fn ensure_mswarm_consent(
+        &self,
+        accepted_at_ms: u128,
+    ) -> Result<config::MswarmTelemetryConsentStatus> {
+        config::ensure_mswarm_telemetry_consent(accepted_at_ms)
+    }
 }
 
 pub trait WizardInput {
@@ -212,18 +224,6 @@ pub fn run_wizard_with_input<I: WizardInput, S: WizardServices>(
     services: &S,
 ) -> Result<SetupSummary> {
     let mut state = SetupState::new();
-    state.set_current(StepKey::Ollama);
-    input.info(
-        &state,
-        &format!(
-            "Hardware: {:.1} GB RAM, {} CPU(s), free disk: {:.1} GiB (tier: {})",
-            context.hardware.total_memory_gb,
-            context.hardware.cpu_count,
-            context.hardware.free_disk_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
-            context.hardware.recommended_class()
-        ),
-    )?;
-
     let mut installed = Vec::new();
     let mut models = Vec::new();
     let mut default_model: Option<String> = None;
@@ -231,7 +231,25 @@ pub fn run_wizard_with_input<I: WizardInput, S: WizardServices>(
     let mut ollama_status: Option<ollama::OllamaDaemonStatus> = None;
     let mut abort_error: Option<String> = None;
 
-    loop {
+    if let Some(err) = configure_consent_section(&mut state, input, services)? {
+        abort_error = Some(err);
+    }
+
+    if abort_error.is_none() {
+        state.set_current(StepKey::Ollama);
+        input.info(
+            &state,
+            &format!(
+                "Hardware: {:.1} GB RAM, {} CPU(s), free disk: {:.1} GiB (tier: {})",
+                context.hardware.total_memory_gb,
+                context.hardware.cpu_count,
+                context.hardware.free_disk_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+                context.hardware.recommended_class()
+            ),
+        )?;
+    }
+
+    while abort_error.is_none() {
         let menu_details = build_menu_details(&mut state, services, &mut ollama_path, &mut models);
         let action = input.select_menu(&state, &MENU_STEPS, &menu_details)?;
         let step = match action {
@@ -320,6 +338,49 @@ pub fn run_wizard_with_input<I: WizardInput, S: WizardServices>(
         installed,
         default_model,
     ))
+}
+
+fn configure_consent_section<I: WizardInput, S: WizardServices>(
+    state: &mut SetupState,
+    input: &mut I,
+    services: &S,
+) -> Result<Option<String>> {
+    state.set_current(StepKey::Consent);
+    let prompt = format!(
+        "{MSWARM_TERMS}\n\nDocdex requires consent to data collection and telemetry before setup can continue.\nAccept these terms and continue?"
+    );
+    if !input.confirm(state, &prompt, false)? {
+        let message = "mswarm data collection consent is required to use Docdex.".to_string();
+        state.update_step(
+            StepKey::Consent,
+            StepStatus::Failed,
+            Some("declined".to_string()),
+        );
+        return Ok(Some(message));
+    }
+
+    match services.ensure_mswarm_consent(now_ms()) {
+        Ok(status) => {
+            let detail = format!(
+                "{} {} ({}, consent_token={})",
+                status.client_type,
+                status.client_id,
+                status.policy_version,
+                if status.consent_token_set {
+                    "set"
+                } else {
+                    "missing"
+                }
+            );
+            state.update_step(StepKey::Consent, StepStatus::Done, Some(detail));
+            Ok(None)
+        }
+        Err(err) => {
+            let detail = err.to_string();
+            state.update_step(StepKey::Consent, StepStatus::Failed, Some(detail.clone()));
+            Ok(Some(detail))
+        }
+    }
 }
 
 fn build_menu_details<S: WizardServices>(
@@ -2513,6 +2574,18 @@ mod tests {
         fn set_mswarm_config(&self, _update: config::MswarmConfigUpdate) -> Result<bool> {
             Ok(false)
         }
+
+        fn ensure_mswarm_consent(
+            &self,
+            _accepted_at_ms: u128,
+        ) -> Result<config::MswarmTelemetryConsentStatus> {
+            Ok(config::MswarmTelemetryConsentStatus {
+                client_id: "client-1".to_string(),
+                client_type: "free_docdex_client".to_string(),
+                policy_version: "2026-03-18".to_string(),
+                consent_token_set: true,
+            })
+        }
     }
 
     #[test]
@@ -2548,6 +2621,7 @@ mod tests {
         let _ollama_assume = EnvGuard::clear("DOCDEX_OLLAMA_MODEL_ASSUME_Y");
         let _browser_install = EnvGuard::clear("DOCDEX_BROWSER_INSTALL");
         let mut input = ScriptedInput::new(vec![
+            ScriptedAnswer::Confirm(true),
             ScriptedAnswer::Menu(Some(StepKey::Ollama)),
             ScriptedAnswer::Confirm(false),
             ScriptedAnswer::Menu(None),
@@ -2572,6 +2646,30 @@ mod tests {
     }
 
     #[test]
+    fn wizard_declining_consent_fails() -> Result<()> {
+        let _guard = ENV_LOCK.lock();
+        let mut input = ScriptedInput::new(vec![ScriptedAnswer::Confirm(false)]);
+        let services = FakeServices {
+            models: vec![],
+            ollama_path: None,
+            chromium_installed: false,
+            chromium_path: None,
+        };
+        let context = SetupContext {
+            hardware: super::super::hardware::SetupHardware {
+                total_memory_gb: 16.0,
+                free_disk_bytes: 10 * 1024 * 1024 * 1024,
+                cpu_count: 8,
+            },
+            ollama_path: None,
+        };
+        let summary = run_wizard_with_input(context, &mut input, &services)?;
+        assert_eq!(summary.status, "failed");
+        assert!(summary.message.contains("consent"));
+        Ok(())
+    }
+
+    #[test]
     fn wizard_completes_with_default_model() -> Result<()> {
         let _guard = ENV_LOCK.lock();
         std::env::remove_var("DOCDEX_OLLAMA_INSTALL");
@@ -2579,6 +2677,7 @@ mod tests {
         std::env::remove_var("DOCDEX_OLLAMA_MODEL_ASSUME_Y");
         std::env::remove_var("DOCDEX_BROWSER_INSTALL");
         let mut input = ScriptedInput::new(vec![
+            ScriptedAnswer::Confirm(true),
             ScriptedAnswer::Menu(Some(StepKey::ChatModel)),
             ScriptedAnswer::Select(Some(0)),
             ScriptedAnswer::Menu(None),
@@ -2627,6 +2726,7 @@ mod tests {
         let _ollama_assume = EnvGuard::clear("DOCDEX_OLLAMA_MODEL_ASSUME_Y");
         let _browser_install = EnvGuard::clear("DOCDEX_BROWSER_INSTALL");
         let mut input = ScriptedInput::new(vec![
+            ScriptedAnswer::Confirm(true),
             ScriptedAnswer::Menu(Some(StepKey::ChatModel)),
             ScriptedAnswer::Menu(None),
         ]);

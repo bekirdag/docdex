@@ -439,6 +439,19 @@ struct WebPhraseCacheEntry {
     relevance_score: Option<f32>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct MswarmAnswerCacheLookupResponse {
+    found: bool,
+    #[serde(default)]
+    answer: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    provider: Option<String>,
+    #[serde(default)]
+    cached_at_ms: Option<u128>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct DomainQualityEntry {
     host: String,
@@ -1234,6 +1247,7 @@ pub async fn run_web_research(
     request_id: &str,
     indexer: &Indexer,
     libs_indexer: Option<&LibsIndexer>,
+    global_state_dir: Option<&Path>,
     query: &str,
     limit: usize,
     web_limit: Option<usize>,
@@ -1342,6 +1356,25 @@ pub async fn run_web_research(
         )
         .await
     };
+    let telemetry_global_state_dir = crate::delegation_telemetry::effective_global_state_dir(
+        global_state_dir,
+        indexer.state_dir(),
+    );
+    let telemetry_query_category = detect_query_category_heuristic(query);
+    if let Err(err) = crate::mswarm_telemetry::record_web_research(
+        telemetry_global_state_dir.as_deref(),
+        Some(indexer.repo_root()),
+        query,
+        Some(telemetry_query_category.as_str()),
+        &web_discovery,
+    ) {
+        warn!(
+            target: "docdexd",
+            error = ?err,
+            repo = %indexer.repo_root().display(),
+            "failed to record mswarm web telemetry spool event"
+        );
+    }
     Ok(WebResearchResponse {
         completion,
         hits,
@@ -1711,6 +1744,58 @@ async fn run_web_discovery(
         }
     }
 
+    let cache_query_category = detect_query_category_heuristic(query);
+    if let Some(cached_answer) = lookup_mswarm_answer_cache(
+        &config,
+        query,
+        Some(config.discovery_provider.as_str()),
+        Some(cache_query_category.as_str()),
+    )
+    .await
+    {
+        let provider = cached_answer
+            .provider
+            .clone()
+            .unwrap_or_else(|| "mswarm_answer_cache".to_string());
+        let url = cached_answer
+            .url
+            .clone()
+            .unwrap_or_else(|| "https://api.mswarm.org/cache/docdex-answer".to_string());
+        return WebDiscoveryStatus {
+            status: WebDiscoveryStatusCode::Served,
+            reason: Some("mswarm_answer_cache".to_string()),
+            message: Some("web discovery served from mswarm finalized-answer cache".to_string()),
+            unavailable: None,
+            discovery: Some(WebDiscoveryResponse {
+                provider: provider.clone(),
+                query: query.to_string(),
+                results: vec![crate::web::ddg::WebDiscoveryResult { url: url.clone() }],
+            }),
+            fetches: Some(vec![WebFetchResult {
+                url,
+                status: Some(200),
+                fetched_at_epoch_ms: cached_answer.cached_at_ms,
+                cached: true,
+                content: None,
+                ai_digested_content: cached_answer.answer,
+                ai_digested_kind: Some("cached_answer".to_string()),
+                relevance_score: Some(1.0),
+                debug_html: None,
+                debug_dom_text: None,
+                error: None,
+                debug: None,
+            }]),
+            debug: None,
+            gate: build_gate_meta(
+                gate,
+                top_score,
+                top_score_normalized,
+                local_match_ratio,
+                force_web,
+            ),
+        };
+    }
+
     if !gate.browser_available {
         let message = match gate.browser_hint.as_deref() {
             Some(hint) => format!("web browser not available: {hint}; run `docdexd browser setup`"),
@@ -1929,6 +2014,58 @@ async fn run_web_discovery(
             }
         }
     }
+}
+
+async fn lookup_mswarm_answer_cache(
+    config: &WebConfig,
+    query: &str,
+    provider: Option<&str>,
+    context: Option<&str>,
+) -> Option<MswarmAnswerCacheLookupResponse> {
+    let api_key = config
+        .mswarm_api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let url = config
+        .mswarm_base_url
+        .join("/v1/swarm/web/answer-cache/lookup")
+        .ok()?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .ok()?;
+    let response = client
+        .get(url)
+        .header("x-api-key", api_key)
+        .query(&[
+            ("query", query),
+            ("provider", provider.unwrap_or_default()),
+            ("context", context.unwrap_or_default()),
+        ])
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let payload = response
+        .json::<MswarmAnswerCacheLookupResponse>()
+        .await
+        .ok()?;
+    if !payload.found {
+        return None;
+    }
+    if payload
+        .answer
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        return None;
+    }
+    Some(payload)
 }
 
 fn normalize_discovery_response(

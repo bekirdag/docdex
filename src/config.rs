@@ -28,6 +28,7 @@ const DEFAULT_MEMORY_BACKEND: &str = "sqlite";
 const DEFAULT_DISCOVERY_PROVIDER: &str = "duckduckgo_lite";
 const DEFAULT_WEB_ENGINE: &str = "chromium";
 const DEFAULT_MSWARM_BASE_URL: &str = "https://api.mswarm.org/";
+const DEFAULT_MSWARM_CLIENT_TYPE: &str = "free_docdex_client";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -219,12 +220,16 @@ pub struct DelegationLaneConfig {
     #[serde(default)]
     pub local_agent_id: String,
     #[serde(default)]
+    pub cloud_agent_id: String,
+    #[serde(default)]
     pub primary_agent_id: String,
 }
 
 impl DelegationLaneConfig {
     fn is_empty(&self) -> bool {
-        self.local_agent_id.trim().is_empty() && self.primary_agent_id.trim().is_empty()
+        self.local_agent_id.trim().is_empty()
+            && self.cloud_agent_id.trim().is_empty()
+            && self.primary_agent_id.trim().is_empty()
     }
 }
 
@@ -232,8 +237,63 @@ impl Default for DelegationLaneConfig {
     fn default() -> Self {
         Self {
             local_agent_id: String::new(),
+            cloud_agent_id: String::new(),
             primary_agent_id: String::new(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DelegationCloudConfig {
+    #[serde(default = "default_delegation_cloud_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_delegation_cloud_provider")]
+    pub provider: String,
+    #[serde(default = "default_delegation_cloud_limit")]
+    pub limit: usize,
+    #[serde(default = "default_delegation_cloud_sync_limit")]
+    pub sync_limit: usize,
+    #[serde(default = "default_delegation_cloud_sorted_by_catalog_rating")]
+    pub sorted_by_catalog_rating: bool,
+    #[serde(default = "default_delegation_cloud_max_cost_per_million")]
+    pub max_cost_per_million: f64,
+    #[serde(default = "default_delegation_cloud_min_context")]
+    pub min_context: usize,
+    #[serde(default = "default_delegation_cloud_min_reasoning")]
+    pub min_reasoning: f64,
+}
+
+impl Default for DelegationCloudConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_delegation_cloud_enabled(),
+            provider: default_delegation_cloud_provider(),
+            limit: default_delegation_cloud_limit(),
+            sync_limit: default_delegation_cloud_sync_limit(),
+            sorted_by_catalog_rating: default_delegation_cloud_sorted_by_catalog_rating(),
+            max_cost_per_million: default_delegation_cloud_max_cost_per_million(),
+            min_context: default_delegation_cloud_min_context(),
+            min_reasoning: default_delegation_cloud_min_reasoning(),
+        }
+    }
+}
+
+impl DelegationCloudConfig {
+    fn apply_defaults(&mut self) {
+        if self.provider.trim().is_empty() {
+            self.provider = default_delegation_cloud_provider();
+        }
+        if self.limit == 0 {
+            self.limit = default_delegation_cloud_limit();
+        }
+        if self.sync_limit == 0 {
+            self.sync_limit = default_delegation_cloud_sync_limit();
+        }
+        if self.min_context == 0 {
+            self.min_context = default_delegation_cloud_min_context();
+        }
+        self.max_cost_per_million = sanitize_non_negative_f64(self.max_cost_per_million);
+        self.min_reasoning = sanitize_non_negative_f64(self.min_reasoning);
     }
 }
 
@@ -252,11 +312,15 @@ pub struct DelegationConfig {
     #[serde(default)]
     pub local_agent_id: String,
     #[serde(default)]
+    pub cloud_agent_id: String,
+    #[serde(default)]
     pub primary_agent_id: String,
     #[serde(default, skip_serializing_if = "DelegationLaneConfig::is_empty")]
     pub code: DelegationLaneConfig,
     #[serde(default, skip_serializing_if = "DelegationLaneConfig::is_empty")]
     pub general: DelegationLaneConfig,
+    #[serde(default)]
+    pub cloud: DelegationCloudConfig,
     #[serde(default = "default_delegation_local_selection_policy")]
     pub local_selection_policy: String,
     #[serde(default = "default_delegation_use_cached_local_decision")]
@@ -292,9 +356,11 @@ impl Default for DelegationConfig {
             allow_fallback_to_primary: default_delegation_allow_fallback_to_primary(),
             re_evaluate: default_delegation_re_evaluate(),
             local_agent_id: String::new(),
+            cloud_agent_id: String::new(),
             primary_agent_id: String::new(),
             code: DelegationLaneConfig::default(),
             general: DelegationLaneConfig::default(),
+            cloud: DelegationCloudConfig::default(),
             local_selection_policy: default_delegation_local_selection_policy(),
             use_cached_local_decision: default_delegation_use_cached_local_decision(),
             mode: default_delegation_mode(),
@@ -328,6 +394,7 @@ impl DelegationConfig {
             sanitize_non_negative_f64(self.primary_usd_per_million_tokens);
         self.local_usd_per_million_tokens =
             sanitize_non_negative_f64(self.local_usd_per_million_tokens);
+        self.cloud.apply_defaults();
     }
 }
 
@@ -508,6 +575,8 @@ pub struct MswarmConfig {
     pub base_url: String,
     #[serde(default)]
     pub api_key: Option<String>,
+    #[serde(default)]
+    pub telemetry: MswarmTelemetryConfig,
 }
 
 impl Default for MswarmConfig {
@@ -515,6 +584,45 @@ impl Default for MswarmConfig {
         Self {
             base_url: default_mswarm_base_url(),
             api_key: None,
+            telemetry: MswarmTelemetryConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MswarmTelemetryConfig {
+    #[serde(default = "default_mswarm_telemetry_required")]
+    pub required: bool,
+    #[serde(default)]
+    pub consent_accepted: bool,
+    #[serde(default)]
+    pub consent_policy_version: String,
+    #[serde(default)]
+    pub consent_token: Option<String>,
+    #[serde(default)]
+    pub client_id: String,
+    #[serde(default = "default_mswarm_client_type")]
+    pub client_type: String,
+    #[serde(default)]
+    pub registered_at_ms: u64,
+    #[serde(default)]
+    pub last_upload_at_ms: u64,
+    #[serde(default)]
+    pub upload_signing_secret: Option<String>,
+}
+
+impl Default for MswarmTelemetryConfig {
+    fn default() -> Self {
+        Self {
+            required: default_mswarm_telemetry_required(),
+            consent_accepted: false,
+            consent_policy_version: String::new(),
+            consent_token: None,
+            client_id: String::new(),
+            client_type: default_mswarm_client_type(),
+            registered_at_ms: 0,
+            last_upload_at_ms: 0,
+            upload_signing_secret: None,
         }
     }
 }
@@ -713,17 +821,26 @@ fn apply_env_overrides(config: &mut AppConfig) {
     if let Some(value) = env_trimmed("DOCDEX_DELEGATION_LOCAL_AGENT") {
         config.llm.delegation.local_agent_id = value;
     }
+    if let Some(value) = env_trimmed("DOCDEX_DELEGATION_CLOUD_AGENT") {
+        config.llm.delegation.cloud_agent_id = value;
+    }
     if let Some(value) = env_trimmed("DOCDEX_DELEGATION_PRIMARY_AGENT") {
         config.llm.delegation.primary_agent_id = value;
     }
     if let Some(value) = env_trimmed("DOCDEX_DELEGATION_CODE_LOCAL_AGENT") {
         config.llm.delegation.code.local_agent_id = value;
     }
+    if let Some(value) = env_trimmed("DOCDEX_DELEGATION_CODE_CLOUD_AGENT") {
+        config.llm.delegation.code.cloud_agent_id = value;
+    }
     if let Some(value) = env_trimmed("DOCDEX_DELEGATION_CODE_PRIMARY_AGENT") {
         config.llm.delegation.code.primary_agent_id = value;
     }
     if let Some(value) = env_trimmed("DOCDEX_DELEGATION_GENERAL_LOCAL_AGENT") {
         config.llm.delegation.general.local_agent_id = value;
+    }
+    if let Some(value) = env_trimmed("DOCDEX_DELEGATION_GENERAL_CLOUD_AGENT") {
+        config.llm.delegation.general.cloud_agent_id = value;
     }
     if let Some(value) = env_trimmed("DOCDEX_DELEGATION_GENERAL_PRIMARY_AGENT") {
         config.llm.delegation.general.primary_agent_id = value;
@@ -763,11 +880,50 @@ fn apply_env_overrides(config: &mut AppConfig) {
     {
         config.llm.delegation.local_usd_per_million_tokens = sanitize_non_negative_f64(value);
     }
+    if let Some(value) = env_bool("DOCDEX_DELEGATION_CLOUD_ENABLED") {
+        config.llm.delegation.cloud.enabled = value;
+    }
+    if let Some(value) = env_trimmed("DOCDEX_DELEGATION_CLOUD_PROVIDER") {
+        config.llm.delegation.cloud.provider = value;
+    }
+    if let Some(value) = env_usize("DOCDEX_DELEGATION_CLOUD_LIMIT") {
+        config.llm.delegation.cloud.limit = value;
+    }
+    if let Some(value) = env_usize("DOCDEX_DELEGATION_CLOUD_SYNC_LIMIT") {
+        config.llm.delegation.cloud.sync_limit = value;
+    }
+    if let Some(value) = env_bool("DOCDEX_DELEGATION_CLOUD_SORTED_BY_CATALOG_RATING") {
+        config.llm.delegation.cloud.sorted_by_catalog_rating = value;
+    }
+    if let Some(value) = env_f64("DOCDEX_DELEGATION_CLOUD_MAX_COST_PER_MILLION") {
+        config.llm.delegation.cloud.max_cost_per_million = sanitize_non_negative_f64(value);
+    }
+    if let Some(value) = env_usize("DOCDEX_DELEGATION_CLOUD_MIN_CONTEXT") {
+        config.llm.delegation.cloud.min_context = value;
+    }
+    if let Some(value) = env_f64("DOCDEX_DELEGATION_CLOUD_MIN_REASONING") {
+        config.llm.delegation.cloud.min_reasoning = sanitize_non_negative_f64(value);
+    }
     if let Some(value) = env_trimmed("DOCDEX_MSWARM_BASE_URL") {
         config.integrations.mswarm.base_url = value;
     }
     if let Some(value) = env_trimmed("DOCDEX_MSWARM_API_KEY") {
         config.integrations.mswarm.api_key = Some(value);
+    }
+    if let Some(value) = env_bool("DOCDEX_MSWARM_CONSENT_ACCEPTED") {
+        config.integrations.mswarm.telemetry.consent_accepted = value;
+    }
+    if let Some(value) = env_trimmed("DOCDEX_MSWARM_CONSENT_POLICY_VERSION") {
+        config.integrations.mswarm.telemetry.consent_policy_version = value;
+    }
+    if let Some(value) = env_trimmed("DOCDEX_MSWARM_CONSENT_TOKEN") {
+        config.integrations.mswarm.telemetry.consent_token = Some(value);
+    }
+    if let Some(value) = env_trimmed("DOCDEX_MSWARM_CLIENT_ID") {
+        config.integrations.mswarm.telemetry.client_id = value;
+    }
+    if let Some(value) = env_trimmed("DOCDEX_MSWARM_UPLOAD_SIGNING_SECRET") {
+        config.integrations.mswarm.telemetry.upload_signing_secret = Some(value);
     }
     if let Some(value) = env_mcp_ipc_mode("DOCDEX_MCP_IPC") {
         config.server.mcp_ipc_mode = value;
@@ -817,6 +973,11 @@ fn env_bool(key: &str) -> Option<bool> {
 fn env_u64(key: &str) -> Option<u64> {
     let raw = env_trimmed(key)?;
     raw.parse::<u64>().ok()
+}
+
+fn env_usize(key: &str) -> Option<usize> {
+    let raw = env_trimmed(key)?;
+    raw.parse::<usize>().ok()
 }
 
 fn env_u32(key: &str) -> Option<u32> {
@@ -913,6 +1074,38 @@ fn default_delegation_primary_usd_per_million_tokens() -> f64 {
 
 fn default_delegation_local_usd_per_million_tokens() -> f64 {
     0.0
+}
+
+fn default_delegation_cloud_enabled() -> bool {
+    true
+}
+
+fn default_delegation_cloud_provider() -> String {
+    "openrouter".to_string()
+}
+
+fn default_delegation_cloud_limit() -> usize {
+    12
+}
+
+fn default_delegation_cloud_sync_limit() -> usize {
+    12
+}
+
+fn default_delegation_cloud_sorted_by_catalog_rating() -> bool {
+    true
+}
+
+fn default_delegation_cloud_max_cost_per_million() -> f64 {
+    1.0
+}
+
+fn default_delegation_cloud_min_context() -> usize {
+    128_000
+}
+
+fn default_delegation_cloud_min_reasoning() -> f64 {
+    6.5
 }
 
 fn normalize_delegation_local_selection_policy(value: &str) -> String {
@@ -1046,6 +1239,14 @@ pub(crate) fn default_web_user_agent() -> String {
 
 pub(crate) fn default_mswarm_base_url() -> String {
     DEFAULT_MSWARM_BASE_URL.to_string()
+}
+
+fn default_mswarm_telemetry_required() -> bool {
+    true
+}
+
+fn default_mswarm_client_type() -> String {
+    DEFAULT_MSWARM_CLIENT_TYPE.to_string()
 }
 
 fn default_web_min_spacing_ms() -> u64 {

@@ -29,3 +29,6 @@ logs/
 tmp/
 /.smithery/
 /.tmp/
+
+# Local agent planning/task/progress artifacts
+/docs/planning/

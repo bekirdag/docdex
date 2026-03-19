@@ -158,6 +158,10 @@ pub fn load_repo_snapshots(
     Ok(snapshots)
 }
 
+pub fn load_global_snapshot(global_state_dir: &Path) -> Result<Option<DelegationTelemetrySnapshot>> {
+    load_snapshot(&global_state_dir.join(GLOBAL_TELEMETRY_DIR).join(GLOBAL_TELEMETRY_FILE))
+}
+
 fn persist_global_snapshot_path(global_state_dir: Option<&Path>) -> Option<PathBuf> {
     global_state_dir.map(|root| root.join(GLOBAL_TELEMETRY_DIR).join(GLOBAL_TELEMETRY_FILE))
 }

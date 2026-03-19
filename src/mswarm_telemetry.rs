@@ -21,6 +21,7 @@ use crate::mswarm;
 use crate::orchestrator::web::{WebDiscoveryStatus, WebFetchResult};
 use crate::setup::config::{set_mswarm_telemetry_config, MswarmTelemetryUpdate};
 use crate::state_layout::{ensure_state_dir_secure, StateLayout};
+use crate::{delegation_telemetry, metrics::DelegationTelemetrySnapshot};
 
 const EVENT_SCHEMA_VERSION: u32 = 1;
 const PACKAGE_SCHEMA_VERSION: u32 = 1;
@@ -98,9 +99,53 @@ struct DelegationFailurePayload {
     error: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct DelegationSavingsProjectPayload {
+    project: String,
+    state_key: String,
+    delegate_requests_total: u64,
+    delegate_offloaded_total: u64,
+    delegate_fallbacks_total: u64,
+    delegate_failed_total: u64,
+    delegate_token_estimate_total: u64,
+    delegate_local_tokens_total: u64,
+    delegate_primary_tokens_total: u64,
+    delegate_tokens_total: u64,
+    delegate_token_savings_total: u64,
+    delegate_local_cost_micros_total: u64,
+    delegate_primary_cost_micros_total: u64,
+    delegate_avoided_primary_cost_micros_total: u64,
+    delegate_cost_savings_micros_total: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct DelegationSavingsPayload {
+    generated_at_ms: u128,
+    delegate_requests_total: u64,
+    delegate_offloaded_total: u64,
+    delegate_fallbacks_total: u64,
+    delegate_failed_total: u64,
+    delegate_token_estimate_total: u64,
+    delegate_local_tokens_total: u64,
+    delegate_primary_tokens_total: u64,
+    delegate_tokens_total: u64,
+    delegate_token_savings_total: u64,
+    delegate_local_cost_micros_total: u64,
+    delegate_primary_cost_micros_total: u64,
+    delegate_avoided_primary_cost_micros_total: u64,
+    delegate_cost_savings_micros_total: u64,
+    configured_primary_usd_per_million_tokens: f64,
+    configured_local_usd_per_million_tokens: f64,
+    effective_avoided_primary_usd_per_million_tokens: Option<f64>,
+    effective_local_usd_per_million_tokens: Option<f64>,
+    project_count: usize,
+    projects: Vec<DelegationSavingsProjectPayload>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HousekeepingSummary {
     pub exported_ratings: usize,
+    pub exported_delegation_snapshots: usize,
     pub created_packages: usize,
     pub uploaded_packages: usize,
     pub failed_packages: usize,
@@ -307,6 +352,8 @@ pub fn run_housekeeping_cycle(global_state_dir: Option<&Path>) -> Result<Houseke
         resolve_state_layout(global_state_dir.or(app_config.core.global_state_dir.as_deref()))?;
     summary.pruned_paths = prune_stale_artifacts(&layout)?;
     summary.exported_ratings = export_mcoda_ratings_to_spool(&layout)?;
+    summary.exported_delegation_snapshots =
+        export_delegation_savings_to_spool(&layout, &app_config)?;
     if let Some(auth) = resolve_upload_auth(&config_path, &app_config)? {
         if create_pending_package(&layout, &auth)?.is_some() {
             summary.created_packages += 1;
@@ -569,6 +616,122 @@ fn load_mcoda_agent_snapshot(
         })
         .optional()?;
     Ok(snapshot)
+}
+
+fn export_delegation_savings_to_spool(layout: &StateLayout, app_config: &AppConfig) -> Result<usize> {
+    let repo_snapshots = delegation_telemetry::load_repo_snapshots(layout.base_dir())?;
+    let projects = repo_snapshots
+        .into_iter()
+        .filter(|project| !project.snapshot.is_zero())
+        .map(build_delegation_project_payload)
+        .collect::<Vec<_>>();
+
+    let aggregate_from_projects = aggregate_project_snapshots(&projects);
+    let global_snapshot = delegation_telemetry::load_global_snapshot(layout.base_dir())?
+        .filter(|snapshot| !snapshot.is_zero())
+        .unwrap_or_else(|| aggregate_from_projects.clone());
+    if global_snapshot.is_zero() && projects.is_empty() {
+        return Ok(0);
+    }
+
+    write_event(
+        layout,
+        "delegation_savings_snapshot",
+        &DelegationSavingsPayload {
+            generated_at_ms: now_epoch_ms(),
+            delegate_requests_total: global_snapshot.delegate_requests_total,
+            delegate_offloaded_total: global_snapshot.delegate_offloaded_total,
+            delegate_fallbacks_total: global_snapshot.delegate_fallbacks_total,
+            delegate_failed_total: global_snapshot.delegate_failed_total,
+            delegate_token_estimate_total: global_snapshot.delegate_token_estimate_total,
+            delegate_local_tokens_total: global_snapshot.delegate_local_tokens_total,
+            delegate_primary_tokens_total: global_snapshot.delegate_primary_tokens_total,
+            delegate_tokens_total: global_snapshot
+                .delegate_local_tokens_total
+                .saturating_add(global_snapshot.delegate_primary_tokens_total),
+            delegate_token_savings_total: global_snapshot.delegate_token_savings_total,
+            delegate_local_cost_micros_total: global_snapshot.delegate_local_cost_micros_total,
+            delegate_primary_cost_micros_total: global_snapshot.delegate_primary_cost_micros_total,
+            delegate_avoided_primary_cost_micros_total: global_snapshot
+                .avoided_primary_cost_micros_total(),
+            delegate_cost_savings_micros_total: global_snapshot.delegate_cost_savings_micros_total,
+            configured_primary_usd_per_million_tokens: app_config
+                .llm
+                .delegation
+                .primary_usd_per_million_tokens,
+            configured_local_usd_per_million_tokens: app_config
+                .llm
+                .delegation
+                .local_usd_per_million_tokens,
+            effective_avoided_primary_usd_per_million_tokens: global_snapshot
+                .effective_avoided_primary_usd_per_million_tokens(),
+            effective_local_usd_per_million_tokens: effective_cost_per_million(
+                global_snapshot.delegate_local_cost_micros_total,
+                global_snapshot.delegate_local_tokens_total,
+            ),
+            project_count: projects.len(),
+            projects,
+        },
+    )?;
+
+    Ok(1)
+}
+
+fn build_delegation_project_payload(
+    project: delegation_telemetry::RepoDelegationTelemetrySnapshot,
+) -> DelegationSavingsProjectPayload {
+    DelegationSavingsProjectPayload {
+        project: project.project,
+        state_key: project.state_key,
+        delegate_requests_total: project.snapshot.delegate_requests_total,
+        delegate_offloaded_total: project.snapshot.delegate_offloaded_total,
+        delegate_fallbacks_total: project.snapshot.delegate_fallbacks_total,
+        delegate_failed_total: project.snapshot.delegate_failed_total,
+        delegate_token_estimate_total: project.snapshot.delegate_token_estimate_total,
+        delegate_local_tokens_total: project.snapshot.delegate_local_tokens_total,
+        delegate_primary_tokens_total: project.snapshot.delegate_primary_tokens_total,
+        delegate_tokens_total: project
+            .snapshot
+            .delegate_local_tokens_total
+            .saturating_add(project.snapshot.delegate_primary_tokens_total),
+        delegate_token_savings_total: project.snapshot.delegate_token_savings_total,
+        delegate_local_cost_micros_total: project.snapshot.delegate_local_cost_micros_total,
+        delegate_primary_cost_micros_total: project.snapshot.delegate_primary_cost_micros_total,
+        delegate_avoided_primary_cost_micros_total: project
+            .snapshot
+            .avoided_primary_cost_micros_total(),
+        delegate_cost_savings_micros_total: project.snapshot.delegate_cost_savings_micros_total,
+    }
+}
+
+fn aggregate_project_snapshots(
+    projects: &[DelegationSavingsProjectPayload],
+) -> DelegationTelemetrySnapshot {
+    let mut aggregate = DelegationTelemetrySnapshot::default();
+    for project in projects {
+        aggregate.merge(DelegationTelemetrySnapshot {
+            delegate_requests_total: project.delegate_requests_total,
+            delegate_offloaded_total: project.delegate_offloaded_total,
+            delegate_fallbacks_total: project.delegate_fallbacks_total,
+            delegate_failed_total: project.delegate_failed_total,
+            delegate_token_estimate_total: project.delegate_token_estimate_total,
+            delegate_local_tokens_total: project.delegate_local_tokens_total,
+            delegate_primary_tokens_total: project.delegate_primary_tokens_total,
+            delegate_token_savings_total: project.delegate_token_savings_total,
+            delegate_local_cost_micros_total: project.delegate_local_cost_micros_total,
+            delegate_primary_cost_micros_total: project.delegate_primary_cost_micros_total,
+            delegate_cost_savings_micros_total: project.delegate_cost_savings_micros_total,
+        });
+    }
+    aggregate
+}
+
+fn effective_cost_per_million(cost_micros: u64, tokens: u64) -> Option<f64> {
+    if tokens == 0 {
+        None
+    } else {
+        Some(cost_micros as f64 / tokens as f64)
+    }
 }
 
 fn create_pending_package(
@@ -1304,6 +1467,41 @@ mod tests {
 
         let events_root = StateLayout::new(temp.path().to_path_buf()).mswarm_events_dir();
         assert_eq!(json_file_count(&events_root.join("delegation_failure")), 1);
+    }
+
+    #[test]
+    fn export_delegation_savings_writes_snapshot_event() {
+        let temp = tempdir().expect("tempdir");
+        let layout = StateLayout::new(temp.path().to_path_buf());
+        layout.ensure_global_dirs().expect("ensure state dirs");
+
+        let metrics = crate::metrics::Metrics::default();
+        metrics.inc_delegate_request();
+        metrics.inc_delegate_offloaded();
+        metrics.record_delegate_token_estimate(42);
+        metrics.record_delegate_local_tokens(30);
+        metrics.record_delegate_primary_tokens(12);
+        metrics.record_delegate_token_savings(30);
+        metrics.record_delegate_local_cost_micros(500);
+        metrics.record_delegate_primary_cost_micros(200);
+        metrics.record_delegate_cost_savings_micros(700);
+        crate::delegation_telemetry::persist_metrics(Some(temp.path()), &metrics, None, None);
+
+        let app_config = AppConfig::default();
+        let exported = export_delegation_savings_to_spool(&layout, &app_config)
+            .expect("export delegation savings");
+        assert_eq!(exported, 1);
+
+        let event = first_json_event(&layout.mswarm_events_dir().join("delegation_savings_snapshot"));
+        assert_eq!(
+            event["payload"]["delegate_cost_savings_micros_total"].as_u64(),
+            Some(700)
+        );
+        assert_eq!(
+            event["payload"]["delegate_avoided_primary_cost_micros_total"].as_u64(),
+            Some(1_200)
+        );
+        assert_eq!(event["payload"]["project_count"].as_u64(), Some(0));
     }
 
     #[test]

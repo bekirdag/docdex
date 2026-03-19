@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.58
+- Export Docdex delegation savings in hourly mswarm telemetry packages and expose matching runtime/admin mswarm summaries for frontend visibility.
+
 ## 0.2.57
 - Bump release metadata to 0.2.57.
 

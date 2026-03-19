@@ -13,7 +13,7 @@
     },
     "npm": {
       "component": "docdex",
-      "changelog-path": "npm/CHANGELOG.md",
+      "changelog-path": "CHANGELOG.md",
       "release-type": "node"
     }
   }

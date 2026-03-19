@@ -728,7 +728,7 @@ dependencies = [
 
 [[package]]
 name = "docdexd"
-version = "0.2.58"
+version = "0.2.44"
 dependencies = [
  "aes-gcm",
  "ammonia",
@@ -807,7 +807,7 @@ dependencies = [
 
 [[package]]
 name = "docdexd-fuzz"
-version = "0.0.0"
+version = "0.2.44"
 dependencies = [
  "docdexd",
  "libfuzzer-sys",

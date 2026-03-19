@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.44](https://github.com/bekirdag/docdex/compare/v0.2.43...v0.2.44) (2026-03-19)
+
+
+### Features
+
+* complete mswarm telemetry consent workflow ([2ce525a](https://github.com/bekirdag/docdex/commit/2ce525a2689197baa4e03bc5b57e488b26917873))
+* ship delegation savings to mswarm ([683ed36](https://github.com/bekirdag/docdex/commit/683ed36d860967e59b74ad6186985ba6d4ae6210))
+
 ## 0.2.58
 - Export Docdex delegation savings in hourly mswarm telemetry packages and expose matching runtime/admin mswarm summaries for frontend visibility.
 

@@ -416,14 +416,14 @@ mod tests {
 
     #[test]
     fn superseded_candidates_are_penalized() {
-        let mut superseded = MemoryCandidate {
+        let superseded = MemoryCandidate {
             id: "old".to_string(),
             created_at_ms: 10,
             content: "legacy".to_string(),
             score: 0.9,
             metadata: json!({ "supersededBy": "new" }),
         };
-        let mut current = MemoryCandidate {
+        let current = MemoryCandidate {
             id: "new".to_string(),
             created_at_ms: 12,
             content: "current".to_string(),

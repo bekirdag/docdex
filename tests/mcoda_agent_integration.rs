@@ -229,6 +229,7 @@ fn adapter_falls_back_to_cli_when_secret_missing() -> Result<(), Box<dyn Error>>
         capabilities: Vec::new(),
         models: Vec::new(),
         auth: None,
+        usage_limits: Vec::new(),
     };
     let adapter = resolve_agent_adapter(&agent)?;
     assert!(matches!(adapter, LlmAdapter::CodexCli(_)));

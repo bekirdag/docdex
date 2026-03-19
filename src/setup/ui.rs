@@ -726,7 +726,7 @@ fn derive_outcome(state: &SetupState) -> SetupOutcome {
     }
     if state.outcome == SetupOutcome::Failed || any_failed {
         SetupOutcome::Failed
-    } else if state.outcome == SetupOutcome::Deferred && !any_done {
+    } else if state.outcome == SetupOutcome::Deferred {
         SetupOutcome::Deferred
     } else if any_done || any_skipped {
         SetupOutcome::Complete
@@ -2643,6 +2643,24 @@ mod tests {
         let summary = run_wizard_with_input(context, &mut input, &services)?;
         assert_eq!(summary.status, "deferred");
         Ok(())
+    }
+
+    #[test]
+    fn derive_outcome_keeps_explicit_deferred_with_completed_steps() {
+        let mut state = SetupState::new();
+        state.update_step(
+            StepKey::Consent,
+            StepStatus::Done,
+            Some("accepted".to_string()),
+        );
+        state.update_step(
+            StepKey::Ollama,
+            StepStatus::Skipped,
+            Some("not installed".to_string()),
+        );
+        state.outcome = SetupOutcome::Deferred;
+
+        assert_eq!(derive_outcome(&state), SetupOutcome::Deferred);
     }
 
     #[test]

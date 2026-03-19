@@ -618,7 +618,10 @@ fn load_mcoda_agent_snapshot(
     Ok(snapshot)
 }
 
-fn export_delegation_savings_to_spool(layout: &StateLayout, app_config: &AppConfig) -> Result<usize> {
+fn export_delegation_savings_to_spool(
+    layout: &StateLayout,
+    app_config: &AppConfig,
+) -> Result<usize> {
     let repo_snapshots = delegation_telemetry::load_repo_snapshots(layout.base_dir())?;
     let projects = repo_snapshots
         .into_iter()
@@ -1492,7 +1495,11 @@ mod tests {
             .expect("export delegation savings");
         assert_eq!(exported, 1);
 
-        let event = first_json_event(&layout.mswarm_events_dir().join("delegation_savings_snapshot"));
+        let event = first_json_event(
+            &layout
+                .mswarm_events_dir()
+                .join("delegation_savings_snapshot"),
+        );
         assert_eq!(
             event["payload"]["delegate_cost_savings_micros_total"].as_u64(),
             Some(700)

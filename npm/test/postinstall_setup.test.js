@@ -80,6 +80,39 @@ test("upsertMcpServerJson updates array entries", () => {
   assert.equal(parsed.mcpServers[0].url, url);
 });
 
+test("upsertMcpServerJson collapses duplicate docdex entries across sections", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-json-dedupe-"));
+  const file = path.join(dir, "config.json");
+  fs.writeFileSync(
+    file,
+    JSON.stringify(
+      {
+        mcpServers: [
+          { name: "docdex", url: "http://old1" },
+          { name: "other", url: "http://other" },
+          { name: "docdex", url: "http://old2" }
+        ],
+        mcp_servers: {
+          docdex: { url: "http://stale" },
+          another: { url: "http://another" }
+        }
+      },
+      null,
+      2
+    )
+  );
+  const url = configUrlForPort(3000);
+  const changed = upsertMcpServerJson(file, url);
+  assert.equal(changed, true);
+  const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.deepEqual(
+    parsed.mcpServers.filter((entry) => entry.name === "docdex").map((entry) => entry.url),
+    [url]
+  );
+  assert.equal(parsed.mcp_servers.docdex, undefined);
+  assert.equal(parsed.mcp_servers.another.url, "http://another");
+});
+
 test("upsertMcpServerJson respects mcp_servers map", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-json-snake-"));
   const file = path.join(dir, "config.json");
@@ -194,6 +227,47 @@ test("upsertCodexConfig fills timeout fields in nested docdex section", () => {
   assert.ok(contents.includes(`url = "${url}"`));
   assert.ok(contents.includes("tool_timeout_sec = 300"));
   assert.ok(contents.includes("startup_timeout_sec = 300"));
+});
+
+test("upsertCodexConfig removes stale inline docdex entry when nested tables exist", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-codex-dedupe-"));
+  const file = path.join(dir, "config.toml");
+  fs.writeFileSync(
+    file,
+    [
+      "[mcp_servers]",
+      'docdex = { url = "http://old/v1/mcp" }',
+      "",
+      "[mcp_servers.other]",
+      'url = "http://other/v1/mcp"',
+      ""
+    ].join("\n")
+  );
+  const url = configStreamableUrlForPort(3000);
+  const changed = upsertCodexConfig(file, url);
+  assert.equal(changed, true);
+  const contents = fs.readFileSync(file, "utf8");
+  assert.ok(!contents.includes('docdex = { url = "http://old/v1/mcp" }'));
+  assert.equal((contents.match(/\[mcp_servers\.docdex\]/g) || []).length, 1);
+  assert.ok(contents.includes("[mcp_servers.other]"));
+  assert.ok(contents.includes(`url = "${url}"`));
+  assert.ok(contents.includes("tool_timeout_sec = 300"));
+  assert.ok(contents.includes("startup_timeout_sec = 300"));
+});
+
+test("upsertCodexConfig is a no-op when the root docdex entry already matches", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-codex-stable-"));
+  const file = path.join(dir, "config.toml");
+  const url = configStreamableUrlForPort(3000);
+  const initial = [
+    "[mcp_servers]",
+    `docdex = { url = "${url}", tool_timeout_sec = 300, startup_timeout_sec = 300 }`,
+    ""
+  ].join("\n");
+  fs.writeFileSync(file, initial);
+  const changed = upsertCodexConfig(file, url);
+  assert.equal(changed, false);
+  assert.equal(fs.readFileSync(file, "utf8"), initial);
 });
 
 test("upsertCodexConfig removes legacy instructions entry", () => {

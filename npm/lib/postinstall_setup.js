@@ -666,8 +666,17 @@ function stripLegacyDocdexBodySegment(segment, body) {
   const normalizedSegment = String(segment || "").replace(/\r\n/g, "\n");
   const normalizedBody = String(body || "").replace(/\r\n/g, "\n");
   if (!normalizedBody.trim()) return normalizedSegment;
-  const re = new RegExp(`\\n?${escapeRegExp(normalizedBody)}\\n?`, "g");
-  return normalizedSegment.replace(re, "\n").replace(/\n{3,}/g, "\n\n");
+  let result = normalizedSegment;
+  let index = result.indexOf(normalizedBody);
+  while (index !== -1) {
+    let start = index;
+    let end = index + normalizedBody.length;
+    if (start > 0 && result[start - 1] === "\n") start -= 1;
+    if (end < result.length && result[end] === "\n") end += 1;
+    result = `${result.slice(0, start)}\n${result.slice(end)}`;
+    index = result.indexOf(normalizedBody);
+  }
+  return result.replace(/\n{3,}/g, "\n\n");
 }
 
 function stripLegacyDocdexBody(text, body) {
@@ -1082,6 +1091,7 @@ function upsertMcpServerJson(pathname, url, options = {}) {
   const { value } = readJson(pathname);
   if (typeof value !== "object" || value == null || Array.isArray(value)) return false;
   const root = value;
+  const before = JSON.stringify(root);
   const extra =
     options &&
     typeof options === "object" &&
@@ -1090,9 +1100,25 @@ function upsertMcpServerJson(pathname, url, options = {}) {
     !Array.isArray(options.extra)
       ? options.extra
       : {};
-  const extraEntries = Object.entries(extra);
-  const matchesExtras = (entry) =>
-    extraEntries.every(([key, value]) => entry && entry[key] === value);
+  const isPlainObject = (entry) =>
+    typeof entry === "object" && entry != null && !Array.isArray(entry);
+  const removeDocdexFromSection = (key) => {
+    const section = root[key];
+    if (Array.isArray(section)) {
+      const filtered = section.filter((entry) => !(entry && entry.name === "docdex"));
+      if (filtered.length !== section.length) {
+        root[key] = filtered;
+      }
+      return;
+    }
+    if (!isPlainObject(section) || !Object.prototype.hasOwnProperty.call(section, "docdex")) {
+      return;
+    }
+    delete section.docdex;
+    if (Object.keys(section).length === 0) {
+      delete root[key];
+    }
+  };
   const pickSection = () => {
     if (root.mcpServers && typeof root.mcpServers === "object" && !Array.isArray(root.mcpServers)) {
       return { key: "mcpServers", section: root.mcpServers };
@@ -1103,29 +1129,39 @@ function upsertMcpServerJson(pathname, url, options = {}) {
     return null;
   };
   if (Array.isArray(root.mcpServers)) {
-    const idx = root.mcpServers.findIndex((entry) => entry && entry.name === "docdex");
-    if (idx >= 0) {
-      const current = root.mcpServers[idx] || {};
-      if (current.url === url && matchesExtras(current)) return false;
-      root.mcpServers[idx] = { ...current, ...extra, url, name: "docdex" };
-      writeJson(pathname, root);
-      return true;
+    const nextEntries = [];
+    let insertIndex = -1;
+    let current = {};
+    for (const entry of root.mcpServers) {
+      if (entry && entry.name === "docdex") {
+        if (insertIndex === -1) {
+          insertIndex = nextEntries.length;
+          current = isPlainObject(entry) ? { ...entry } : {};
+        }
+        continue;
+      }
+      nextEntries.push(entry);
     }
-    root.mcpServers.push({ ...extra, url, name: "docdex" });
-    writeJson(pathname, root);
-    return true;
+    const nextEntry = { ...current, ...extra, url, name: "docdex" };
+    if (insertIndex === -1) {
+      nextEntries.push(nextEntry);
+    } else {
+      nextEntries.splice(insertIndex, 0, nextEntry);
+    }
+    root.mcpServers = nextEntries;
+    removeDocdexFromSection("mcp_servers");
+  } else {
+    const picked = pickSection();
+    const sectionKey = picked ? picked.key : "mcpServers";
+    if (!picked) {
+      root[sectionKey] = {};
+    }
+    const section = root[sectionKey];
+    const current = isPlainObject(section.docdex) ? section.docdex : {};
+    section.docdex = { ...current, ...extra, url };
+    removeDocdexFromSection(sectionKey === "mcpServers" ? "mcp_servers" : "mcpServers");
   }
-
-  const picked = pickSection();
-  if (!picked) {
-    root.mcpServers = {};
-  }
-  const section = picked ? picked.section : root.mcpServers;
-  const current = section.docdex;
-  if (current && current.url === url && matchesExtras(current)) return false;
-  const base =
-    current && typeof current === "object" && !Array.isArray(current) ? current : {};
-  section.docdex = { ...base, ...extra, url };
+  if (JSON.stringify(root) === before) return false;
   writeJson(pathname, root);
   return true;
 }
@@ -1273,19 +1309,25 @@ function upsertCodexConfig(pathname, url) {
       end += 1;
     }
     let updated = false;
-    let docdexLine = -1;
+    const docdexLines = [];
     for (let i = start + 1; i < end; i += 1) {
       if (/^\s*docdex\s*=/.test(lines[i])) {
-        docdexLine = i;
-        break;
+        docdexLines.push(i);
       }
     }
-    if (docdexLine === -1) {
+    if (docdexLines.length === 0) {
       lines.splice(end, 0, entryLine);
       updated = true;
-    } else if (lines[docdexLine].trim() !== entryLine) {
-      lines[docdexLine] = entryLine;
-      updated = true;
+    } else {
+      const [firstDocdexLine, ...extraDocdexLines] = docdexLines;
+      if (lines[firstDocdexLine].trim() !== entryLine) {
+        lines[firstDocdexLine] = entryLine;
+        updated = true;
+      }
+      for (let i = extraDocdexLines.length - 1; i >= 0; i -= 1) {
+        lines.splice(extraDocdexLines[i], 1);
+        updated = true;
+      }
     }
     return { contents: lines.join("\n"), updated };
   };
@@ -1336,6 +1378,71 @@ function upsertCodexConfig(pathname, url) {
     return { contents: output.join("\n"), updated };
   };
 
+  const removeRootDocdexEntries = (text) => {
+    const lines = text.split(/\r?\n/);
+    const output = [];
+    let inRootSection = false;
+    let updated = false;
+    for (const line of lines) {
+      const section = line.match(/^\s*\[([^\]]+)\]\s*$/);
+      if (section) {
+        inRootSection = section[1].trim() === "mcp_servers";
+        output.push(line);
+        continue;
+      }
+      if (inRootSection && /^\s*docdex\s*=/.test(line)) {
+        updated = true;
+        continue;
+      }
+      output.push(line);
+    }
+    return { contents: output.join("\n"), updated };
+  };
+
+  const countRootDocdexEntries = (text) => {
+    const lines = text.split(/\r?\n/);
+    let inRootSection = false;
+    let count = 0;
+    for (const line of lines) {
+      const section = line.match(/^\s*\[([^\]]+)\]\s*$/);
+      if (section) {
+        inRootSection = section[1].trim() === "mcp_servers";
+        continue;
+      }
+      if (inRootSection && /^\s*docdex\s*=/.test(line)) {
+        count += 1;
+      }
+    }
+    return count;
+  };
+
+  const removeNestedDocdexSections = (text) => {
+    const lines = text.split(/\r?\n/);
+    const output = [];
+    let skipping = false;
+    let updated = false;
+    for (const line of lines) {
+      const isSection = /^\s*\[.+\]\s*$/.test(line);
+      if (skipping) {
+        if (isSection) {
+          skipping = false;
+        } else {
+          continue;
+        }
+      }
+      if (/^\s*\[mcp_servers\.docdex\]\s*$/.test(line)) {
+        skipping = true;
+        updated = true;
+        continue;
+      }
+      output.push(line);
+    }
+    return { contents: output.join("\n"), updated };
+  };
+
+  const countNestedDocdexSections = (text) =>
+    (text.match(/^\s*\[mcp_servers\.docdex\]\s*$/gm) || []).length;
+
   let contents = "";
   if (fs.existsSync(pathname)) {
     contents = fs.readFileSync(pathname, "utf8");
@@ -1351,7 +1458,23 @@ function upsertCodexConfig(pathname, url) {
   contents = cleaned.contents;
   updated = updated || cleaned.updated;
 
-  if (hasNestedMcpServers(contents)) {
+  const preferNested = hasNestedMcpServers(contents);
+  const rootDocdexCount = countRootDocdexEntries(contents);
+  const nestedDocdexCount = countNestedDocdexSections(contents);
+
+  if (preferNested && rootDocdexCount > 0) {
+    const prunedRoot = removeRootDocdexEntries(contents);
+    contents = prunedRoot.contents;
+    updated = updated || prunedRoot.updated;
+  }
+
+  if ((!preferNested && nestedDocdexCount > 0) || (preferNested && nestedDocdexCount > 1)) {
+    const prunedNested = removeNestedDocdexSections(contents);
+    contents = prunedNested.contents;
+    updated = updated || prunedNested.updated;
+  }
+
+  if (preferNested) {
     const nested = upsertDocdexNested(contents, url);
     contents = nested.contents;
     updated = updated || nested.updated;

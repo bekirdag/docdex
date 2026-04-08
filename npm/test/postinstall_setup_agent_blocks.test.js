@@ -139,6 +139,41 @@ test("applyAgentInstructions writes Gemini instructions file", () => {
   }
 });
 
+test("applyAgentInstructions replaces older Gemini docdex block", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-gemini-agents-old-"));
+  const prev = {
+    HOME: process.env.HOME,
+    USERPROFILE: process.env.USERPROFILE,
+    APPDATA: process.env.APPDATA
+  };
+  process.env.HOME = dir;
+  process.env.USERPROFILE = dir;
+  process.env.APPDATA = path.join(dir, "AppData", "Roaming");
+  try {
+    const target = path.join(dir, ".gemini", "GEMINI.md");
+    const oldBlock = [
+      "---- START OF DOCDEX INFO V0.2.17 ----",
+      "OLD DOCDEX INSTRUCTIONS",
+      "---- END OF DOCDEX INFO -----"
+    ].join("\n");
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, `Local notes\n\n${oldBlock}\n\nKeep this line\n`);
+    const result = applyAgentInstructions({ logger: { warn: () => {} } });
+    assert.equal(result.ok, true);
+    const contents = fs.readFileSync(target, "utf8");
+    const startMarker = `---- START OF DOCDEX INFO V${PACKAGE_VERSION} ----`;
+    assert.ok(contents.includes("Local notes"));
+    assert.ok(contents.includes("Keep this line"));
+    assert.ok(!contents.includes("OLD DOCDEX INSTRUCTIONS"));
+    assert.equal(contents.split(startMarker).length - 1, 1);
+    assert.ok(contents.includes("---- END OF DOCDEX INFO -----"));
+  } finally {
+    process.env.HOME = prev.HOME;
+    process.env.USERPROFILE = prev.USERPROFILE;
+    process.env.APPDATA = prev.APPDATA;
+  }
+});
+
 test("applyAgentInstructions writes VS Code chat instructions setting", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-vscode-agents-"));
   const prev = {

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.60
+- Deduplicate installer-managed Docdex client config on reinstall: collapse stale `docdex` entries in JSON client configs, normalize Codex TOML to one canonical Docdex entry, and replace older versioned Docdex agent-instruction blocks without duplicating Codex/Gemini/Claude prompt files.
+- Fix the nightly security audit failure by moving the direct `tokio-rustls` dependency to 0.26 with explicit `ring`/`tls12` features so the vulnerable `rustls-webpki` dependency chain is removed from the release build.
+
 ## 0.2.59
 - Backfill wake-up knowledge episodes from matched facts and graph edges so `/v1/wakeup`, CLI, and MCP return episode context even when retrieval matches graph artifacts instead of episode summary text.
 - Reserve chat prompt budget for the project map so OpenAI-compatible chat responses include cached map context under the default answer-token configuration.

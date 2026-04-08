@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.60
+- Deduplicate installer-managed Docdex client config on reinstall: JSON client configs now collapse stale `docdex` entries, Codex TOML converges to one canonical Docdex entry, and packaged Docdex instruction blocks replace older Codex/Gemini/Claude prompt blocks instead of duplicating them.
+- Update the packaged daemon dependency set to remove the vulnerable `rustls-webpki` chain that caused the nightly security audit failure.
+
 ## 0.2.58
 - Export Docdex delegation savings in hourly mswarm telemetry packages and expose matching runtime/admin mswarm summaries for frontend visibility.
 

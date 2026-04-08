@@ -206,6 +206,152 @@ Notes:
 - `x-docdex-dag-session` overrides `docdex.dag_session_id`.
 - Non-streaming responses can include `reasoning_trace` with `behavioral_truth` and `technical_truth`.
 
+## Conversation memory
+
+These endpoints are available when `[memory.conversations].enabled = true`.
+
+Scope rules:
+- Conversation state is repo-scoped by default.
+- Repo-less sessions must use `conversation_namespace` or the `x-docdex-conversation-namespace` header.
+- `repo_id` and `conversation_namespace` are mutually exclusive on the same request.
+- Namespace-scoped archives use their own `conversation.db` and `knowledge.db` under the global state directory.
+
+### Import conversations
+
+`POST /v1/conversations/import`
+
+Request body:
+```json
+{
+  "conversation_namespace": "shared-team",
+  "source": "manual",
+  "title": "Wake-up rollout",
+  "agent_id": "codex",
+  "format": "plain_text",
+  "transcript_text": "user: Repo fact: knowledge.db uses timeline_index"
+}
+```
+
+Response fields:
+- `session_id`
+- `deduplicated`
+- `message_count`
+- `capture_kind`
+- `raw_messages_stored`
+- `summary`
+- `working_memory`
+- `durable_memories`
+- `knowledge_facts`
+
+Supported formats:
+- `auto`
+- `plain_text`
+- `generic_json`
+- `codex_jsonl`
+- `claude_jsonl`
+- `chatgpt_export`
+
+### List, search, read, export, redact, delete
+
+- `GET /v1/conversations?agent_id=<optional>&limit=<n>&offset=<n>`
+- `GET /v1/conversations/search?q=<query>&agent_id=<optional>&limit=<n>&offset=<n>`
+- `GET /v1/conversations/:session_id`
+- `GET /v1/conversations/:session_id/export`
+- `POST /v1/conversations/:session_id/redact`
+- `DELETE /v1/conversations/:session_id`
+
+Notes:
+- Redaction removes raw transcript searchability and derived wake-up signal for the session.
+- After redaction, `read` and `export` preserve message slots but replace stored titles, summaries, and message contents with `[redacted]` placeholders.
+- Export includes linked diary entries plus `knowledge_facts` derived from that session.
+- List/search/read/export/redact/delete accept the same scope via `repo_id`, `conversation_namespace`, or `x-docdex-conversation-namespace`.
+
+### Retention and compaction
+
+`POST /v1/conversations/prune`
+
+Request body:
+```json
+{
+  "apply": true,
+  "manual_retention_days": 30,
+  "auto_capture_retention_days": 14,
+  "diary_retention_days": 30,
+  "hook_event_retention_days": 7,
+  "working_memory_retention_days": 7,
+  "episodic_rollup_retention_days": 30
+}
+```
+
+Response fields:
+- `applied`
+- `deleted_manual_sessions`
+- `deleted_auto_sessions`
+- `deleted_diary_entries`
+- `deleted_hook_events`
+- `deleted_working_memory_records`
+- `deleted_rollups`
+- `created_rollups`
+- `deleted_knowledge_facts`
+- `deleted_session_ids`
+
+Notes:
+- `apply=false` performs a dry run.
+- Applied prune runs also compact `conversation.db` and `knowledge.db`.
+- Background sweeps reuse the same retention policy via `memory.conversations.sweeper_interval_seconds`.
+- Expired sessions are collapsed into episodic rollups before deletion, and working-memory rows tied to expired sessions are trimmed during the same lifecycle pass.
+
+### Wake-up bundles
+
+`POST /v1/wakeup`
+
+Request body:
+```json
+{
+  "conversation_namespace": "shared-team",
+  "agent_id": "codex",
+  "query": "knowledge.db",
+  "max_tokens": 96
+}
+```
+
+Response fields:
+- `text`
+- `trace`
+- `working_memory`
+- `episodic_summaries`
+- `knowledge_facts`
+- `transcript_snippets`
+
+Retrieval order:
+1. Working memory
+2. Recent episodic summaries
+3. Knowledge facts
+4. Transcript snippets
+
+### Knowledge graph query and timeline
+
+- `GET /v1/kg/query?q=<query>&relation=<optional>&limit=<n>&offset=<n>`
+- `GET /v1/kg/timeline?entity=<entity>&relation=<optional>&limit=<n>`
+
+Example:
+```bash
+curl "http://127.0.0.1:28491/v1/kg/query?q=knowledge.db&limit=10"
+curl "http://127.0.0.1:28491/v1/kg/timeline?entity=knowledge.db&limit=10"
+curl "http://127.0.0.1:28491/v1/kg/query?q=timeline_index&conversation_namespace=shared-team&limit=10"
+```
+
+### Conversation hooks and diary
+
+- `POST /v1/hooks/conversation`
+- `POST /v1/diary/write`
+- `GET /v1/diary/read?agent_id=<optional>&limit=<n>&offset=<n>`
+
+Notes:
+- Hook payloads can import a transcript, write a diary entry, or do both.
+- Source policy is enforced through `memory.conversations.source_allowlist` / `source_denylist`.
+- Hooks and diary endpoints accept `conversation_namespace` and the namespace header in the same way as import/wakeup/query endpoints.
+
 ## Delegation (local completion)
 
 `POST /v1/delegate`

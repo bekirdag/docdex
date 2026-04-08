@@ -2,11 +2,11 @@ use crate::capabilities::{self, BATCH_SEARCH_MAX_QUERIES, RERANK_MAX_CANDIDATES}
 use crate::config;
 use crate::diff;
 use crate::error::{
-    AppError, RateLimited, StartupError, ERR_BACKOFF_REQUIRED, ERR_EMBEDDING_FAILED,
-    ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INDEXING_IN_PROGRESS,
-    ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED, ERR_MISSING_DEPENDENCY,
-    ERR_MISSING_INDEX, ERR_MISSING_REPO, ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED,
-    ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX, ERR_UNAUTHORIZED, ERR_UNKNOWN_REPO,
+    AppError, RateLimited, StartupError, ERR_BACKOFF_REQUIRED, ERR_CONVERSATION_NOT_FOUND,
+    ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT,
+    ERR_INDEXING_IN_PROGRESS, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
+    ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO, ERR_MISSING_REPO_PATH,
+    ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX, ERR_UNAUTHORIZED, ERR_UNKNOWN_REPO,
 };
 use crate::index::{
     build_hit_provenance, build_hit_score_breakdown, build_retrieval_explanation, DocSnapshot, Hit,
@@ -54,6 +54,7 @@ const MIN_SNIPPET_WINDOW: usize = 10;
 const MAX_SNIPPET_WINDOW: usize = 400;
 const MAX_RATE_LIMIT_MESSAGE_BYTES: usize = 256;
 const REPO_ID_HEADER: &str = "x-docdex-repo-id";
+const CONVERSATION_NAMESPACE_HEADER: &str = "x-docdex-conversation-namespace";
 const DAG_SESSION_HEADER: &str = "x-docdex-dag-session";
 const TOP_SCORE_NORMALIZATION_K: f32 = 8.0;
 const SYMBOL_MATCH_MAX_FILES: usize = 6;
@@ -247,6 +248,7 @@ pub struct AppState {
     pub metrics: Arc<crate::metrics::Metrics>,
     pub delegation_metrics: Arc<crate::metrics::DelegationMetrics>,
     pub memory: Option<MemoryState>,
+    pub conversations: Option<ConversationState>,
     pub profile_state: Option<ProfileState>,
     pub features: crate::config::FeatureFlagsConfig,
     pub default_agent_id: Option<String>,
@@ -268,12 +270,72 @@ pub(crate) struct RepoContext {
     pub indexer: Arc<Indexer>,
     pub libs_indexer: Option<Arc<LibsIndexer>>,
     pub memory: Option<MemoryState>,
+    pub conversations: Option<ConversationState>,
     pub delegation_metrics: Arc<crate::metrics::DelegationMetrics>,
 }
 
 impl RepoContext {
     fn matches_id(&self, candidate: &str) -> bool {
         candidate == self.repo_id || candidate == self.legacy_repo_id
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct ConversationNamespaceContext {
+    pub namespace: String,
+    pub conversations: Option<ConversationState>,
+}
+
+#[derive(Clone)]
+pub(crate) enum ConversationRequestContext {
+    Repo(RepoContext),
+    Namespace(ConversationNamespaceContext),
+}
+
+impl ConversationRequestContext {
+    pub(crate) fn conversations(&self) -> Option<ConversationState> {
+        match self {
+            Self::Repo(repo) => repo.conversations.clone(),
+            Self::Namespace(namespace) => namespace.conversations.clone(),
+        }
+    }
+
+    pub(crate) fn repo(&self) -> Option<&RepoContext> {
+        match self {
+            Self::Repo(repo) => Some(repo),
+            Self::Namespace(_) => None,
+        }
+    }
+
+    pub(crate) fn repo_memory_target(
+        &self,
+    ) -> Option<crate::conversations::ConversationRepoMemoryTarget> {
+        self.repo().and_then(|repo| {
+            repo.memory.as_ref().map(
+                |memory| crate::conversations::ConversationRepoMemoryTarget {
+                    repo_id: repo.repo_id.clone(),
+                    store: memory.store.clone(),
+                    embedder: memory.embedder.clone(),
+                    fallback_dim: 0,
+                },
+            )
+        })
+    }
+
+    pub(crate) fn scope_label(&self) -> String {
+        match self {
+            Self::Repo(repo) => repo.indexer.repo_root().display().to_string(),
+            Self::Namespace(namespace) => {
+                format!("conversation_namespace:{}", namespace.namespace)
+            }
+        }
+    }
+
+    pub(crate) fn scope_id(&self) -> String {
+        match self {
+            Self::Repo(repo) => repo.repo_id.clone(),
+            Self::Namespace(namespace) => format!("namespace:{}", namespace.namespace),
+        }
     }
 }
 
@@ -285,6 +347,17 @@ pub struct MemoryState {
     pub store: MemoryStore,
     pub embedder: OllamaEmbedder,
     pub repo_id: String,
+}
+
+#[derive(Clone)]
+pub struct ConversationState {
+    pub store: crate::conversations::ConversationStore,
+    pub knowledge: crate::knowledge::KnowledgeStore,
+    pub config: crate::config::MemoryConversationConfig,
+    pub max_wakeup_tokens: usize,
+    pub max_episodic_summaries: usize,
+    pub max_knowledge_facts: usize,
+    pub max_transcript_snippets: usize,
 }
 
 #[derive(Clone)]
@@ -410,6 +483,90 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/memory/store", post(memory_store_handler))
         .route("/v1/memory/recall", post(memory_recall_handler))
         .route(
+            "/v1/diary/write",
+            post(crate::api::v1::diary::diary_write_handler),
+        )
+        .route(
+            "/v1/diary/read",
+            get(crate::api::v1::diary::diary_read_handler),
+        )
+        .route(
+            "/v1/conversations",
+            get(crate::api::v1::conversations::conversation_list_handler),
+        )
+        .route(
+            "/v1/conversations/search",
+            get(crate::api::v1::conversations::conversation_search_handler),
+        )
+        .route(
+            "/v1/conversations/import",
+            post(crate::api::v1::conversations::conversation_import_handler),
+        )
+        .route(
+            "/v1/conversations/prune",
+            post(crate::api::v1::conversations::conversation_prune_handler),
+        )
+        .route(
+            "/v1/conversations/:session_id",
+            get(crate::api::v1::conversations::conversation_read_handler)
+                .delete(crate::api::v1::conversations::conversation_delete_handler),
+        )
+        .route(
+            "/v1/conversations/:session_id/export",
+            get(crate::api::v1::conversations::conversation_export_handler),
+        )
+        .route(
+            "/v1/conversations/:session_id/redact",
+            post(crate::api::v1::conversations::conversation_redact_handler),
+        )
+        .route("/v1/kg/query", get(crate::api::v1::kg::kg_query_handler))
+        .route(
+            "/v1/kg/search/nodes",
+            get(crate::api::v1::kg::kg_search_nodes_handler),
+        )
+        .route(
+            "/v1/kg/search/edges",
+            get(crate::api::v1::kg::kg_search_edges_handler),
+        )
+        .route(
+            "/v1/kg/search/episodes",
+            get(crate::api::v1::kg::kg_search_episodes_handler),
+        )
+        .route(
+            "/v1/kg/timeline",
+            get(crate::api::v1::kg::kg_timeline_handler),
+        )
+        .route(
+            "/v1/kg/neighborhood",
+            get(crate::api::v1::kg::kg_neighborhood_handler),
+        )
+        .route(
+            "/v1/kg/entity-links",
+            get(crate::api::v1::kg::kg_entity_links_handler),
+        )
+        .route(
+            "/v1/kg/episode",
+            get(crate::api::v1::kg::kg_episode_handler),
+        )
+        .route(
+            "/v1/kg/edge/delete",
+            post(crate::api::v1::kg::kg_delete_edge_handler),
+        )
+        .route(
+            "/v1/kg/episode/delete",
+            post(crate::api::v1::kg::kg_delete_episode_handler),
+        )
+        .route(
+            "/v1/kg/rebuild",
+            post(crate::api::v1::kg::kg_rebuild_handler),
+        )
+        .route("/v1/kg/clear", post(crate::api::v1::kg::kg_clear_handler))
+        .route("/v1/wakeup", post(crate::api::v1::wakeup::wakeup_handler))
+        .route(
+            "/v1/hooks/conversation",
+            post(crate::api::v1::hooks::conversation_hook_handler),
+        )
+        .route(
             "/v1/gates/status",
             get(crate::api::v1::gates::gates_status_handler),
         )
@@ -448,9 +605,11 @@ async fn healthz() -> &'static str {
 }
 
 #[derive(Deserialize)]
-struct RepoIdQuery {
+pub(crate) struct RepoIdQuery {
     #[serde(default)]
-    repo_id: Option<String>,
+    pub(crate) repo_id: Option<String>,
+    #[serde(default, alias = "namespace")]
+    pub(crate) conversation_namespace: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -497,6 +656,7 @@ pub(crate) fn status_for_app_error(code: &str) -> StatusCode {
         ERR_INVALID_ARGUMENT => StatusCode::BAD_REQUEST,
         ERR_MISSING_REPO => StatusCode::BAD_REQUEST,
         ERR_MEMORY_DISABLED => StatusCode::CONFLICT,
+        ERR_CONVERSATION_NOT_FOUND => StatusCode::NOT_FOUND,
         ERR_MISSING_DEPENDENCY => StatusCode::CONFLICT,
         ERR_MISSING_INDEX => StatusCode::CONFLICT,
         ERR_STALE_INDEX => StatusCode::CONFLICT,
@@ -589,6 +749,7 @@ pub(crate) fn resolve_repo_context(
         indexer: state.indexer.clone(),
         libs_indexer: state.libs_indexer.clone(),
         memory: state.memory.clone(),
+        conversations: state.conversations.clone(),
         delegation_metrics: state.delegation_metrics.clone(),
     };
     let Some(candidate) = selected else {
@@ -639,6 +800,7 @@ pub(crate) fn resolve_repo_context(
             indexer: repo.indexer.clone(),
             libs_indexer: repo.libs_indexer.clone(),
             memory: repo.memory.clone(),
+            conversations: repo.conversations.clone(),
             delegation_metrics: repo.delegation_metrics.clone(),
         });
     }
@@ -648,6 +810,46 @@ pub(crate) fn resolve_repo_context(
         message: "unknown repo".to_string(),
         details: None,
     })
+}
+
+pub(crate) fn resolve_conversation_context(
+    state: &AppState,
+    headers: &HeaderMap,
+    query_repo_id: Option<&str>,
+    body_repo_id: Option<&str>,
+    query_namespace: Option<&str>,
+    body_namespace: Option<&str>,
+    require_repo: bool,
+) -> Result<ConversationRequestContext, RepoIdError> {
+    let selected_repo = parse_repo_id(headers, query_repo_id, body_repo_id, false)?;
+    let selected_namespace =
+        parse_conversation_namespace(headers, query_namespace, body_namespace)?;
+    if let (Some(repo_id), Some(namespace)) =
+        (selected_repo.as_deref(), selected_namespace.as_deref())
+    {
+        return Err(RepoIdError {
+            status: StatusCode::BAD_REQUEST,
+            code: ERR_INVALID_ARGUMENT,
+            message: "repo_id and conversation_namespace are mutually exclusive; choose one scope"
+                .to_string(),
+            details: Some(serde_json::json!({
+                "repo_id": repo_id,
+                "conversation_namespace": namespace,
+                "headerRepoId": REPO_ID_HEADER,
+                "headerConversationNamespace": CONVERSATION_NAMESPACE_HEADER,
+            })),
+        });
+    }
+    if let Some(namespace) = selected_namespace {
+        return Ok(ConversationRequestContext::Namespace(
+            ConversationNamespaceContext {
+                namespace: namespace.clone(),
+                conversations: build_namespace_conversation_state(state, &namespace)?,
+            },
+        ));
+    }
+    resolve_repo_context(state, headers, query_repo_id, body_repo_id, require_repo)
+        .map(ConversationRequestContext::Repo)
 }
 
 fn parse_repo_id(
@@ -718,6 +920,107 @@ fn parse_repo_id(
     Ok(Some(candidate))
 }
 
+fn parse_conversation_namespace(
+    headers: &HeaderMap,
+    query_namespace: Option<&str>,
+    body_namespace: Option<&str>,
+) -> Result<Option<String>, RepoIdError> {
+    let mut selected: Option<String> = None;
+    if let Some(value) = headers.get(CONVERSATION_NAMESPACE_HEADER) {
+        let header_value = value.to_str().map_err(|_| RepoIdError {
+            status: StatusCode::BAD_REQUEST,
+            code: ERR_INVALID_ARGUMENT,
+            message: format!("{CONVERSATION_NAMESPACE_HEADER} must be valid UTF-8"),
+            details: None,
+        })?;
+        let trimmed = header_value.trim();
+        if trimmed.is_empty() {
+            return Err(RepoIdError {
+                status: StatusCode::BAD_REQUEST,
+                code: ERR_INVALID_ARGUMENT,
+                message: format!("{CONVERSATION_NAMESPACE_HEADER} must not be empty"),
+                details: None,
+            });
+        }
+        selected = Some(trimmed.to_string());
+    }
+
+    for value in [query_namespace, body_namespace] {
+        let Some(raw) = value else {
+            continue;
+        };
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err(RepoIdError {
+                status: StatusCode::BAD_REQUEST,
+                code: ERR_INVALID_ARGUMENT,
+                message: "conversation_namespace must not be empty".to_string(),
+                details: None,
+            });
+        }
+        match selected.as_deref() {
+            None => selected = Some(trimmed.to_string()),
+            Some(existing) if existing != trimmed => {
+                return Err(RepoIdError {
+                    status: StatusCode::BAD_REQUEST,
+                    code: ERR_INVALID_ARGUMENT,
+                    message:
+                        "conversation_namespace values must match across header, query, and body"
+                            .to_string(),
+                    details: None,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    Ok(selected)
+}
+
+fn build_namespace_conversation_state(
+    state: &AppState,
+    namespace: &str,
+) -> Result<Option<ConversationState>, RepoIdError> {
+    let trimmed = namespace.trim();
+    if trimmed.is_empty() {
+        return Err(RepoIdError {
+            status: StatusCode::BAD_REQUEST,
+            code: ERR_INVALID_ARGUMENT,
+            message: "conversation_namespace must not be empty".to_string(),
+            details: None,
+        });
+    }
+    let Some(template) = state.conversations.as_ref() else {
+        return Ok(None);
+    };
+    let base_state_dir = state
+        .global_state_dir
+        .clone()
+        .or_else(|| {
+            crate::repo_manager::split_scoped_state_dir(state.indexer.state_dir())
+                .map(|(base_dir, _, _)| base_dir)
+        })
+        .ok_or_else(|| RepoIdError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            code: ERR_INTERNAL_ERROR,
+            message: "conversation namespace requires a shared global state directory".to_string(),
+            details: Some(serde_json::json!({
+                "conversation_namespace": trimmed,
+                "hint": "Start the daemon with a shared global state dir so repo-less conversation namespaces have an isolated home."
+            })),
+        })?;
+    let config = template.config.clone();
+    Ok(Some(ConversationState {
+        store: crate::conversations::ConversationStore::for_namespace(&base_state_dir, trimmed),
+        knowledge: crate::knowledge::KnowledgeStore::for_namespace(&base_state_dir, trimmed),
+        max_wakeup_tokens: config.max_wakeup_tokens,
+        max_episodic_summaries: config.max_episodic_summaries,
+        max_knowledge_facts: config.max_knowledge_facts,
+        max_transcript_snippets: config.max_transcript_snippets,
+        config,
+    }))
+}
+
 fn header_dag_session_id(headers: &HeaderMap) -> Option<String> {
     headers
         .get(DAG_SESSION_HEADER)
@@ -754,7 +1057,12 @@ mod repo_context_tests {
         fs::create_dir_all(&state_root)?;
 
         let manager = if multi_repo {
-            Some(Arc::new(RepoManager::new(None, None)))
+            Some(Arc::new(RepoManager::new(
+                None,
+                None,
+                false,
+                crate::config::MemoryConversationConfig::default(),
+            )))
         } else {
             None
         };
@@ -796,6 +1104,7 @@ mod repo_context_tests {
                     indexer,
                     libs_indexer: None,
                     memory: None,
+                    conversations: None,
                     delegation_metrics,
                 });
                 manager.insert_repo(runtime, None);
@@ -839,6 +1148,7 @@ mod repo_context_tests {
             metrics: Arc::new(crate::metrics::Metrics::default()),
             delegation_metrics: default_delegation_metrics,
             memory: None,
+            conversations: None,
             profile_state: None,
             features: crate::config::FeatureFlagsConfig::default(),
             default_agent_id: None,
@@ -1745,6 +2055,28 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 description: "Recall memory items by semantic similarity (requires DOCDEX_ENABLE_MEMORY=1).",
                 args: &["query (string, required)", "top_k (int, optional)", "project_root or repo_path (string, optional)"],
                 returns: &["results[]"],
+            },
+            AiHelpMcpTool {
+                name: "docdex_conversation_import",
+                description: "Import a normalized conversation session or prefixed plain-text transcript into repo-scoped conversation memory.",
+                args: &[
+                    "messages (array, optional)",
+                    "transcript_text (string, optional)",
+                    "source/title/agent_id/metadata (optional)",
+                    "project_root or repo_path (string, optional)",
+                ],
+                returns: &["session_id", "deduplicated", "message_count", "summary", "working_memory?"],
+            },
+            AiHelpMcpTool {
+                name: "docdex_wakeup",
+                description: "Assemble bounded startup memory from prior conversation history.",
+                args: &[
+                    "agent_id (string, optional)",
+                    "query (string, optional)",
+                    "max_tokens (int, optional)",
+                    "project_root or repo_path (string, optional)",
+                ],
+                returns: &["text", "trace", "working_memory?", "episodic_summaries[]", "transcript_snippets[]"],
             },
             AiHelpMcpTool {
                 name: "docdex_save_preference",

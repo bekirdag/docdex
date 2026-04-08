@@ -1,8 +1,10 @@
 #![allow(dead_code)]
 
 use std::error::Error;
+use std::ffi::OsStr;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -19,6 +21,25 @@ pub fn docdex_bin() -> PathBuf {
     std::env::set_var("DOCDEX_CLI_LOCAL", "1");
     std::env::set_var("DOCDEX_WEB_ENABLED", "0");
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
+}
+
+pub fn write_basic_repo(repo_root: &Path) -> Result<(), Box<dyn Error>> {
+    std::fs::create_dir_all(repo_root.join(".git"))?;
+    std::fs::write(repo_root.join("README.md"), "# Repo\n")?;
+    Ok(())
+}
+
+pub fn write_basic_config(home_dir: &Path, global_state_dir: &Path) -> Result<(), Box<dyn Error>> {
+    let config_dir = home_dir.join(".docdex");
+    std::fs::create_dir_all(&config_dir)?;
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            "[core]\nglobal_state_dir = \"{}\"\n",
+            toml_path(global_state_dir)
+        ),
+    )?;
+    Ok(())
 }
 
 pub fn pick_free_port() -> Option<u16> {
@@ -47,6 +68,94 @@ pub fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
         }
     }
     Err("docdexd healthz endpoint did not respond in time".into())
+}
+
+pub struct TestServerHarness {
+    child: Child,
+}
+
+impl TestServerHarness {
+    pub fn spawn_basic(
+        state_root: &Path,
+        home_dir: &Path,
+        repo_root: &Path,
+        host: &str,
+        port: u16,
+        enable_mcp: bool,
+    ) -> Result<Self, Box<dyn Error>> {
+        Self::spawn_with_env(state_root, home_dir, repo_root, host, port, enable_mcp, &[])
+    }
+
+    pub fn spawn_with_env(
+        state_root: &Path,
+        home_dir: &Path,
+        repo_root: &Path,
+        host: &str,
+        port: u16,
+        enable_mcp: bool,
+        extra_env: &[(&str, &str)],
+    ) -> Result<Self, Box<dyn Error>> {
+        let repo_arg = repo_root.to_string_lossy().to_string();
+        let mut command = Command::new(docdex_bin());
+        command
+            .env("DOCDEX_WEB_ENABLED", "0")
+            .env("DOCDEX_ENABLE_MEMORY", "0")
+            .env("DOCDEX_ENABLE_MCP", if enable_mcp { "1" } else { "0" })
+            .env("DOCDEX_STATE_DIR", state_root)
+            .env("HOME", home_dir)
+            .args([
+                "serve",
+                "--repo",
+                repo_arg.as_str(),
+                "--host",
+                host,
+                "--port",
+                &port.to_string(),
+                "--log",
+                "warn",
+                "--secure-mode=false",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        for (key, value) in extra_env {
+            command.env(key, value);
+        }
+        let child = command.spawn()?;
+        wait_for_health(host, port)?;
+        Ok(Self { child })
+    }
+
+    pub fn shutdown(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+pub fn run_docdex_json<I, S>(
+    home_dir: &Path,
+    base_url: &str,
+    args: I,
+) -> Result<Value, Box<dyn Error>>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
+        .env("DOCDEX_ENABLE_MEMORY", "0")
+        .env("DOCDEX_HTTP_BASE_URL", base_url)
+        .env("HOME", home_dir)
+        .args(args)
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "docdexd exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(serde_json::from_slice(&output.stdout)?)
 }
 
 pub struct MockOllama {

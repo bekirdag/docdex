@@ -5,11 +5,11 @@ use crate::delegation_telemetry;
 use crate::diff;
 use crate::error::{
     repo_resolution_details, AppError, RateLimited, ERR_BACKOFF_REQUIRED,
-    ERR_DELEGATION_LOCAL_REQUIRED, ERR_EMBEDDING_FAILED, ERR_EMBEDDING_MODEL_NOT_FOUND,
-    ERR_EMBEDDING_TIMEOUT, ERR_INDEXING_IN_PROGRESS, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
-    ERR_MEMORY_DISABLED, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO,
-    ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
-    ERR_UNAUTHORIZED, ERR_UNKNOWN_REPO,
+    ERR_CONVERSATION_NOT_FOUND, ERR_DELEGATION_LOCAL_REQUIRED, ERR_EMBEDDING_FAILED,
+    ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INDEXING_IN_PROGRESS,
+    ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_KNOWLEDGE_EPISODE_NOT_FOUND, ERR_MEMORY_DISABLED,
+    ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO, ERR_MISSING_REPO_PATH,
+    ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX, ERR_UNAUTHORIZED, ERR_UNKNOWN_REPO,
 };
 use crate::impact::{build_impact_diagnostics_response, ImpactDiagnosticsEntry, ImpactGraphStore};
 use crate::index::{IndexConfig, Indexer};
@@ -37,7 +37,7 @@ use crate::orchestrator::{
     memory_budget_from_max_answer_tokens, run_waterfall, ProfileBudget, WaterfallPlan,
     WaterfallRequest, WebGateConfig,
 };
-use crate::profiles::ProfileEmbedder;
+use crate::profiles::{ProfileEmbedder, ProfileManager};
 use crate::ratelimit::RateLimiter;
 use crate::search;
 use crate::symbols::SymbolsStore;
@@ -72,6 +72,8 @@ const AST_DEFAULT_MAX_NODES: usize = 20_000;
 const AST_MAX_NODES: usize = 100_000;
 const DIAGNOSTICS_DEFAULT_LIMIT: usize = 200;
 const DIAGNOSTICS_MAX_LIMIT: usize = 1000;
+const CONVERSATION_LIST_DEFAULT_LIMIT: usize = 20;
+const CONVERSATION_LIST_MAX_LIMIT: usize = 100;
 const MAX_ERROR_MESSAGE_BYTES: usize = 256;
 const MAX_ERROR_REASON_BYTES: usize = 768;
 const DEFAULT_FALLBACK_EMBED_DIM: usize = 768;
@@ -272,6 +274,8 @@ fn default_message_for_code(code: &str) -> &'static str {
         ERR_MISSING_INDEX => "missing index",
         ERR_INDEXING_IN_PROGRESS => "indexing in progress",
         ERR_STALE_INDEX => "stale index",
+        ERR_CONVERSATION_NOT_FOUND => "conversation not found",
+        ERR_KNOWLEDGE_EPISODE_NOT_FOUND => "knowledge episode not found",
         ERR_MISSING_DEPENDENCY => "missing dependency",
         ERR_RATE_LIMITED => "rate limited",
         ERR_BACKOFF_REQUIRED => "backoff required",
@@ -313,6 +317,23 @@ fn normalize_tool_arguments(value: Option<serde_json::Value>) -> serde_json::Val
         serde_json::Value::Null => json!({}),
         other => other,
     }
+}
+
+fn map_conversation_import_messages(
+    messages: Option<Vec<ConversationImportMessageArgs>>,
+) -> Option<Vec<crate::conversations::ConversationMessage>> {
+    messages.map(|messages| {
+        messages
+            .into_iter()
+            .map(|item| crate::conversations::ConversationMessage {
+                role: crate::conversations::ConversationRole::from_str(&item.role),
+                content: item.content,
+                author: item.author,
+                created_at_ms: item.created_at_ms,
+                metadata: item.metadata.unwrap_or_else(|| json!({})),
+            })
+            .collect::<Vec<_>>()
+    })
 }
 
 fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json::Value>) {
@@ -721,6 +742,400 @@ struct MemoryRecallArgs {
     repo_path: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct ConversationImportMessageArgs {
+    role: String,
+    content: String,
+    #[serde(default)]
+    author: Option<String>,
+    #[serde(default)]
+    created_at_ms: Option<i64>,
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct ConversationImportArgs {
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    source_session_id: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    transport: Option<String>,
+    #[serde(default)]
+    started_at_ms: Option<i64>,
+    #[serde(default)]
+    ended_at_ms: Option<i64>,
+    #[serde(default)]
+    format: Option<String>,
+    #[serde(default)]
+    messages: Option<Vec<ConversationImportMessageArgs>>,
+    #[serde(default)]
+    transcript_text: Option<String>,
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+    #[serde(default, alias = "namespace")]
+    conversation_namespace: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct WakeupArgs {
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    query: Option<String>,
+    #[serde(default)]
+    max_tokens: Option<usize>,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+    #[serde(default, alias = "namespace")]
+    conversation_namespace: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct KgQueryArgs {
+    query: String,
+    #[serde(default)]
+    relation: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    offset: Option<usize>,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+    #[serde(default, alias = "namespace")]
+    conversation_namespace: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct KgNodeSearchArgs {
+    query: String,
+    #[serde(default)]
+    entity_type: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    offset: Option<usize>,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+    #[serde(default, alias = "namespace")]
+    conversation_namespace: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct KgEdgeSearchArgs {
+    query: String,
+    #[serde(default)]
+    relation: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    offset: Option<usize>,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+    #[serde(default, alias = "namespace")]
+    conversation_namespace: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct KgTimelineArgs {
+    entity: String,
+    #[serde(default)]
+    relation: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+    #[serde(default, alias = "namespace")]
+    conversation_namespace: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct KgEpisodeSearchArgs {
+    query: String,
+    #[serde(default)]
+    source_type: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    offset: Option<usize>,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+    #[serde(default, alias = "namespace")]
+    conversation_namespace: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct KgNeighborhoodArgs {
+    entity: String,
+    #[serde(default)]
+    relation: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+    #[serde(default, alias = "namespace")]
+    conversation_namespace: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct KgEntityLinksArgs {
+    entity: String,
+    #[serde(default)]
+    link_type: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+    #[serde(default, alias = "namespace")]
+    conversation_namespace: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct KgEpisodeArgs {
+    #[serde(alias = "id")]
+    episode_id: String,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+    #[serde(default, alias = "namespace")]
+    conversation_namespace: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct KgDeleteEdgeArgs {
+    #[serde(alias = "id")]
+    edge_id: String,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+    #[serde(default, alias = "namespace")]
+    conversation_namespace: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct KgDeleteEpisodeArgs {
+    #[serde(alias = "id")]
+    episode_id: String,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+    #[serde(default, alias = "namespace")]
+    conversation_namespace: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct KgMaintenanceArgs {
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+    #[serde(default, alias = "namespace")]
+    conversation_namespace: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ConversationListArgs {
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    offset: Option<usize>,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+    #[serde(default, alias = "namespace")]
+    conversation_namespace: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ConversationSearchArgs {
+    query: String,
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    offset: Option<usize>,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+    #[serde(default, alias = "namespace")]
+    conversation_namespace: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ConversationReadArgs {
+    session_id: String,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+    #[serde(default, alias = "namespace")]
+    conversation_namespace: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ConversationDeleteArgs {
+    session_id: String,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+    #[serde(default, alias = "namespace")]
+    conversation_namespace: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ConversationExportArgs {
+    session_id: String,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+    #[serde(default, alias = "namespace")]
+    conversation_namespace: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ConversationRedactArgs {
+    session_id: String,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+    #[serde(default, alias = "namespace")]
+    conversation_namespace: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ConversationPruneArgs {
+    #[serde(default)]
+    manual_retention_days: Option<u32>,
+    #[serde(default)]
+    auto_capture_retention_days: Option<u32>,
+    #[serde(default)]
+    diary_retention_days: Option<u32>,
+    #[serde(default)]
+    hook_event_retention_days: Option<u32>,
+    #[serde(default)]
+    working_memory_retention_days: Option<u32>,
+    #[serde(default)]
+    episodic_rollup_retention_days: Option<u32>,
+    #[serde(default)]
+    apply: Option<bool>,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+    #[serde(default, alias = "namespace")]
+    conversation_namespace: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct DiaryWriteArgs {
+    content: String,
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    entry_type: Option<String>,
+    #[serde(default)]
+    source_session_id: Option<String>,
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+    #[serde(default, alias = "namespace")]
+    conversation_namespace: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct DiaryReadArgs {
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    offset: Option<usize>,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+    #[serde(default, alias = "namespace")]
+    conversation_namespace: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ConversationHookArgs {
+    action: crate::conversations::ConversationHookAction,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    source_session_id: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    transport: Option<String>,
+    #[serde(default)]
+    started_at_ms: Option<i64>,
+    #[serde(default)]
+    ended_at_ms: Option<i64>,
+    #[serde(default)]
+    format: Option<String>,
+    #[serde(default)]
+    messages: Option<Vec<ConversationImportMessageArgs>>,
+    #[serde(default)]
+    transcript_text: Option<String>,
+    #[serde(default)]
+    summary_text: Option<String>,
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
+    #[serde(default)]
+    wait_for_processing: Option<bool>,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+    #[serde(default, alias = "namespace")]
+    conversation_namespace: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct ProfileSaveArgs {
     #[serde(default)]
@@ -864,6 +1279,23 @@ impl McpService {
         } else {
             None
         };
+        let conversation_config = config
+            .as_ref()
+            .map(|cfg| cfg.memory.conversations.clone())
+            .unwrap_or_default();
+        let conversations = if conversation_config.enabled {
+            Some(McpConversationState {
+                store: crate::conversations::ConversationStore::new(indexer.state_dir()),
+                knowledge: crate::knowledge::KnowledgeStore::new(indexer.state_dir()),
+                config: conversation_config.clone(),
+                max_wakeup_tokens: conversation_config.max_wakeup_tokens,
+                max_episodic_summaries: conversation_config.max_episodic_summaries,
+                max_knowledge_facts: conversation_config.max_knowledge_facts,
+                max_transcript_snippets: conversation_config.max_transcript_snippets,
+            })
+        } else {
+            None
+        };
         let max_answer_tokens = config
             .as_ref()
             .map(|cfg| cfg.llm.max_answer_tokens)
@@ -875,6 +1307,53 @@ impl McpService {
         let global_state_dir = config
             .as_ref()
             .and_then(|cfg| cfg.core.global_state_dir.clone());
+        let profile_embedding_base_url = std::env::var("DOCDEX_EMBEDDING_BASE_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .or_else(|| {
+                std::env::var("DOCDEX_OLLAMA_BASE_URL")
+                    .ok()
+                    .filter(|v| !v.trim().is_empty())
+            })
+            .or_else(|| config.as_ref().map(|cfg| cfg.llm.base_url.clone()))
+            .unwrap_or_else(|| "http://127.0.0.1:11434".to_string());
+        let profile_embedding_model = config
+            .as_ref()
+            .map(|cfg| cfg.memory.profile.embedding_model.clone())
+            .unwrap_or_else(|| "nomic-embed-text".to_string());
+        let profile_embedding_dim = config
+            .as_ref()
+            .map(|cfg| cfg.memory.profile.embedding_dim)
+            .unwrap_or(DEFAULT_FALLBACK_EMBED_DIM)
+            .max(1);
+        let profile_embedding_timeout_ms = std::env::var("DOCDEX_EMBEDDING_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(5000);
+        let profile_state = {
+            let mut manager = global_state_dir
+                .as_ref()
+                .and_then(|state_dir| ProfileManager::new(state_dir, profile_embedding_dim).ok());
+            if manager.is_none() {
+                if let Ok(fallback_dir) = crate::state_paths::default_state_base_dir() {
+                    manager = ProfileManager::new(&fallback_dir, profile_embedding_dim).ok();
+                }
+            }
+            if manager.is_none() {
+                let temp_dir = std::env::temp_dir().join("docdex").join("state");
+                manager = ProfileManager::new(&temp_dir, profile_embedding_dim).ok();
+            }
+            manager.map(|manager| search::ProfileState {
+                manager,
+                embedder: ProfileEmbedder::new(
+                    profile_embedding_base_url.clone(),
+                    profile_embedding_model.clone(),
+                    Duration::from_millis(profile_embedding_timeout_ms),
+                    profile_embedding_dim,
+                )
+                .ok(),
+            })
+        };
         let effective_burst = if rate_limit_per_min > 0 && rate_limit_burst == 0 {
             rate_limit_per_min
         } else {
@@ -904,16 +1383,19 @@ impl McpService {
                 crate::repo_manager::fingerprint::legacy_repo_id_for_root(&repo_root)
             });
         let authorized = auth_token.is_none();
+        let default_project_root = Some(repo_root.clone());
         let server = McpServer {
             repo_id,
             repo_root,
             indexer,
             libs_indexer,
             max_results: max_results.max(1),
-            default_project_root: None,
+            default_project_root,
             default_agent_id: None,
             default_agent_model: None,
             memory,
+            conversations,
+            profile_state,
             max_answer_tokens,
             llm_config,
             global_state_dir,
@@ -975,6 +1457,55 @@ struct McpMemoryState {
     fallback_dim: usize,
 }
 
+#[derive(Clone)]
+struct McpConversationState {
+    store: crate::conversations::ConversationStore,
+    knowledge: crate::knowledge::KnowledgeStore,
+    config: crate::config::MemoryConversationConfig,
+    max_wakeup_tokens: usize,
+    max_episodic_summaries: usize,
+    max_knowledge_facts: usize,
+    max_transcript_snippets: usize,
+}
+
+#[derive(Clone)]
+enum McpConversationScope {
+    Repo {
+        repo_id: String,
+        conversations: McpConversationState,
+        memory: Option<McpMemoryState>,
+    },
+    Namespace {
+        conversations: McpConversationState,
+    },
+}
+
+impl McpConversationScope {
+    fn conversations(&self) -> McpConversationState {
+        match self {
+            Self::Repo { conversations, .. } | Self::Namespace { conversations } => {
+                conversations.clone()
+            }
+        }
+    }
+
+    fn repo_memory_target(&self) -> Option<crate::conversations::ConversationRepoMemoryTarget> {
+        match self {
+            Self::Repo {
+                repo_id, memory, ..
+            } => memory.as_ref().map(
+                |memory| crate::conversations::ConversationRepoMemoryTarget {
+                    repo_id: repo_id.clone(),
+                    store: memory.store.clone(),
+                    embedder: memory.embedder.clone(),
+                    fallback_dim: memory.fallback_dim,
+                },
+            ),
+            Self::Namespace { .. } => None,
+        }
+    }
+}
+
 struct MemoryEmbedding {
     embedding: Vec<f32>,
     provider: String,
@@ -991,6 +1522,8 @@ struct McpServer {
     default_agent_id: Option<String>,
     default_agent_model: Option<String>,
     memory: Option<McpMemoryState>,
+    conversations: Option<McpConversationState>,
+    profile_state: Option<search::ProfileState>,
     max_answer_tokens: u32,
     llm_config: config::LlmConfig,
     global_state_dir: Option<PathBuf>,
@@ -1153,7 +1686,7 @@ impl McpServer {
                 let protocol_version = init_params
                     .protocol_version
                     .unwrap_or_else(|| "2025-11-25".to_string());
-                let instructions = "Docdex is a local-first repo indexer: use docdex_search for repo docs/code before changing code.\nIf results are weak or the user asks for web context, use docdex_web_research (requires web enabled).\nUse docdex_open for file reads, docdex_files to list indexed docs, docdex_tree for folder structure, and docdex_index to refresh the index when stale.\nFor code intelligence, use docdex_symbols/docdex_ast, docdex_impact_diagnostics for unresolved imports, and docdex_impact_graph for dependency traversal.\nUse docdex_dag_export to export DAG sessions; pass the dag_session_id from docdex_search/docdex_web_research responses (or provide session_id directly).\nUse docdex_local_completion to offload small tasks to a local model or managed mcoda cloud agent. Code-oriented task types use the code lane; lightweight Q&A uses general_question. If mswarm is configured and cloud delegation is enabled, Docdex can discover `mswarm-cloud-*` candidates from `mcoda cloud agent list` and automatically skip usage-limited cloud agents.\nMemory tools (docdex_memory_store/recall) require memory to be enabled.\nProfile tools (docdex_save_preference/docdex_get_profile) use global profile memory and do not require project_root.\nPass project_root/repo_path to match the MCP server repo (or omit if initialize set a default).";
+                let instructions = "Docdex is a local-first repo indexer: use docdex_search for repo docs/code before changing code.\nIf results are weak or the user asks for web context, use docdex_web_research (requires web enabled).\nUse docdex_open for file reads, docdex_files to list indexed docs, docdex_tree for folder structure, and docdex_index to refresh the index when stale.\nFor code intelligence, use docdex_symbols/docdex_ast, docdex_impact_diagnostics for unresolved imports, and docdex_impact_graph for dependency traversal.\nUse docdex_dag_export to export DAG sessions; pass the dag_session_id from docdex_search/docdex_web_research responses (or provide session_id directly).\nUse docdex_local_completion to offload small tasks to a local model or managed mcoda cloud agent. Code-oriented task types use the code lane; lightweight Q&A uses general_question. If mswarm is configured and cloud delegation is enabled, Docdex can discover `mswarm-cloud-*` candidates from `mcoda cloud agent list` and automatically skip usage-limited cloud agents.\nMemory tools (docdex_memory_store/recall) require memory to be enabled.\nConversation tools: use docdex_conversation_import for ingest, docdex_conversation_search/list/read/export/delete/redact for archive inspection, docdex_conversation_prune for retention cleanup, docdex_diary_write/read for per-agent journals, docdex_conversation_hook for append-only capture events, and docdex_wakeup for bounded startup memory.\nProfile tools (docdex_save_preference/docdex_get_profile) use global profile memory and do not require project_root.\nPass project_root/repo_path to match the MCP server repo (or omit if initialize set a default).";
                 let mut caps = json!({
                     "tools": { "listChanged": false },
                     "resources": { "listChanged": false },
@@ -1964,6 +2497,918 @@ impl McpServer {
                             }
                         }
                     }
+                    "docdex_conversation_import" | "docdex.conversation_import" => {
+                        let args_res: Result<ConversationImportArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_conversation_import"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_conversation_import"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_conversation_import(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_conversation_import"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_conversation_search" | "docdex.conversation_search" => {
+                        let args_res: Result<ConversationSearchArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_conversation_search"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_conversation_search"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_conversation_search(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_conversation_search"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_conversation_list" | "docdex.conversation_list" => {
+                        let args_res: Result<ConversationListArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_conversation_list"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_conversation_list"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_conversation_list(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_conversation_list"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_conversation_read" | "docdex.conversation_read" => {
+                        let args_res: Result<ConversationReadArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_conversation_read"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_conversation_read"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_conversation_read(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_conversation_read"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_conversation_delete" | "docdex.conversation_delete" => {
+                        let args_res: Result<ConversationDeleteArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_conversation_delete"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_conversation_delete"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_conversation_delete(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_conversation_delete"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_conversation_export" | "docdex.conversation_export" => {
+                        let args_res: Result<ConversationExportArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_conversation_export"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_conversation_export"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_conversation_export(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_conversation_export"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_conversation_redact" | "docdex.conversation_redact" => {
+                        let args_res: Result<ConversationRedactArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_conversation_redact"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_conversation_redact"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_conversation_redact(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_conversation_redact"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_conversation_prune" | "docdex.conversation_prune" => {
+                        let args_res: Result<ConversationPruneArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_conversation_prune"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_conversation_prune"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_conversation_prune(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_conversation_prune"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_diary_write" | "docdex.diary_write" => {
+                        let args_res: Result<DiaryWriteArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_diary_write"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_diary_write"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_diary_write(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(&err, Some("docdex_diary_write"))),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_diary_read" | "docdex.diary_read" => {
+                        let args_res: Result<DiaryReadArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_diary_read"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_diary_read"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_diary_read(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(&err, Some("docdex_diary_read"))),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_conversation_hook" | "docdex.conversation_hook" => {
+                        let args_res: Result<ConversationHookArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_conversation_hook"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_conversation_hook"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_conversation_hook(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_conversation_hook"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_wakeup" | "docdex.wakeup" => {
+                        let args_res: Result<WakeupArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_wakeup"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_wakeup"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_wakeup(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(&err, Some("docdex_wakeup"))),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_kg_query" | "docdex.kg_query" => {
+                        let args_res: Result<KgQueryArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_kg_query"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_kg_query"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_kg_query(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(&err, Some("docdex_kg_query"))),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_kg_search_nodes" | "docdex.kg_search_nodes" => {
+                        let args_res: Result<KgNodeSearchArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_kg_search_nodes"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_kg_search_nodes"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_kg_search_nodes(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_kg_search_nodes"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_kg_search_edges" | "docdex.kg_search_edges" => {
+                        let args_res: Result<KgEdgeSearchArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_kg_search_edges"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_kg_search_edges"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_kg_search_edges(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_kg_search_edges"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_kg_timeline" | "docdex.kg_timeline" => {
+                        let args_res: Result<KgTimelineArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_kg_timeline"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_kg_timeline"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_kg_timeline(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(&err, Some("docdex_kg_timeline"))),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_kg_search_episodes" | "docdex.kg_search_episodes" => {
+                        let args_res: Result<KgEpisodeSearchArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_kg_search_episodes"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_kg_search_episodes"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_kg_search_episodes(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_kg_search_episodes"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_kg_neighborhood" | "docdex.kg_neighborhood" => {
+                        let args_res: Result<KgNeighborhoodArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_kg_neighborhood"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_kg_neighborhood"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_kg_neighborhood(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_kg_neighborhood"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_kg_entity_links" | "docdex.kg_entity_links" => {
+                        let args_res: Result<KgEntityLinksArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_kg_entity_links"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_kg_entity_links"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_kg_entity_links(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_kg_entity_links"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_kg_episode" | "docdex.kg_episode" => {
+                        let args_res: Result<KgEpisodeArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_kg_episode"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_kg_episode"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_kg_episode(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(&err, Some("docdex_kg_episode"))),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_kg_delete_edge" | "docdex.kg_delete_edge" => {
+                        let args_res: Result<KgDeleteEdgeArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_kg_delete_edge"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_kg_delete_edge"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_kg_delete_edge(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_kg_delete_edge"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_kg_delete_episode" | "docdex.kg_delete_episode" => {
+                        let args_res: Result<KgDeleteEpisodeArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_kg_delete_episode"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_kg_delete_episode"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_kg_delete_episode(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_kg_delete_episode"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_kg_rebuild" | "docdex.kg_rebuild" => {
+                        let args_res: Result<KgMaintenanceArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_kg_rebuild"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_kg_rebuild"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_kg_rebuild(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(&err, Some("docdex_kg_rebuild"))),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_kg_clear" | "docdex.kg_clear" => {
+                        let args_res: Result<KgMaintenanceArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_kg_clear"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_kg_clear"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_kg_clear(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(&err, Some("docdex_kg_clear"))),
+                                }))
+                            }
+                        }
+                    }
                     "docdex_local_completion" | "docdex.local_completion" => {
                         let args_res: Result<DelegateArgs, _> =
                             serde_json::from_value(params.arguments.clone());
@@ -2108,6 +3553,30 @@ impl McpServer {
                                         "docdex_memory_save",
                                         "docdex_memory_store",
                                         "docdex_memory_recall",
+                                        "docdex_conversation_import",
+                                        "docdex_conversation_search",
+                                        "docdex_conversation_list",
+                                        "docdex_conversation_read",
+                                        "docdex_conversation_export",
+                                        "docdex_conversation_delete",
+                                        "docdex_conversation_redact",
+                                        "docdex_conversation_prune",
+                                        "docdex_diary_write",
+                                        "docdex_diary_read",
+                                        "docdex_conversation_hook",
+                                        "docdex_wakeup",
+                                        "docdex_kg_query",
+                                        "docdex_kg_search_nodes",
+                                        "docdex_kg_search_edges",
+                                        "docdex_kg_timeline",
+                                        "docdex_kg_search_episodes",
+                                        "docdex_kg_neighborhood",
+                                        "docdex_kg_entity_links",
+                                        "docdex_kg_episode",
+                                        "docdex_kg_delete_edge",
+                                        "docdex_kg_delete_episode",
+                                        "docdex_kg_rebuild",
+                                        "docdex_kg_clear",
                                         "docdex_local_completion",
                                         "docdex_save_preference",
                                         "docdex_get_profile"
@@ -2494,6 +3963,480 @@ impl McpServer {
                         "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" }
                     },
                     "required": ["query"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_conversation_import",
+                title: "Import Conversation",
+                description: "Import a normalized conversation session, plain-text transcript, or native export format into repo-scoped conversation memory or an explicit global conversation namespace.",
+                annotations: Some(annotations_with_priority(0.5)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "source": { "type": "string", "description": "Optional source label (defaults to manual)" },
+                        "source_session_id": { "type": "string", "description": "Optional source-side session id for dedupe" },
+                        "title": { "type": "string" },
+                        "agent_id": { "type": "string" },
+                        "transport": { "type": "string" },
+                        "started_at_ms": { "type": "integer" },
+                        "ended_at_ms": { "type": "integer" },
+                        "format": {
+                            "type": "string",
+                            "enum": ["auto", "plain_text", "generic_json", "codex_jsonl", "claude_jsonl", "chatgpt_export"],
+                            "description": "Optional transcript format hint for transcript_text parsing"
+                        },
+                        "messages": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "role": { "type": "string" },
+                                    "content": { "type": "string" },
+                                    "author": { "type": "string" },
+                                    "created_at_ms": { "type": "integer" },
+                                    "metadata": { "type": "object", "additionalProperties": true }
+                                },
+                                "required": ["role", "content"]
+                            }
+                        },
+                        "transcript_text": { "type": "string", "description": "Alternative transcript payload for auto/plain-text/native import parsing" },
+                        "metadata": { "type": "object", "additionalProperties": true },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" },
+                        "conversation_namespace": { "type": "string", "description": "Explicit global conversation namespace to use instead of project_root/repo_path" }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_conversation_search",
+                title: "Search Conversations",
+                description: "Search conversation archive summaries and raw message snippets for a repo or explicit global conversation namespace.",
+                annotations: Some(annotations_with_priority(0.5)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "minLength": 1, "description": "Search query" },
+                        "agent_id": { "type": "string", "description": "Optional agent id filter" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 },
+                        "offset": { "type": "integer", "minimum": 0, "default": 0 },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" },
+                        "conversation_namespace": { "type": "string", "description": "Explicit global conversation namespace to use instead of project_root/repo_path" }
+                    },
+                    "required": ["query"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_conversation_list",
+                title: "List Conversations",
+                description: "List conversation sessions with summaries and metadata for a repo or explicit global conversation namespace.",
+                annotations: Some(annotations_with_priority(0.5)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "agent_id": { "type": "string", "description": "Optional agent id filter" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 },
+                        "offset": { "type": "integer", "minimum": 0, "default": 0 },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" },
+                        "conversation_namespace": { "type": "string", "description": "Explicit global conversation namespace to use instead of project_root/repo_path" }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_conversation_read",
+                title: "Read Conversation",
+                description: "Read a conversation session with ordered messages and derived artifacts from a repo or explicit global conversation namespace.",
+                annotations: Some(annotations_with_priority(0.5)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string", "minLength": 1, "description": "Conversation session id" },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" },
+                        "conversation_namespace": { "type": "string", "description": "Explicit global conversation namespace to use instead of project_root/repo_path" }
+                    },
+                    "required": ["session_id"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_conversation_delete",
+                title: "Delete Conversation",
+                description: "Delete a conversation session and its derived artifacts from a repo or explicit global conversation namespace.",
+                annotations: Some(annotations_with_priority(0.5)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string", "minLength": 1, "description": "Conversation session id" },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" },
+                        "conversation_namespace": { "type": "string", "description": "Explicit global conversation namespace to use instead of project_root/repo_path" }
+                    },
+                    "required": ["session_id"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_conversation_export",
+                title: "Export Conversation",
+                description: "Export one conversation session with any linked diary entries from a repo or explicit global conversation namespace.",
+                annotations: Some(annotations_with_priority(0.45)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string", "minLength": 1, "description": "Conversation session id" },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" },
+                        "conversation_namespace": { "type": "string", "description": "Explicit global conversation namespace to use instead of project_root/repo_path" }
+                    },
+                    "required": ["session_id"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_conversation_redact",
+                title: "Redact Conversation",
+                description: "Redact one conversation session and clear its derived wake-up artifacts in a repo or explicit global conversation namespace.",
+                annotations: Some(annotations_with_priority(0.45)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "session_id": { "type": "string", "minLength": 1, "description": "Conversation session id" },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" },
+                        "conversation_namespace": { "type": "string", "description": "Explicit global conversation namespace to use instead of project_root/repo_path" }
+                    },
+                    "required": ["session_id"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_conversation_prune",
+                title: "Prune Conversation Retention",
+                description: "Preview or apply conversation retention cleanup for a repo or explicit global conversation namespace using current config or explicit overrides.",
+                annotations: Some(annotations_with_priority(0.4)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "manual_retention_days": { "type": "integer", "minimum": 0, "description": "Retention window for manual imports; 0 keeps them forever" },
+                        "auto_capture_retention_days": { "type": "integer", "minimum": 0, "description": "Retention window for auto-captured sessions; 0 disables pruning" },
+                        "diary_retention_days": { "type": "integer", "minimum": 0, "description": "Retention window for diary entries; 0 keeps them forever" },
+                        "hook_event_retention_days": { "type": "integer", "minimum": 0, "description": "Retention window for hook event records; 0 disables pruning" },
+                        "working_memory_retention_days": { "type": "integer", "minimum": 0, "description": "Retention window for working-memory records; 0 keeps them forever" },
+                        "episodic_rollup_retention_days": { "type": "integer", "minimum": 0, "description": "Retention window for stored episodic rollups; 0 keeps them forever" },
+                        "apply": { "type": "boolean", "default": false, "description": "When false, return a dry-run count only" },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" },
+                        "conversation_namespace": { "type": "string", "description": "Explicit global conversation namespace to use instead of project_root/repo_path" }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_diary_write",
+                title: "Write Diary Entry",
+                description: "Write one diary entry for an agent in a repo or explicit global conversation namespace.",
+                annotations: Some(annotations_with_priority(0.45)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "content": { "type": "string", "minLength": 1, "description": "Diary entry content" },
+                        "agent_id": { "type": "string", "description": "Optional agent id filter" },
+                        "entry_type": { "type": "string", "description": "Entry type label (defaults to note)" },
+                        "source_session_id": { "type": "string", "description": "Optional related conversation session id" },
+                        "metadata": { "type": "object", "additionalProperties": true },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" },
+                        "conversation_namespace": { "type": "string", "description": "Explicit global conversation namespace to use instead of project_root/repo_path" }
+                    },
+                    "required": ["content"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_diary_read",
+                title: "Read Diary Entries",
+                description: "Read diary entries for an optional agent in a repo or explicit global conversation namespace.",
+                annotations: Some(annotations_with_priority(0.45)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "agent_id": { "type": "string", "description": "Optional agent id filter" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 },
+                        "offset": { "type": "integer", "minimum": 0, "default": 0 },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" },
+                        "conversation_namespace": { "type": "string", "description": "Explicit global conversation namespace to use instead of project_root/repo_path" }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_conversation_hook",
+                title: "Conversation Hook",
+                description: "Enqueue or synchronously process a conversation-memory hook action for a repo or explicit global conversation namespace.",
+                annotations: Some(annotations_with_priority(0.45)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["periodic_memory_save", "pre_compaction_summarization", "session_close_summarization"]
+                        },
+                        "source": { "type": "string" },
+                        "source_session_id": { "type": "string" },
+                        "title": { "type": "string" },
+                        "agent_id": { "type": "string" },
+                        "transport": { "type": "string" },
+                        "started_at_ms": { "type": "integer" },
+                        "ended_at_ms": { "type": "integer" },
+                        "format": {
+                            "type": "string",
+                            "enum": ["auto", "plain_text", "generic_json", "codex_jsonl", "claude_jsonl", "chatgpt_export"]
+                        },
+                        "messages": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "role": { "type": "string" },
+                                    "content": { "type": "string" },
+                                    "author": { "type": "string" },
+                                    "created_at_ms": { "type": "integer" },
+                                    "metadata": { "type": "object", "additionalProperties": true }
+                                },
+                                "required": ["role", "content"]
+                            }
+                        },
+                        "transcript_text": { "type": "string", "description": "Transcript payload for queued import" },
+                        "summary_text": { "type": "string", "description": "Optional diary summary/note to persist alongside the hook action" },
+                        "metadata": { "type": "object", "additionalProperties": true },
+                        "wait_for_processing": { "type": "boolean", "default": false, "description": "When true, wait for async processing before returning" },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" },
+                        "conversation_namespace": { "type": "string", "description": "Explicit global conversation namespace to use instead of project_root/repo_path" }
+                    },
+                    "required": ["action"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_wakeup",
+                title: "Wake-up Context",
+                description: "Assemble bounded startup memory from conversation history in a repo or explicit global conversation namespace for the active agent/query.",
+                annotations: Some(annotations_with_priority(0.5)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "agent_id": { "type": "string", "description": "Optional agent id to scope working memory" },
+                        "query": { "type": "string", "description": "Optional current task/query for transcript snippet recall" },
+                        "max_tokens": { "type": "integer", "minimum": 1, "description": "Optional render budget; capped by server config" },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" },
+                        "conversation_namespace": { "type": "string", "description": "Explicit global conversation namespace to use instead of project_root/repo_path" }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_kg_query",
+                title: "Query Knowledge Graph",
+                description: "Query temporal knowledge facts extracted from conversation memory in a repo or explicit global conversation namespace.",
+                annotations: Some(annotations_with_priority(0.45)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "minLength": 1, "description": "Entity, decision, or fact query" },
+                        "relation": { "type": "string", "description": "Optional relation filter" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 },
+                        "offset": { "type": "integer", "minimum": 0, "default": 0 },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" },
+                        "conversation_namespace": { "type": "string", "description": "Explicit global conversation namespace to use instead of project_root/repo_path" }
+                    },
+                    "required": ["query"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_kg_search_nodes",
+                title: "Search Knowledge Nodes",
+                description: "Search canonical graph entities extracted from conversation memory in a repo or explicit global conversation namespace.",
+                annotations: Some(annotations_with_priority(0.45)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "minLength": 1, "description": "Entity query" },
+                        "entity_type": { "type": "string", "description": "Optional entity type filter" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 },
+                        "offset": { "type": "integer", "minimum": 0, "default": 0 },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" },
+                        "conversation_namespace": { "type": "string", "description": "Explicit global conversation namespace to use instead of project_root/repo_path" }
+                    },
+                    "required": ["query"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_kg_search_edges",
+                title: "Search Knowledge Edges",
+                description: "Search graph-native edges extracted from conversation memory in a repo or explicit global conversation namespace.",
+                annotations: Some(annotations_with_priority(0.45)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "minLength": 1, "description": "Edge query across subject, object, and summary text" },
+                        "relation": { "type": "string", "description": "Optional relation filter" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 },
+                        "offset": { "type": "integer", "minimum": 0, "default": 0 },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" },
+                        "conversation_namespace": { "type": "string", "description": "Explicit global conversation namespace to use instead of project_root/repo_path" }
+                    },
+                    "required": ["query"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_kg_timeline",
+                title: "Entity Timeline",
+                description: "Read the temporal timeline for one entity or decision topic in a repo or explicit global conversation namespace.",
+                annotations: Some(annotations_with_priority(0.45)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "entity": { "type": "string", "minLength": 1, "description": "Entity or topic to inspect" },
+                        "relation": { "type": "string", "description": "Optional relation filter" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" },
+                        "conversation_namespace": { "type": "string", "description": "Explicit global conversation namespace to use instead of project_root/repo_path" }
+                    },
+                    "required": ["entity"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_kg_search_episodes",
+                title: "Search Knowledge Episodes",
+                description: "Search provenance episodes extracted from conversation memory in a repo or explicit global conversation namespace.",
+                annotations: Some(annotations_with_priority(0.45)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "minLength": 1, "description": "Episode query across source ids, summaries, and metadata" },
+                        "source_type": { "type": "string", "description": "Optional episode source type filter" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 },
+                        "offset": { "type": "integer", "minimum": 0, "default": 0 },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" },
+                        "conversation_namespace": { "type": "string", "description": "Explicit global conversation namespace to use instead of project_root/repo_path" }
+                    },
+                    "required": ["query"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_kg_neighborhood",
+                title: "Entity Neighborhood",
+                description: "Inspect graph edges adjacent to one entity or topic in a repo or explicit global conversation namespace.",
+                annotations: Some(annotations_with_priority(0.45)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "entity": { "type": "string", "minLength": 1, "description": "Entity or topic to inspect" },
+                        "relation": { "type": "string", "description": "Optional relation filter" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" },
+                        "conversation_namespace": { "type": "string", "description": "Explicit global conversation namespace to use instead of project_root/repo_path" }
+                    },
+                    "required": ["entity"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_kg_entity_links",
+                title: "Entity Code Links",
+                description: "Fetch code-facing links recorded for one graph entity in a repo or explicit global conversation namespace.",
+                annotations: Some(annotations_with_priority(0.45)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "entity": { "type": "string", "minLength": 1, "description": "Entity or topic to inspect" },
+                        "link_type": { "type": "string", "description": "Optional link type filter such as file, symbol, or repo" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" },
+                        "conversation_namespace": { "type": "string", "description": "Explicit global conversation namespace to use instead of project_root/repo_path" }
+                    },
+                    "required": ["entity"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_kg_episode",
+                title: "Get Knowledge Episode",
+                description: "Fetch one provenance episode together with its graph edges and evidence in a repo or explicit global conversation namespace.",
+                annotations: Some(annotations_with_priority(0.45)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "episode_id": { "type": "string", "minLength": 1, "description": "Episode id to fetch" },
+                        "id": { "type": "string", "description": "Alias for episode_id" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" },
+                        "conversation_namespace": { "type": "string", "description": "Explicit global conversation namespace to use instead of project_root/repo_path" }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_kg_delete_edge",
+                title: "Delete Knowledge Edge",
+                description: "Delete one graph edge together with its fact projection and evidence in a repo or explicit global conversation namespace.",
+                annotations: Some(annotations_with_priority(0.35)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "edge_id": { "type": "string", "minLength": 1, "description": "Edge id to delete" },
+                        "id": { "type": "string", "description": "Alias for edge_id" },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" },
+                        "conversation_namespace": { "type": "string", "description": "Explicit global conversation namespace to use instead of project_root/repo_path" }
+                    },
+                    "required": ["edge_id"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_kg_delete_episode",
+                title: "Delete Knowledge Episode",
+                description: "Delete one provenance episode and its graph edges/facts in a repo or explicit global conversation namespace.",
+                annotations: Some(annotations_with_priority(0.35)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "episode_id": { "type": "string", "minLength": 1, "description": "Episode id to delete" },
+                        "id": { "type": "string", "description": "Alias for episode_id" },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" },
+                        "conversation_namespace": { "type": "string", "description": "Explicit global conversation namespace to use instead of project_root/repo_path" }
+                    },
+                    "required": ["episode_id"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_kg_rebuild",
+                title: "Rebuild Knowledge Graph Projections",
+                description: "Rebuild graph-side link projections and reindex SQLite structures for conversation knowledge in a repo or explicit global conversation namespace.",
+                annotations: Some(annotations_with_priority(0.35)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" },
+                        "conversation_namespace": { "type": "string", "description": "Explicit global conversation namespace to use instead of project_root/repo_path" }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_kg_clear",
+                title: "Clear Knowledge Graph",
+                description: "Delete all conversation knowledge graph data in a repo or explicit global conversation namespace.",
+                annotations: Some(annotations_with_priority(0.3)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" },
+                        "conversation_namespace": { "type": "string", "description": "Explicit global conversation namespace to use instead of project_root/repo_path" }
+                    }
                 }),
             },
             ToolDefinition {
@@ -4220,6 +6163,884 @@ Produce a phased plan with risks and tests to run."
         }))
     }
 
+    async fn handle_conversation_import(
+        &self,
+        args: ConversationImportArgs,
+    ) -> Result<serde_json::Value> {
+        let scope = self.resolve_conversation_scope(
+            args.project_root.clone(),
+            args.repo_path.clone(),
+            args.conversation_namespace.clone(),
+        )?;
+        let conversations = scope.conversations();
+        let payload = crate::conversations::normalize_import_request(
+            crate::conversations::ConversationImportEnvelope {
+                source: args.source,
+                source_session_id: args.source_session_id,
+                title: args.title,
+                agent_id: args.agent_id.or_else(|| self.default_agent_id.clone()),
+                transport: args.transport,
+                started_at_ms: args.started_at_ms,
+                ended_at_ms: args.ended_at_ms,
+                format: args.format,
+                messages: map_conversation_import_messages(args.messages),
+                transcript_text: args.transcript_text,
+                metadata: args.metadata.unwrap_or_else(|| json!({})),
+            },
+        )
+        .map_err(|message| AppError::new(ERR_INVALID_ARGUMENT, message))?;
+        if !conversations.config.allows_source(&payload.source) {
+            return Err(AppError::new(
+                ERR_INVALID_ARGUMENT,
+                "conversation source is blocked by memory.conversations source policy",
+            )
+            .into());
+        }
+        let route_targets = crate::conversations::build_conversation_route_targets(
+            scope.repo_memory_target(),
+            self.profile_state.as_ref().map(|profile| {
+                crate::conversations::build_conversation_profile_target(
+                    profile.manager.clone(),
+                    profile.embedder.clone(),
+                    "conversation_import",
+                )
+            }),
+            conversations.knowledge.clone(),
+            conversations.config.graph.clone(),
+            self.default_agent_id.clone(),
+        );
+        let store = conversations.store.clone();
+        let imported = crate::conversations::import_conversation_with_routing_options(
+            store,
+            payload,
+            crate::conversations::ConversationImportOptions {
+                capture_kind: crate::conversations::ConversationCaptureKind::Manual,
+                store_raw_messages: conversations.config.archive_raw_transcripts,
+            },
+            route_targets,
+        )
+        .await?;
+        self.update_conversation_archive_metric(&conversations);
+        Ok(json!({
+            "session_id": imported.session_id,
+            "deduplicated": imported.deduplicated,
+            "message_count": imported.message_count,
+            "capture_kind": imported.capture_kind,
+            "raw_messages_stored": imported.raw_messages_stored,
+            "summary": imported.summary,
+            "working_memory": imported.working_memory,
+            "durable_memories": imported.durable_memories,
+            "knowledge_facts": imported.knowledge_facts,
+        }))
+    }
+
+    async fn handle_conversation_search(
+        &self,
+        args: ConversationSearchArgs,
+    ) -> Result<serde_json::Value> {
+        let scope = self.resolve_conversation_scope(
+            args.project_root.clone(),
+            args.repo_path.clone(),
+            args.conversation_namespace.clone(),
+        )?;
+        let conversations = scope.conversations();
+        let query = args.query.trim().to_string();
+        if query.is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "query must not be empty").into());
+        }
+        if matches!(args.limit, Some(0)) {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "limit must be greater than 0").into());
+        }
+        let limit = args
+            .limit
+            .unwrap_or(CONVERSATION_LIST_DEFAULT_LIMIT)
+            .clamp(1, CONVERSATION_LIST_MAX_LIMIT);
+        let offset = args.offset.unwrap_or(0);
+        let agent_id = args
+            .agent_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        let store = conversations.store.clone();
+        let query_for_task = query.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            store.search_sessions(&query_for_task, agent_id.as_deref(), limit, offset)
+        })
+        .await??;
+        Ok(serde_json::to_value(result)?)
+    }
+
+    async fn handle_conversation_list(
+        &self,
+        args: ConversationListArgs,
+    ) -> Result<serde_json::Value> {
+        let scope = self.resolve_conversation_scope(
+            args.project_root.clone(),
+            args.repo_path.clone(),
+            args.conversation_namespace.clone(),
+        )?;
+        let conversations = scope.conversations();
+        if matches!(args.limit, Some(0)) {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "limit must be greater than 0").into());
+        }
+        let limit = args
+            .limit
+            .unwrap_or(CONVERSATION_LIST_DEFAULT_LIMIT)
+            .clamp(1, CONVERSATION_LIST_MAX_LIMIT);
+        let offset = args.offset.unwrap_or(0);
+        let agent_id = args
+            .agent_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        let store = conversations.store.clone();
+        let list = tokio::task::spawn_blocking(move || {
+            store.list_sessions(agent_id.as_deref(), limit, offset)
+        })
+        .await??;
+        Ok(serde_json::to_value(list)?)
+    }
+
+    async fn handle_conversation_read(
+        &self,
+        args: ConversationReadArgs,
+    ) -> Result<serde_json::Value> {
+        let scope = self.resolve_conversation_scope(
+            args.project_root.clone(),
+            args.repo_path.clone(),
+            args.conversation_namespace.clone(),
+        )?;
+        let conversations = scope.conversations();
+        let session_id = args.session_id.trim().to_string();
+        if session_id.is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "session_id must not be empty").into());
+        }
+        let store = conversations.store.clone();
+        let session_id_for_task = session_id.clone();
+        let session =
+            tokio::task::spawn_blocking(move || store.read_session(&session_id_for_task)).await??;
+        let Some(session) = session else {
+            return Err(AppError::new(
+                ERR_CONVERSATION_NOT_FOUND,
+                "conversation session not found",
+            )
+            .with_details(json!({ "session_id": session_id }))
+            .into());
+        };
+        Ok(json!({ "session": session }))
+    }
+
+    async fn handle_conversation_delete(
+        &self,
+        args: ConversationDeleteArgs,
+    ) -> Result<serde_json::Value> {
+        let scope = self.resolve_conversation_scope(
+            args.project_root.clone(),
+            args.repo_path.clone(),
+            args.conversation_namespace.clone(),
+        )?;
+        let conversations = scope.conversations();
+        let session_id = args.session_id.trim().to_string();
+        if session_id.is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "session_id must not be empty").into());
+        }
+        let store = conversations.store.clone();
+        let session_id_for_task = session_id.clone();
+        let knowledge = conversations.knowledge.clone();
+        let deleted = tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
+            let deleted = store.delete_session(&session_id_for_task)?;
+            if deleted {
+                let _ = knowledge.delete_facts_for_session(&session_id_for_task)?;
+            }
+            Ok(deleted)
+        })
+        .await??;
+        if !deleted {
+            return Err(AppError::new(
+                ERR_CONVERSATION_NOT_FOUND,
+                "conversation session not found",
+            )
+            .with_details(json!({ "session_id": session_id }))
+            .into());
+        }
+        self.update_conversation_archive_metric(&conversations);
+        Ok(json!({
+            "session_id": session_id,
+            "deleted": true,
+        }))
+    }
+
+    async fn handle_conversation_export(
+        &self,
+        args: ConversationExportArgs,
+    ) -> Result<serde_json::Value> {
+        let scope = self.resolve_conversation_scope(
+            args.project_root.clone(),
+            args.repo_path.clone(),
+            args.conversation_namespace.clone(),
+        )?;
+        let conversations = scope.conversations();
+        let session_id = args.session_id.trim().to_string();
+        if session_id.is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "session_id must not be empty").into());
+        }
+        let store = conversations.store.clone();
+        let session_id_for_task = session_id.clone();
+        let knowledge = conversations.knowledge.clone();
+        let export = tokio::task::spawn_blocking(
+            move || -> anyhow::Result<Option<crate::conversations::ConversationExportRecord>> {
+                let Some(mut export) = store.export_session(&session_id_for_task)? else {
+                    return Ok(None);
+                };
+                export.knowledge_facts = knowledge.facts_for_session(&session_id_for_task)?;
+                Ok(Some(export))
+            },
+        )
+        .await??;
+        let Some(export) = export else {
+            return Err(AppError::new(
+                ERR_CONVERSATION_NOT_FOUND,
+                "conversation session not found",
+            )
+            .with_details(json!({ "session_id": session_id }))
+            .into());
+        };
+        Ok(json!({ "export": export }))
+    }
+
+    async fn handle_conversation_redact(
+        &self,
+        args: ConversationRedactArgs,
+    ) -> Result<serde_json::Value> {
+        let scope = self.resolve_conversation_scope(
+            args.project_root.clone(),
+            args.repo_path.clone(),
+            args.conversation_namespace.clone(),
+        )?;
+        let conversations = scope.conversations();
+        let session_id = args.session_id.trim().to_string();
+        if session_id.is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "session_id must not be empty").into());
+        }
+        let store = conversations.store.clone();
+        let session_id_for_task = session_id.clone();
+        let knowledge = conversations.knowledge.clone();
+        let result = tokio::task::spawn_blocking(
+            move || -> anyhow::Result<Option<crate::conversations::ConversationRedactResult>> {
+                let result = store.redact_session(&session_id_for_task)?;
+                if result.as_ref().map(|item| item.redacted).unwrap_or(false) {
+                    let _ = knowledge.delete_facts_for_session(&session_id_for_task)?;
+                }
+                Ok(result)
+            },
+        )
+        .await??;
+        let Some(result) = result else {
+            return Err(AppError::new(
+                ERR_CONVERSATION_NOT_FOUND,
+                "conversation session not found",
+            )
+            .with_details(json!({ "session_id": session_id }))
+            .into());
+        };
+        self.update_conversation_archive_metric(&conversations);
+        Ok(json!({ "result": result }))
+    }
+
+    async fn handle_conversation_prune(
+        &self,
+        args: ConversationPruneArgs,
+    ) -> Result<serde_json::Value> {
+        let scope = self.resolve_conversation_scope(
+            args.project_root.clone(),
+            args.repo_path.clone(),
+            args.conversation_namespace.clone(),
+        )?;
+        let conversations = scope.conversations();
+        let policy = crate::conversations::ConversationRetentionPolicy {
+            manual_retention_days: args
+                .manual_retention_days
+                .unwrap_or(conversations.config.manual_retention_days),
+            auto_capture_retention_days: args
+                .auto_capture_retention_days
+                .unwrap_or(conversations.config.auto_capture_retention_days),
+            diary_retention_days: args
+                .diary_retention_days
+                .unwrap_or(conversations.config.diary_retention_days),
+            hook_event_retention_days: args
+                .hook_event_retention_days
+                .unwrap_or(conversations.config.hook_event_retention_days),
+            working_memory_retention_days: args
+                .working_memory_retention_days
+                .unwrap_or(conversations.config.working_memory_retention_days),
+            episodic_rollup_retention_days: args
+                .episodic_rollup_retention_days
+                .unwrap_or(conversations.config.episodic_rollup_retention_days),
+        };
+        let apply = args.apply.unwrap_or(false);
+        let store = conversations.store.clone();
+        let knowledge = conversations.knowledge.clone();
+        let result = tokio::task::spawn_blocking(
+            move || -> anyhow::Result<(crate::conversations::ConversationPruneResult, u64, u64)> {
+                let before = crate::conversations::combined_archive_size_bytes(&store, &knowledge);
+                let result = crate::conversations::prune_with_knowledge(
+                    &store, &knowledge, &policy, apply, true,
+                )?;
+                let after = crate::conversations::combined_archive_size_bytes(&store, &knowledge);
+                Ok((result, before, after))
+            },
+        )
+        .await??;
+        let (result, before_size, after_size) = result;
+        if result.applied && result.has_deletions() {
+            metrics::global().record_conversation_compaction(
+                result.deleted_sessions_total(),
+                result.deleted_diary_entries,
+                result.deleted_hook_events,
+                result.deleted_knowledge_facts,
+                before_size.saturating_sub(after_size),
+            );
+        }
+        self.update_conversation_archive_metric(&conversations);
+        Ok(json!({ "result": result }))
+    }
+
+    async fn handle_kg_query(&self, args: KgQueryArgs) -> Result<serde_json::Value> {
+        let scope = self.resolve_conversation_scope(
+            args.project_root.clone(),
+            args.repo_path.clone(),
+            args.conversation_namespace.clone(),
+        )?;
+        let conversations = scope.conversations();
+        let query = args.query.trim().to_string();
+        if query.is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "query must not be empty").into());
+        }
+        if matches!(args.limit, Some(0)) {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "limit must be greater than 0").into());
+        }
+        let knowledge = conversations.knowledge.clone();
+        let relation = args.relation.clone();
+        let limit = args
+            .limit
+            .unwrap_or(CONVERSATION_LIST_DEFAULT_LIMIT)
+            .clamp(1, CONVERSATION_LIST_MAX_LIMIT);
+        let offset = args.offset.unwrap_or(0);
+        let result = tokio::task::spawn_blocking(move || {
+            knowledge.query_facts(&query, relation.as_deref(), limit, offset)
+        })
+        .await??;
+        Ok(serde_json::to_value(result)?)
+    }
+
+    async fn handle_kg_search_nodes(&self, args: KgNodeSearchArgs) -> Result<serde_json::Value> {
+        let scope = self.resolve_conversation_scope(
+            args.project_root.clone(),
+            args.repo_path.clone(),
+            args.conversation_namespace.clone(),
+        )?;
+        let conversations = scope.conversations();
+        let query = args.query.trim().to_string();
+        if query.is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "query must not be empty").into());
+        }
+        if matches!(args.limit, Some(0)) {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "limit must be greater than 0").into());
+        }
+        let knowledge = conversations.knowledge.clone();
+        let entity_type = args.entity_type.clone();
+        let limit = args
+            .limit
+            .unwrap_or(CONVERSATION_LIST_DEFAULT_LIMIT)
+            .clamp(1, CONVERSATION_LIST_MAX_LIMIT);
+        let offset = args.offset.unwrap_or(0);
+        let result = tokio::task::spawn_blocking(move || {
+            knowledge.search_nodes(&query, entity_type.as_deref(), limit, offset)
+        })
+        .await??;
+        Ok(serde_json::to_value(result)?)
+    }
+
+    async fn handle_kg_search_edges(&self, args: KgEdgeSearchArgs) -> Result<serde_json::Value> {
+        let scope = self.resolve_conversation_scope(
+            args.project_root.clone(),
+            args.repo_path.clone(),
+            args.conversation_namespace.clone(),
+        )?;
+        let conversations = scope.conversations();
+        let query = args.query.trim().to_string();
+        if query.is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "query must not be empty").into());
+        }
+        if matches!(args.limit, Some(0)) {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "limit must be greater than 0").into());
+        }
+        let knowledge = conversations.knowledge.clone();
+        let relation = args.relation.clone();
+        let limit = args
+            .limit
+            .unwrap_or(CONVERSATION_LIST_DEFAULT_LIMIT)
+            .clamp(1, CONVERSATION_LIST_MAX_LIMIT);
+        let offset = args.offset.unwrap_or(0);
+        let result = tokio::task::spawn_blocking(move || {
+            knowledge.search_edges(&query, relation.as_deref(), limit, offset)
+        })
+        .await??;
+        Ok(serde_json::to_value(result)?)
+    }
+
+    async fn handle_kg_timeline(&self, args: KgTimelineArgs) -> Result<serde_json::Value> {
+        let scope = self.resolve_conversation_scope(
+            args.project_root.clone(),
+            args.repo_path.clone(),
+            args.conversation_namespace.clone(),
+        )?;
+        let conversations = scope.conversations();
+        let entity = args.entity.trim().to_string();
+        if entity.is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "entity must not be empty").into());
+        }
+        if matches!(args.limit, Some(0)) {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "limit must be greater than 0").into());
+        }
+        let knowledge = conversations.knowledge.clone();
+        let relation = args.relation.clone();
+        let limit = args
+            .limit
+            .unwrap_or(CONVERSATION_LIST_DEFAULT_LIMIT)
+            .clamp(1, CONVERSATION_LIST_MAX_LIMIT);
+        let result = tokio::task::spawn_blocking(move || {
+            knowledge.timeline_for_entity(&entity, relation.as_deref(), limit)
+        })
+        .await??;
+        Ok(serde_json::to_value(result)?)
+    }
+
+    async fn handle_kg_search_episodes(
+        &self,
+        args: KgEpisodeSearchArgs,
+    ) -> Result<serde_json::Value> {
+        let scope = self.resolve_conversation_scope(
+            args.project_root.clone(),
+            args.repo_path.clone(),
+            args.conversation_namespace.clone(),
+        )?;
+        let conversations = scope.conversations();
+        let query = args.query.trim().to_string();
+        if query.is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "query must not be empty").into());
+        }
+        if matches!(args.limit, Some(0)) {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "limit must be greater than 0").into());
+        }
+        let knowledge = conversations.knowledge.clone();
+        let source_type = args.source_type.clone();
+        let limit = args
+            .limit
+            .unwrap_or(CONVERSATION_LIST_DEFAULT_LIMIT)
+            .clamp(1, CONVERSATION_LIST_MAX_LIMIT);
+        let offset = args.offset.unwrap_or(0);
+        let result = tokio::task::spawn_blocking(move || {
+            knowledge.search_episodes(&query, source_type.as_deref(), limit, offset)
+        })
+        .await??;
+        Ok(serde_json::to_value(result)?)
+    }
+
+    async fn handle_kg_neighborhood(&self, args: KgNeighborhoodArgs) -> Result<serde_json::Value> {
+        let scope = self.resolve_conversation_scope(
+            args.project_root.clone(),
+            args.repo_path.clone(),
+            args.conversation_namespace.clone(),
+        )?;
+        let conversations = scope.conversations();
+        let entity = args.entity.trim().to_string();
+        if entity.is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "entity must not be empty").into());
+        }
+        if matches!(args.limit, Some(0)) {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "limit must be greater than 0").into());
+        }
+        let knowledge = conversations.knowledge.clone();
+        let relation = args.relation.clone();
+        let limit = args
+            .limit
+            .unwrap_or(CONVERSATION_LIST_DEFAULT_LIMIT)
+            .clamp(1, CONVERSATION_LIST_MAX_LIMIT);
+        let result = tokio::task::spawn_blocking(move || {
+            knowledge.neighborhood_for_entity(&entity, relation.as_deref(), limit)
+        })
+        .await??;
+        Ok(serde_json::to_value(result)?)
+    }
+
+    async fn handle_kg_entity_links(&self, args: KgEntityLinksArgs) -> Result<serde_json::Value> {
+        let scope = self.resolve_conversation_scope(
+            args.project_root.clone(),
+            args.repo_path.clone(),
+            args.conversation_namespace.clone(),
+        )?;
+        let conversations = scope.conversations();
+        let entity = args.entity.trim().to_string();
+        if entity.is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "entity must not be empty").into());
+        }
+        if matches!(args.limit, Some(0)) {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "limit must be greater than 0").into());
+        }
+        let knowledge = conversations.knowledge.clone();
+        let link_type = args.link_type.clone();
+        let limit = args
+            .limit
+            .unwrap_or(CONVERSATION_LIST_DEFAULT_LIMIT)
+            .clamp(1, CONVERSATION_LIST_MAX_LIMIT);
+        let result = tokio::task::spawn_blocking(move || {
+            knowledge.entity_links_for_entity(&entity, link_type.as_deref(), limit)
+        })
+        .await??;
+        Ok(serde_json::to_value(result)?)
+    }
+
+    async fn handle_kg_episode(&self, args: KgEpisodeArgs) -> Result<serde_json::Value> {
+        let scope = self.resolve_conversation_scope(
+            args.project_root.clone(),
+            args.repo_path.clone(),
+            args.conversation_namespace.clone(),
+        )?;
+        let conversations = scope.conversations();
+        let episode_id = args.episode_id.trim().to_string();
+        if episode_id.is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "episode_id must not be empty").into());
+        }
+        if matches!(args.limit, Some(0)) {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "limit must be greater than 0").into());
+        }
+        let knowledge = conversations.knowledge.clone();
+        let limit = args
+            .limit
+            .unwrap_or(CONVERSATION_LIST_DEFAULT_LIMIT)
+            .clamp(1, CONVERSATION_LIST_MAX_LIMIT);
+        let result =
+            tokio::task::spawn_blocking(move || knowledge.episode_details(&episode_id, limit))
+                .await??;
+        let Some(result) = result else {
+            return Err(AppError::new(
+                ERR_KNOWLEDGE_EPISODE_NOT_FOUND,
+                "knowledge episode not found",
+            )
+            .into());
+        };
+        Ok(serde_json::to_value(result)?)
+    }
+
+    async fn handle_kg_delete_edge(&self, args: KgDeleteEdgeArgs) -> Result<serde_json::Value> {
+        let scope = self.resolve_conversation_scope(
+            args.project_root.clone(),
+            args.repo_path.clone(),
+            args.conversation_namespace.clone(),
+        )?;
+        let conversations = scope.conversations();
+        let edge_id = args.edge_id.trim().to_string();
+        if edge_id.is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "edge_id must not be empty").into());
+        }
+        let knowledge = conversations.knowledge.clone();
+        let result = tokio::task::spawn_blocking(move || knowledge.delete_edge(&edge_id)).await??;
+        Ok(serde_json::to_value(result)?)
+    }
+
+    async fn handle_kg_delete_episode(
+        &self,
+        args: KgDeleteEpisodeArgs,
+    ) -> Result<serde_json::Value> {
+        let scope = self.resolve_conversation_scope(
+            args.project_root.clone(),
+            args.repo_path.clone(),
+            args.conversation_namespace.clone(),
+        )?;
+        let conversations = scope.conversations();
+        let episode_id = args.episode_id.trim().to_string();
+        if episode_id.is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "episode_id must not be empty").into());
+        }
+        let knowledge = conversations.knowledge.clone();
+        let result =
+            tokio::task::spawn_blocking(move || knowledge.delete_episode(&episode_id)).await??;
+        Ok(serde_json::to_value(result)?)
+    }
+
+    async fn handle_kg_rebuild(&self, args: KgMaintenanceArgs) -> Result<serde_json::Value> {
+        let scope = self.resolve_conversation_scope(
+            args.project_root.clone(),
+            args.repo_path.clone(),
+            args.conversation_namespace.clone(),
+        )?;
+        let conversations = scope.conversations();
+        let knowledge = conversations.knowledge.clone();
+        let result = tokio::task::spawn_blocking(move || knowledge.rebuild()).await??;
+        Ok(serde_json::to_value(result)?)
+    }
+
+    async fn handle_kg_clear(&self, args: KgMaintenanceArgs) -> Result<serde_json::Value> {
+        let scope = self.resolve_conversation_scope(
+            args.project_root.clone(),
+            args.repo_path.clone(),
+            args.conversation_namespace.clone(),
+        )?;
+        let conversations = scope.conversations();
+        let knowledge = conversations.knowledge.clone();
+        let result = tokio::task::spawn_blocking(move || knowledge.clear()).await??;
+        Ok(serde_json::to_value(result)?)
+    }
+
+    async fn handle_diary_write(&self, args: DiaryWriteArgs) -> Result<serde_json::Value> {
+        let scope = self.resolve_conversation_scope(
+            args.project_root.clone(),
+            args.repo_path.clone(),
+            args.conversation_namespace.clone(),
+        )?;
+        let conversations = scope.conversations();
+        let content = args.content.trim().to_string();
+        if content.is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "content must not be empty").into());
+        }
+        let entry = crate::conversations::write_diary_entry(
+            conversations.store.clone(),
+            args.agent_id.or_else(|| self.default_agent_id.clone()),
+            args.entry_type
+                .unwrap_or_else(|| "note".to_string())
+                .trim()
+                .to_string(),
+            content,
+            args.source_session_id,
+            args.metadata.unwrap_or_else(|| json!({})),
+        )
+        .await?;
+        crate::conversations::record_diary_entry_episode(
+            conversations.knowledge.clone(),
+            entry.clone(),
+        )
+        .await?;
+        Ok(serde_json::to_value(entry)?)
+    }
+
+    async fn handle_diary_read(&self, args: DiaryReadArgs) -> Result<serde_json::Value> {
+        let scope = self.resolve_conversation_scope(
+            args.project_root.clone(),
+            args.repo_path.clone(),
+            args.conversation_namespace.clone(),
+        )?;
+        let conversations = scope.conversations();
+        if matches!(args.limit, Some(0)) {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "limit must be greater than 0").into());
+        }
+        let limit = args
+            .limit
+            .unwrap_or(CONVERSATION_LIST_DEFAULT_LIMIT)
+            .clamp(1, CONVERSATION_LIST_MAX_LIMIT);
+        let offset = args.offset.unwrap_or(0);
+        let entries = crate::conversations::read_diary_entries(
+            conversations.store.clone(),
+            args.agent_id,
+            limit,
+            offset,
+        )
+        .await?;
+        Ok(serde_json::to_value(entries)?)
+    }
+
+    async fn handle_conversation_hook(
+        &self,
+        args: ConversationHookArgs,
+    ) -> Result<serde_json::Value> {
+        let scope = self.resolve_conversation_scope(
+            args.project_root.clone(),
+            args.repo_path.clone(),
+            args.conversation_namespace.clone(),
+        )?;
+        let conversations = scope.conversations();
+        let has_messages = args
+            .messages
+            .as_ref()
+            .map(|items| !items.is_empty())
+            .unwrap_or(false);
+        let has_transcript = args
+            .transcript_text
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some();
+        let has_summary = args
+            .summary_text
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some();
+        if !has_messages && !has_transcript && !has_summary {
+            return Err(AppError::new(
+                ERR_INVALID_ARGUMENT,
+                "conversation hook requires transcript/messages or summary_text",
+            )
+            .into());
+        }
+        let source = args
+            .source
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| format!("hook:{}", args.action.as_str()));
+        if !conversations.config.allows_source(&source) {
+            return Err(AppError::new(
+                ERR_INVALID_ARGUMENT,
+                "conversation source is blocked by memory.conversations source policy",
+            )
+            .into());
+        }
+        let wait_for_processing = args.wait_for_processing.unwrap_or(false);
+        let payload = crate::conversations::ConversationHookPayload {
+            action: args.action.clone(),
+            source: Some(source),
+            source_session_id: args.source_session_id,
+            title: args.title,
+            agent_id: args.agent_id.or_else(|| self.default_agent_id.clone()),
+            transport: args.transport,
+            started_at_ms: args.started_at_ms,
+            ended_at_ms: args.ended_at_ms,
+            format: args.format,
+            messages: map_conversation_import_messages(args.messages),
+            transcript_text: args.transcript_text,
+            summary_text: args.summary_text,
+            metadata: args.metadata.unwrap_or_else(|| json!({})),
+        };
+        let route_targets = crate::conversations::build_conversation_route_targets(
+            scope.repo_memory_target(),
+            self.profile_state.as_ref().map(|profile| {
+                crate::conversations::build_conversation_profile_target(
+                    profile.manager.clone(),
+                    profile.embedder.clone(),
+                    "conversation_hook",
+                )
+            }),
+            conversations.knowledge.clone(),
+            conversations.config.graph.clone(),
+            self.default_agent_id.clone(),
+        );
+        let result = crate::conversations::enqueue_conversation_hook(
+            conversations.store.clone(),
+            payload,
+            crate::conversations::ConversationImportOptions {
+                capture_kind: crate::conversations::ConversationCaptureKind::Auto,
+                store_raw_messages: conversations.config.archive_raw_transcripts,
+            },
+            route_targets,
+            wait_for_processing,
+        )
+        .await?;
+        Ok(serde_json::to_value(result)?)
+    }
+
+    async fn handle_wakeup(&self, args: WakeupArgs) -> Result<serde_json::Value> {
+        let scope = self.resolve_conversation_scope(
+            args.project_root.clone(),
+            args.repo_path.clone(),
+            args.conversation_namespace.clone(),
+        )?;
+        let conversations = scope.conversations();
+        if matches!(args.max_tokens, Some(0)) {
+            return Err(
+                AppError::new(ERR_INVALID_ARGUMENT, "max_tokens must be greater than 0").into(),
+            );
+        }
+        let max_tokens = args
+            .max_tokens
+            .unwrap_or(conversations.max_wakeup_tokens)
+            .min(conversations.max_wakeup_tokens)
+            .max(1);
+        let agent_id = args
+            .agent_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        let query = args
+            .query
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        let store = conversations.store.clone();
+        let knowledge = conversations.knowledge.clone();
+        let summary_limit = conversations.max_episodic_summaries;
+        let knowledge_limit = conversations.max_knowledge_facts;
+        let snippet_limit = conversations.max_transcript_snippets;
+        let bundle = tokio::task::spawn_blocking(move || {
+            crate::conversations::assemble_wakeup_bundle(
+                &store,
+                &knowledge,
+                agent_id.as_deref(),
+                query.as_deref(),
+                summary_limit,
+                knowledge_limit,
+                snippet_limit,
+            )
+        })
+        .await??;
+        let (text, render_trace) = crate::conversations::render_wakeup_bundle(&bundle, max_tokens);
+        metrics::global().record_conversation_wakeup(
+            render_trace.selected > 0,
+            render_trace.saved_tokens,
+            render_trace.working_memory_tokens,
+            render_trace.summary_tokens,
+            render_trace.knowledge_tokens,
+            render_trace.snippet_tokens,
+        );
+        Ok(json!({
+            "text": text,
+            "trace": {
+                "budget_tokens": max_tokens,
+                "available_items": render_trace.available,
+                "selected_items": render_trace.selected,
+                "truncated_items": render_trace.truncated,
+                "summary_candidates": bundle.trace.summary_candidates,
+                "kg_candidates": bundle.trace.kg_candidates,
+                "graph_edge_candidates": bundle.trace.graph_edge_candidates,
+                "graph_episode_candidates": bundle.trace.graph_episode_candidates,
+                "graph_link_candidates": bundle.trace.graph_link_candidates,
+                "snippet_candidates": bundle.trace.snippet_candidates,
+                "available_tokens": render_trace.available_tokens,
+                "selected_tokens": render_trace.selected_tokens,
+                "saved_tokens": render_trace.saved_tokens,
+                "working_memory_tokens": render_trace.working_memory_tokens,
+                "summary_tokens": render_trace.summary_tokens,
+                "knowledge_tokens": render_trace.knowledge_tokens,
+                "snippet_tokens": render_trace.snippet_tokens,
+            },
+            "working_memory": bundle.working_memory,
+            "episodic_summaries": bundle.episodic_summaries,
+            "knowledge_facts": bundle.knowledge_facts,
+            "knowledge_edges": bundle.knowledge_edges,
+            "knowledge_episodes": bundle.knowledge_episodes,
+            "knowledge_entity_links": bundle.knowledge_entity_links,
+            "transcript_snippets": bundle.transcript_snippets,
+        }))
+    }
+
+    fn update_conversation_archive_metric(&self, conversations: &McpConversationState) {
+        let repo_total = crate::conversations::combined_archive_size_bytes(
+            &conversations.store,
+            &conversations.knowledge,
+        );
+        metrics::global().set_conversation_archive_size_bytes(
+            crate::conversations::archive_size_bytes_total(
+                repo_total,
+                self.global_state_dir.as_deref(),
+            ),
+        );
+    }
+
     async fn handle_profile_save_preference(
         &self,
         args: ProfileSaveArgs,
@@ -4449,6 +7270,93 @@ Produce a phased plan with risks and tests to run."
             (None, Some(repo_path)) => Ok(Some(repo_path)),
             (None, None) => Ok(None),
         }
+    }
+
+    fn resolve_conversation_scope(
+        &self,
+        project_root: Option<PathBuf>,
+        repo_path: Option<PathBuf>,
+        conversation_namespace: Option<String>,
+    ) -> Result<McpConversationScope> {
+        let project_root = self.resolve_project_root_arg(project_root, repo_path)?;
+        let namespace = conversation_namespace
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        if project_root.is_some() && namespace.is_some() {
+            return Err(AppError::new(
+                ERR_INVALID_ARGUMENT,
+                "project_root/repo_path and conversation_namespace are mutually exclusive",
+            )
+            .with_details(json!({
+                "hint": "Use project_root/repo_path for repo-scoped conversation memory or conversation_namespace for the explicit global namespace.",
+            }))
+            .into());
+        }
+        if let Some(namespace) = namespace {
+            return Ok(McpConversationScope::Namespace {
+                conversations: self.build_namespace_conversation_state(&namespace)?,
+            });
+        }
+        self.ensure_project_root(project_root.as_deref())?;
+        let Some(conversations) = self.conversations.clone() else {
+            return Err(AppError::new(
+                ERR_MEMORY_DISABLED,
+                "conversation memory is disabled; enable [memory.conversations].enabled",
+            )
+            .into());
+        };
+        Ok(McpConversationScope::Repo {
+            repo_id: self.repo_id.clone(),
+            conversations,
+            memory: self.memory.clone(),
+        })
+    }
+
+    fn build_namespace_conversation_state(&self, namespace: &str) -> Result<McpConversationState> {
+        let trimmed = namespace.trim();
+        if trimmed.is_empty() {
+            return Err(AppError::new(
+                ERR_INVALID_ARGUMENT,
+                "conversation_namespace must not be empty",
+            )
+            .into());
+        }
+        let Some(template) = self.conversations.as_ref() else {
+            return Err(AppError::new(
+                ERR_MEMORY_DISABLED,
+                "conversation memory is disabled; enable [memory.conversations].enabled",
+            )
+            .into());
+        };
+        let base_state_dir = self
+            .global_state_dir
+            .clone()
+            .or_else(|| {
+                crate::repo_manager::split_scoped_state_dir(self.indexer.state_dir())
+                    .map(|(base_dir, _, _)| base_dir)
+            })
+            .ok_or_else(|| {
+                AppError::new(
+                    ERR_INTERNAL_ERROR,
+                    "conversation namespace requires a shared global state directory",
+                )
+                .with_details(json!({
+                    "conversation_namespace": trimmed,
+                    "hint": "Start the daemon with a shared global state dir so repo-less conversation namespaces have an isolated home.",
+                }))
+            })?;
+        let config = template.config.clone();
+        Ok(McpConversationState {
+            store: crate::conversations::ConversationStore::for_namespace(&base_state_dir, trimmed),
+            knowledge: crate::knowledge::KnowledgeStore::for_namespace(&base_state_dir, trimmed),
+            max_wakeup_tokens: config.max_wakeup_tokens,
+            max_episodic_summaries: config.max_episodic_summaries,
+            max_knowledge_facts: config.max_knowledge_facts,
+            max_transcript_snippets: config.max_transcript_snippets,
+            config,
+        })
     }
 
     fn ensure_project_root(&self, candidate: Option<&Path>) -> Result<()> {

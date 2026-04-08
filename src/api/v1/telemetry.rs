@@ -284,7 +284,12 @@ mod tests {
         let state_root = temp.path().join("state");
         fs::create_dir_all(&state_root)?;
 
-        let manager = Arc::new(RepoManager::new(None, None));
+        let manager = Arc::new(RepoManager::new(
+            None,
+            None,
+            false,
+            crate::config::MemoryConversationConfig::default(),
+        ));
         let mut repo_metrics = Vec::new();
         let mut default_indexer: Option<Arc<Indexer>> = None;
         let mut default_repo_id: Option<String> = None;
@@ -322,6 +327,7 @@ mod tests {
                 indexer,
                 libs_indexer: None,
                 memory: None,
+                conversations: None,
                 delegation_metrics: delegation_metrics.clone(),
             });
             manager.insert_repo(runtime, None);
@@ -362,6 +368,7 @@ mod tests {
             metrics: Arc::new(crate::metrics::Metrics::default()),
             delegation_metrics: default_delegation_metrics,
             memory: None,
+            conversations: None,
             profile_state: None,
             features: crate::config::FeatureFlagsConfig::default(),
             default_agent_id: None,

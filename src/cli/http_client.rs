@@ -7,6 +7,7 @@ use std::path::Path;
 use std::time::Duration;
 
 const REPO_ID_HEADER: &str = "x-docdex-repo-id";
+const CONVERSATION_NAMESPACE_HEADER: &str = "x-docdex-conversation-namespace";
 
 pub(crate) struct CliHttpClient {
     client: Client,
@@ -74,6 +75,20 @@ impl CliHttpClient {
         Ok(req.header(REPO_ID_HEADER, repo_id))
     }
 
+    pub(crate) fn with_conversation_scope(
+        &self,
+        req: RequestBuilder,
+        scope: &crate::cli::ConversationScopeArgs,
+    ) -> Result<RequestBuilder> {
+        if let Some(namespace) = scope.conversation_namespace() {
+            return Ok(req.header(CONVERSATION_NAMESPACE_HEADER, namespace));
+        }
+        let repo_root = scope.repo_root().ok_or_else(|| {
+            anyhow!("conversation scope requires a repo root or conversation namespace")
+        })?;
+        self.with_repo(req, &repo_root)
+    }
+
     pub(crate) async fn ensure_repo(&self, repo_root: &Path) -> Result<()> {
         let root_uri = repo_root.to_string_lossy().to_string();
         let payload = json!({ "rootUri": root_uri });
@@ -86,6 +101,16 @@ impl CliHttpClient {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
             anyhow::bail!("docdexd initialize failed ({status}): {body}");
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn ensure_conversation_scope(
+        &self,
+        scope: &crate::cli::ConversationScopeArgs,
+    ) -> Result<()> {
+        if let Some(repo_root) = scope.repo_root() {
+            self.ensure_repo(&repo_root).await?;
         }
         Ok(())
     }

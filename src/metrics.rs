@@ -2,6 +2,7 @@ use hdrhistogram::Histogram;
 use once_cell::sync::Lazy;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -326,6 +327,26 @@ pub struct Metrics {
     hook_failures: AtomicU64,
     hook_latency_ms_total: AtomicU64,
     hook_latency_count: AtomicU64,
+    conversation_wakeup_requests_total: AtomicU64,
+    conversation_wakeup_useful_total: AtomicU64,
+    conversation_prompt_budget_saved_tokens_total: AtomicU64,
+    conversation_wakeup_working_memory_tokens_total: AtomicU64,
+    conversation_wakeup_summary_tokens_total: AtomicU64,
+    conversation_wakeup_knowledge_tokens_total: AtomicU64,
+    conversation_wakeup_snippet_tokens_total: AtomicU64,
+    conversation_extraction_lag_ms_total: AtomicU64,
+    conversation_extraction_lag_count: AtomicU64,
+    conversation_hook_enqueue_latency_ms_total: AtomicU64,
+    conversation_hook_enqueue_latency_count: AtomicU64,
+    conversation_transcript_search_latency_ms_total: AtomicU64,
+    conversation_transcript_search_latency_count: AtomicU64,
+    conversation_archive_size_bytes: AtomicU64,
+    conversation_compaction_runs_total: AtomicU64,
+    conversation_compaction_deleted_sessions_total: AtomicU64,
+    conversation_compaction_deleted_diary_entries_total: AtomicU64,
+    conversation_compaction_deleted_hook_events_total: AtomicU64,
+    conversation_compaction_deleted_knowledge_facts_total: AtomicU64,
+    conversation_compaction_reclaimed_bytes_total: AtomicU64,
 
     delegate_requests: AtomicU64,
     delegate_offloaded_total: AtomicU64,
@@ -393,6 +414,26 @@ impl Default for Metrics {
             hook_failures: AtomicU64::new(0),
             hook_latency_ms_total: AtomicU64::new(0),
             hook_latency_count: AtomicU64::new(0),
+            conversation_wakeup_requests_total: AtomicU64::new(0),
+            conversation_wakeup_useful_total: AtomicU64::new(0),
+            conversation_prompt_budget_saved_tokens_total: AtomicU64::new(0),
+            conversation_wakeup_working_memory_tokens_total: AtomicU64::new(0),
+            conversation_wakeup_summary_tokens_total: AtomicU64::new(0),
+            conversation_wakeup_knowledge_tokens_total: AtomicU64::new(0),
+            conversation_wakeup_snippet_tokens_total: AtomicU64::new(0),
+            conversation_extraction_lag_ms_total: AtomicU64::new(0),
+            conversation_extraction_lag_count: AtomicU64::new(0),
+            conversation_hook_enqueue_latency_ms_total: AtomicU64::new(0),
+            conversation_hook_enqueue_latency_count: AtomicU64::new(0),
+            conversation_transcript_search_latency_ms_total: AtomicU64::new(0),
+            conversation_transcript_search_latency_count: AtomicU64::new(0),
+            conversation_archive_size_bytes: AtomicU64::new(0),
+            conversation_compaction_runs_total: AtomicU64::new(0),
+            conversation_compaction_deleted_sessions_total: AtomicU64::new(0),
+            conversation_compaction_deleted_diary_entries_total: AtomicU64::new(0),
+            conversation_compaction_deleted_hook_events_total: AtomicU64::new(0),
+            conversation_compaction_deleted_knowledge_facts_total: AtomicU64::new(0),
+            conversation_compaction_reclaimed_bytes_total: AtomicU64::new(0),
             delegate_requests: AtomicU64::new(0),
             delegate_offloaded_total: AtomicU64::new(0),
             delegate_fallbacks: AtomicU64::new(0),
@@ -570,6 +611,81 @@ impl Metrics {
         self.hook_latency_ms_total
             .fetch_add(latency_ms as u64, Ordering::Relaxed);
         self.hook_latency_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_conversation_wakeup(
+        &self,
+        useful: bool,
+        saved_tokens: usize,
+        working_memory_tokens: usize,
+        summary_tokens: usize,
+        knowledge_tokens: usize,
+        snippet_tokens: usize,
+    ) {
+        self.conversation_wakeup_requests_total
+            .fetch_add(1, Ordering::Relaxed);
+        if useful {
+            self.conversation_wakeup_useful_total
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        self.conversation_prompt_budget_saved_tokens_total
+            .fetch_add(saved_tokens as u64, Ordering::Relaxed);
+        self.conversation_wakeup_working_memory_tokens_total
+            .fetch_add(working_memory_tokens as u64, Ordering::Relaxed);
+        self.conversation_wakeup_summary_tokens_total
+            .fetch_add(summary_tokens as u64, Ordering::Relaxed);
+        self.conversation_wakeup_knowledge_tokens_total
+            .fetch_add(knowledge_tokens as u64, Ordering::Relaxed);
+        self.conversation_wakeup_snippet_tokens_total
+            .fetch_add(snippet_tokens as u64, Ordering::Relaxed);
+    }
+
+    pub fn record_conversation_extraction_lag(&self, latency_ms: u128) {
+        self.conversation_extraction_lag_ms_total
+            .fetch_add(latency_ms as u64, Ordering::Relaxed);
+        self.conversation_extraction_lag_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_conversation_hook_enqueue_latency(&self, latency_ms: u128) {
+        self.conversation_hook_enqueue_latency_ms_total
+            .fetch_add(latency_ms as u64, Ordering::Relaxed);
+        self.conversation_hook_enqueue_latency_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_conversation_transcript_search_latency(&self, latency_ms: u128) {
+        self.conversation_transcript_search_latency_ms_total
+            .fetch_add(latency_ms as u64, Ordering::Relaxed);
+        self.conversation_transcript_search_latency_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn set_conversation_archive_size_bytes(&self, bytes: u64) {
+        self.conversation_archive_size_bytes
+            .store(bytes, Ordering::Relaxed);
+    }
+
+    pub fn record_conversation_compaction(
+        &self,
+        deleted_sessions: usize,
+        deleted_diary_entries: usize,
+        deleted_hook_events: usize,
+        deleted_knowledge_facts: usize,
+        reclaimed_bytes: u64,
+    ) {
+        self.conversation_compaction_runs_total
+            .fetch_add(1, Ordering::Relaxed);
+        self.conversation_compaction_deleted_sessions_total
+            .fetch_add(deleted_sessions as u64, Ordering::Relaxed);
+        self.conversation_compaction_deleted_diary_entries_total
+            .fetch_add(deleted_diary_entries as u64, Ordering::Relaxed);
+        self.conversation_compaction_deleted_hook_events_total
+            .fetch_add(deleted_hook_events as u64, Ordering::Relaxed);
+        self.conversation_compaction_deleted_knowledge_facts_total
+            .fetch_add(deleted_knowledge_facts as u64, Ordering::Relaxed);
+        self.conversation_compaction_reclaimed_bytes_total
+            .fetch_add(reclaimed_bytes, Ordering::Relaxed);
     }
 
     pub fn inc_delegate_request(&self) {
@@ -787,7 +903,7 @@ impl Metrics {
     pub fn render_prometheus(&self) -> String {
         let http_latency_p95 = self.http_latency_p95_ms().unwrap_or(0);
         let http_latency_avg = self.http_latency_avg_ms().unwrap_or(0.0);
-        format!(
+        let mut payload = format!(
             concat!(
                 "# HELP docdex_rate_limit_denies_total Rate limit denials\n",
                 "# TYPE docdex_rate_limit_denies_total counter\n",
@@ -1039,7 +1155,113 @@ impl Metrics {
             self.chrome_watchdog_reap_attempts.load(Ordering::Relaxed),
             self.chrome_watchdog_reaped.load(Ordering::Relaxed),
             self.chrome_watchdog_reap_failures.load(Ordering::Relaxed),
-        )
+        );
+        let _ = write!(
+            payload,
+            concat!(
+                "# HELP docdex_conversation_wakeup_requests_total Wake-up bundle requests\n",
+                "# TYPE docdex_conversation_wakeup_requests_total counter\n",
+                "docdex_conversation_wakeup_requests_total {}\n",
+                "# HELP docdex_conversation_wakeup_useful_total Wake-up bundles that selected at least one memory item\n",
+                "# TYPE docdex_conversation_wakeup_useful_total counter\n",
+                "docdex_conversation_wakeup_useful_total {}\n",
+                "# HELP docdex_conversation_prompt_budget_saved_tokens_total Wake-up prompt budget saved in tokens\n",
+                "# TYPE docdex_conversation_prompt_budget_saved_tokens_total counter\n",
+                "docdex_conversation_prompt_budget_saved_tokens_total {}\n",
+                "# HELP docdex_conversation_wakeup_working_memory_tokens_total Wake-up tokens spent on working memory\n",
+                "# TYPE docdex_conversation_wakeup_working_memory_tokens_total counter\n",
+                "docdex_conversation_wakeup_working_memory_tokens_total {}\n",
+                "# HELP docdex_conversation_wakeup_summary_tokens_total Wake-up tokens spent on episodic summaries\n",
+                "# TYPE docdex_conversation_wakeup_summary_tokens_total counter\n",
+                "docdex_conversation_wakeup_summary_tokens_total {}\n",
+                "# HELP docdex_conversation_wakeup_knowledge_tokens_total Wake-up tokens spent on knowledge facts\n",
+                "# TYPE docdex_conversation_wakeup_knowledge_tokens_total counter\n",
+                "docdex_conversation_wakeup_knowledge_tokens_total {}\n",
+                "# HELP docdex_conversation_wakeup_snippet_tokens_total Wake-up tokens spent on transcript snippets\n",
+                "# TYPE docdex_conversation_wakeup_snippet_tokens_total counter\n",
+                "docdex_conversation_wakeup_snippet_tokens_total {}\n",
+                "# HELP docdex_conversation_extraction_lag_ms_total Conversation extraction lag sum in ms\n",
+                "# TYPE docdex_conversation_extraction_lag_ms_total counter\n",
+                "docdex_conversation_extraction_lag_ms_total {}\n",
+                "# HELP docdex_conversation_extraction_lag_count_total Conversation extraction lag samples\n",
+                "# TYPE docdex_conversation_extraction_lag_count_total counter\n",
+                "docdex_conversation_extraction_lag_count_total {}\n",
+                "# HELP docdex_conversation_hook_enqueue_latency_ms_total Conversation hook enqueue latency sum in ms\n",
+                "# TYPE docdex_conversation_hook_enqueue_latency_ms_total counter\n",
+                "docdex_conversation_hook_enqueue_latency_ms_total {}\n",
+                "# HELP docdex_conversation_hook_enqueue_latency_count_total Conversation hook enqueue latency samples\n",
+                "# TYPE docdex_conversation_hook_enqueue_latency_count_total counter\n",
+                "docdex_conversation_hook_enqueue_latency_count_total {}\n",
+                "# HELP docdex_conversation_transcript_search_latency_ms_total Conversation transcript search latency sum in ms\n",
+                "# TYPE docdex_conversation_transcript_search_latency_ms_total counter\n",
+                "docdex_conversation_transcript_search_latency_ms_total {}\n",
+                "# HELP docdex_conversation_transcript_search_latency_count_total Conversation transcript search latency samples\n",
+                "# TYPE docdex_conversation_transcript_search_latency_count_total counter\n",
+                "docdex_conversation_transcript_search_latency_count_total {}\n",
+                "# HELP docdex_conversation_archive_size_bytes Conversation archive size in bytes\n",
+                "# TYPE docdex_conversation_archive_size_bytes gauge\n",
+                "docdex_conversation_archive_size_bytes {}\n",
+                "# HELP docdex_conversation_compaction_runs_total Conversation archive compaction runs\n",
+                "# TYPE docdex_conversation_compaction_runs_total counter\n",
+                "docdex_conversation_compaction_runs_total {}\n",
+                "# HELP docdex_conversation_compaction_deleted_sessions_total Conversation sessions deleted by compaction\n",
+                "# TYPE docdex_conversation_compaction_deleted_sessions_total counter\n",
+                "docdex_conversation_compaction_deleted_sessions_total {}\n",
+                "# HELP docdex_conversation_compaction_deleted_diary_entries_total Conversation diary entries deleted by compaction\n",
+                "# TYPE docdex_conversation_compaction_deleted_diary_entries_total counter\n",
+                "docdex_conversation_compaction_deleted_diary_entries_total {}\n",
+                "# HELP docdex_conversation_compaction_deleted_hook_events_total Conversation hook events deleted by compaction\n",
+                "# TYPE docdex_conversation_compaction_deleted_hook_events_total counter\n",
+                "docdex_conversation_compaction_deleted_hook_events_total {}\n",
+                "# HELP docdex_conversation_compaction_deleted_knowledge_facts_total Conversation knowledge facts deleted by compaction\n",
+                "# TYPE docdex_conversation_compaction_deleted_knowledge_facts_total counter\n",
+                "docdex_conversation_compaction_deleted_knowledge_facts_total {}\n",
+                "# HELP docdex_conversation_compaction_reclaimed_bytes_total Conversation archive bytes reclaimed by compaction\n",
+                "# TYPE docdex_conversation_compaction_reclaimed_bytes_total counter\n",
+                "docdex_conversation_compaction_reclaimed_bytes_total {}\n",
+            ),
+            self.conversation_wakeup_requests_total
+                .load(Ordering::Relaxed),
+            self.conversation_wakeup_useful_total
+                .load(Ordering::Relaxed),
+            self.conversation_prompt_budget_saved_tokens_total
+                .load(Ordering::Relaxed),
+            self.conversation_wakeup_working_memory_tokens_total
+                .load(Ordering::Relaxed),
+            self.conversation_wakeup_summary_tokens_total
+                .load(Ordering::Relaxed),
+            self.conversation_wakeup_knowledge_tokens_total
+                .load(Ordering::Relaxed),
+            self.conversation_wakeup_snippet_tokens_total
+                .load(Ordering::Relaxed),
+            self.conversation_extraction_lag_ms_total
+                .load(Ordering::Relaxed),
+            self.conversation_extraction_lag_count
+                .load(Ordering::Relaxed),
+            self.conversation_hook_enqueue_latency_ms_total
+                .load(Ordering::Relaxed),
+            self.conversation_hook_enqueue_latency_count
+                .load(Ordering::Relaxed),
+            self.conversation_transcript_search_latency_ms_total
+                .load(Ordering::Relaxed),
+            self.conversation_transcript_search_latency_count
+                .load(Ordering::Relaxed),
+            self.conversation_archive_size_bytes
+                .load(Ordering::Relaxed),
+            self.conversation_compaction_runs_total
+                .load(Ordering::Relaxed),
+            self.conversation_compaction_deleted_sessions_total
+                .load(Ordering::Relaxed),
+            self.conversation_compaction_deleted_diary_entries_total
+                .load(Ordering::Relaxed),
+            self.conversation_compaction_deleted_hook_events_total
+                .load(Ordering::Relaxed),
+            self.conversation_compaction_deleted_knowledge_facts_total
+                .load(Ordering::Relaxed),
+            self.conversation_compaction_reclaimed_bytes_total
+                .load(Ordering::Relaxed),
+        );
+        payload
     }
 }
 

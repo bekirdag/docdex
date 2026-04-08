@@ -22,6 +22,22 @@ scrape_configs:
   `docdex_http_request_latency_avg_ms`
 - Hook checks total:
   `rate(docdex_hook_checks_total[5m])`
+- Conversation wake-up usefulness ratio:
+  `rate(docdex_conversation_wakeup_useful_total[5m]) / clamp_min(rate(docdex_conversation_wakeup_requests_total[5m]), 1)`
+- Conversation prompt budget saved (tokens/s):
+  `rate(docdex_conversation_prompt_budget_saved_tokens_total[5m])`
+- Conversation wake-up token mix by lane:
+  `rate(docdex_conversation_wakeup_working_memory_tokens_total[5m])`, `rate(docdex_conversation_wakeup_summary_tokens_total[5m])`, `rate(docdex_conversation_wakeup_knowledge_tokens_total[5m])`, `rate(docdex_conversation_wakeup_snippet_tokens_total[5m])`
+- Conversation extraction lag avg (ms):
+  `docdex_conversation_extraction_lag_ms_total / clamp_min(docdex_conversation_extraction_lag_count_total, 1)`
+- Conversation hook enqueue latency avg (ms):
+  `docdex_conversation_hook_enqueue_latency_ms_total / clamp_min(docdex_conversation_hook_enqueue_latency_count_total, 1)`
+- Conversation transcript search latency avg (ms):
+  `docdex_conversation_transcript_search_latency_ms_total / clamp_min(docdex_conversation_transcript_search_latency_count_total, 1)`
+- Conversation archive size (bytes):
+  `docdex_conversation_archive_size_bytes`
+- Conversation compaction reclaimed bytes (5m):
+  `rate(docdex_conversation_compaction_reclaimed_bytes_total[5m])`
 - Profile recall latency avg (ms):
   `docdex_profile_recall_latency_ms_total / docdex_profile_recall_latency_count_total`
 - Profile evolution latency avg (ms):
@@ -59,6 +75,9 @@ These mirror the targets in `docs/quality_gates.md`:
 
 - HTTP error rate > 0.5% over 10m.
 - HTTP latency p95 > 50ms over 10m (local search queries).
+- Conversation wake-up usefulness ratio < 0.2 over 30m after enabling conversation memory.
+- Conversation transcript search latency avg > 100ms over 10m on local archives.
+- Conversation archive size grows while `docdex_conversation_compaction_reclaimed_bytes_total` stays flat for a full retention window.
 - Soak stability: no crashes during 30m soak (validate with `scripts/load_test_http.sh` and `scripts/load_test_mcp.sh`).
 
 ## Gate summary endpoint

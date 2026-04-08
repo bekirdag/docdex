@@ -95,7 +95,7 @@ mod unix_tests {
         fs::create_dir_all(&config_dir)?;
         let config_path = config_dir.join("config.toml");
         let payload = format!(
-            "[core]\nglobal_state_dir = \"{}\"\n\n[memory.profile]\nembedding_dim = 4\nembedding_model = \"test-embed\"\n\n[server]\nhook_socket_path = \"{}\"\n",
+            "[core]\nglobal_state_dir = \"{}\"\n\n[memory.profile]\nembedding_dim = 4\nembedding_model = \"test-embed\"\n\n[memory.conversations]\nauto_capture = true\n\n[server]\nhook_socket_path = \"{}\"\n",
             crate::common::toml_path(global_state_dir),
             crate::common::toml_path(hook_socket_path)
         );
@@ -172,6 +172,59 @@ mod unix_tests {
         let repo_id = repo_fingerprint_sha256(repo.path())?;
         let payload = send_hook_over_unix(&hook_socket_path, &repo_id)?;
         assert_eq!(payload.get("status").and_then(|v| v.as_str()), Some("pass"));
+
+        server.shutdown();
+        Ok(())
+    }
+
+    #[test]
+    fn conversation_hook_over_unix_socket() -> Result<(), Box<dyn Error>> {
+        let repo = TempDir::new()?;
+        write_repo(repo.path())?;
+
+        let state_root = TempDir::new()?;
+        let home_dir = TempDir::new()?;
+        let global_state_dir = home_dir.path().join(".docdex").join("state");
+        let hook_socket_path = home_dir.path().join(".docdex").join("hook.sock");
+        write_config(home_dir.path(), &global_state_dir, &hook_socket_path)?;
+
+        let Some(port) = pick_free_port() else {
+            return Ok(());
+        };
+        let host = "127.0.0.1";
+        let mut server =
+            ServerHarness::spawn(state_root.path(), home_dir.path(), repo.path(), host, port)?;
+
+        let transcript_path = home_dir.path().join("hook.txt");
+        fs::write(
+            &transcript_path,
+            "user: Save the final state\nassistant: Next step: flush the hook queue",
+        )?;
+        let output = run_docdex(
+            state_root.path(),
+            home_dir.path(),
+            [
+                "hook",
+                "conversation",
+                "--repo",
+                repo.path().to_string_lossy().as_ref(),
+                "--action",
+                "session_close_summarization",
+                "--agent-id",
+                "codex",
+                "--transcript",
+                transcript_path.to_string_lossy().as_ref(),
+                "--summary-text",
+                "Unix socket conversation hook summary.",
+                "--wait-for-processing",
+            ],
+        )?;
+        let payload: Value = serde_json::from_slice(&output)?;
+        assert_eq!(
+            payload.get("status").and_then(|v| v.as_str()),
+            Some("processed")
+        );
+        assert!(payload.get("session_id").and_then(|v| v.as_str()).is_some());
 
         server.shutdown();
         Ok(())

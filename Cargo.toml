@@ -1,6 +1,6 @@
 [package]
 name = "docdexd"
-version = "0.2.58"
+version = "0.2.59"
 edition = "2021"
 
 [dependencies]
@@ -91,4 +91,8 @@ members = ["fuzz"]
 
 [[bench]]
 name = "indexing_bench"
+harness = false
+
+[[bench]]
+name = "conversation_memory_bench"
 harness = false

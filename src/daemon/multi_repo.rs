@@ -1,3 +1,6 @@
+use crate::conversations::{
+    combined_archive_size_bytes, prune_with_knowledge, ConversationRetentionPolicy,
+};
 use crate::delegation_telemetry;
 use crate::index::{IndexConfig, Indexer};
 use crate::libs;
@@ -5,7 +8,7 @@ use crate::memory::MemoryStore;
 use crate::metrics::{DelegationMetrics, DelegationTelemetrySnapshot};
 use crate::ollama::OllamaEmbedder;
 use crate::repo_manager;
-use crate::search::MemoryState;
+use crate::search::{ConversationState, MemoryState};
 use crate::watcher;
 use anyhow::Result;
 use parking_lot::{Mutex, RwLock};
@@ -23,6 +26,7 @@ pub struct RepoRuntime {
     pub indexer: Arc<Indexer>,
     pub libs_indexer: Option<Arc<libs::LibsIndexer>>,
     pub memory: Option<MemoryState>,
+    pub conversations: Option<ConversationState>,
     pub delegation_metrics: Arc<DelegationMetrics>,
 }
 
@@ -50,6 +54,7 @@ struct RepoEntry {
     runtime: Arc<RepoRuntime>,
     watcher: Option<watcher::WatcherHandle>,
     last_access: Instant,
+    last_conversation_sweep: Instant,
 }
 
 pub struct RepoManager {
@@ -57,6 +62,8 @@ pub struct RepoManager {
     legacy_repos: RwLock<HashMap<String, Arc<Mutex<RepoEntry>>>>,
     delegation_metrics: RwLock<HashMap<String, Arc<DelegationMetrics>>>,
     memory_embedder: Option<OllamaEmbedder>,
+    conversations_enabled: bool,
+    conversation_config: crate::config::MemoryConversationConfig,
     shared_state_dir: Option<PathBuf>,
     pinned_repo_id: RwLock<Option<String>>,
     idle_timeout: Duration,
@@ -65,7 +72,12 @@ pub struct RepoManager {
 }
 
 impl RepoManager {
-    pub fn new(memory_embedder: Option<OllamaEmbedder>, shared_state_dir: Option<PathBuf>) -> Self {
+    pub fn new(
+        memory_embedder: Option<OllamaEmbedder>,
+        shared_state_dir: Option<PathBuf>,
+        conversations_enabled: bool,
+        conversation_config: crate::config::MemoryConversationConfig,
+    ) -> Self {
         fn duration_from_env(var: &str, default: Duration) -> Duration {
             let Ok(value) = std::env::var(var) else {
                 return default;
@@ -97,6 +109,8 @@ impl RepoManager {
             legacy_repos: RwLock::new(HashMap::new()),
             delegation_metrics: RwLock::new(HashMap::new()),
             memory_embedder,
+            conversations_enabled,
+            conversation_config,
             shared_state_dir,
             pinned_repo_id: RwLock::new(None),
             idle_timeout,
@@ -109,6 +123,8 @@ impl RepoManager {
     pub(crate) fn new_with_timeouts(
         memory_embedder: Option<OllamaEmbedder>,
         shared_state_dir: Option<PathBuf>,
+        conversations_enabled: bool,
+        conversation_config: crate::config::MemoryConversationConfig,
         idle_timeout: Duration,
         hibernate_timeout: Duration,
         cleanup_interval: Duration,
@@ -118,6 +134,8 @@ impl RepoManager {
             legacy_repos: RwLock::new(HashMap::new()),
             delegation_metrics: RwLock::new(HashMap::new()),
             memory_embedder,
+            conversations_enabled,
+            conversation_config,
             shared_state_dir,
             pinned_repo_id: RwLock::new(None),
             idle_timeout,
@@ -135,6 +153,7 @@ impl RepoManager {
             runtime: repo.clone(),
             watcher,
             last_access: Instant::now(),
+            last_conversation_sweep: Instant::now(),
         }));
         self.repos
             .write()
@@ -146,6 +165,8 @@ impl RepoManager {
             .write()
             .entry(repo.repo_id.clone())
             .or_insert_with(|| repo.delegation_metrics.clone());
+        crate::metrics::global()
+            .set_conversation_archive_size_bytes(self.conversation_archive_size_bytes_total());
     }
 
     pub fn delegation_metrics_for_repo_id(&self, repo_id: &str) -> Arc<DelegationMetrics> {
@@ -227,6 +248,25 @@ impl RepoManager {
         self.repos.read().len()
     }
 
+    pub fn conversation_archive_size_bytes_total(&self) -> u64 {
+        let repo_total = self
+            .repos
+            .read()
+            .values()
+            .map(|entry| {
+                let runtime = entry.lock().runtime.clone();
+                runtime
+                    .conversations
+                    .as_ref()
+                    .map(|conversations| {
+                        combined_archive_size_bytes(&conversations.store, &conversations.knowledge)
+                    })
+                    .unwrap_or(0)
+            })
+            .sum::<u64>();
+        crate::conversations::archive_size_bytes_total(repo_total, self.shared_state_dir.as_deref())
+    }
+
     pub fn start_housekeeping(self: &Arc<Self>) {
         let manager = Arc::clone(self);
         let interval = manager.cleanup_interval;
@@ -242,12 +282,29 @@ impl RepoManager {
     pub(crate) fn sweep_idle(&self, now: Instant) {
         let mut idle_entries: Vec<Arc<Mutex<RepoEntry>>> = Vec::new();
         let mut hibernate_ids: Vec<String> = Vec::new();
+        let mut conversation_sweeps: Vec<(String, PathBuf, crate::search::ConversationState)> =
+            Vec::new();
         let pinned_repo_id = self.pinned_repo_id.read().clone();
+        let sweep_interval =
+            Duration::from_secs(self.conversation_config.sweeper_interval_seconds.max(1));
         {
             let repos = self.repos.read();
             for (repo_id, entry) in repos.iter() {
-                let last_access = entry.lock().last_access;
+                let mut entry_guard = entry.lock();
+                let last_access = entry_guard.last_access;
                 let idle_for = now.duration_since(last_access);
+                if let Some(conversations) = entry_guard.runtime.conversations.as_ref() {
+                    let due_for_sweep =
+                        now.duration_since(entry_guard.last_conversation_sweep) >= sweep_interval;
+                    if due_for_sweep {
+                        conversation_sweeps.push((
+                            repo_id.clone(),
+                            entry_guard.runtime.repo_root.clone(),
+                            conversations.clone(),
+                        ));
+                        entry_guard.last_conversation_sweep = now;
+                    }
+                }
                 if idle_for >= self.hibernate_timeout {
                     let is_pinned = pinned_repo_id
                         .as_ref()
@@ -260,6 +317,105 @@ impl RepoManager {
                     }
                 } else if idle_for >= self.idle_timeout {
                     idle_entries.push(entry.clone());
+                }
+            }
+        }
+
+        let retention_policy = ConversationRetentionPolicy {
+            manual_retention_days: self.conversation_config.manual_retention_days,
+            auto_capture_retention_days: self.conversation_config.auto_capture_retention_days,
+            diary_retention_days: self.conversation_config.diary_retention_days,
+            hook_event_retention_days: self.conversation_config.hook_event_retention_days,
+            working_memory_retention_days: self.conversation_config.working_memory_retention_days,
+            episodic_rollup_retention_days: self.conversation_config.episodic_rollup_retention_days,
+        };
+        for (repo_id, repo_root, conversations) in conversation_sweeps {
+            let before_size =
+                combined_archive_size_bytes(&conversations.store, &conversations.knowledge);
+            match prune_with_knowledge(
+                &conversations.store,
+                &conversations.knowledge,
+                &retention_policy,
+                true,
+                true,
+            ) {
+                Ok(result) => {
+                    let after_size =
+                        combined_archive_size_bytes(&conversations.store, &conversations.knowledge);
+                    if result.has_deletions() {
+                        crate::metrics::global().record_conversation_compaction(
+                            result.deleted_sessions_total(),
+                            result.deleted_diary_entries,
+                            result.deleted_hook_events,
+                            result.deleted_knowledge_facts,
+                            before_size.saturating_sub(after_size),
+                        );
+                        info!(
+                            target: "docdexd",
+                            repo_id = %repo_id,
+                            repo = %repo_root.display(),
+                            deleted_manual_sessions = result.deleted_manual_sessions,
+                            deleted_auto_sessions = result.deleted_auto_sessions,
+                            deleted_diary_entries = result.deleted_diary_entries,
+                            deleted_hook_events = result.deleted_hook_events,
+                            deleted_knowledge_facts = result.deleted_knowledge_facts,
+                            reclaimed_bytes = before_size.saturating_sub(after_size),
+                            "conversation archive sweep pruned retained state"
+                        );
+                    }
+                }
+                Err(err) => {
+                    warn!(
+                        target: "docdexd",
+                        repo_id = %repo_id,
+                        repo = %repo_root.display(),
+                        error = ?err,
+                        "conversation archive sweep failed"
+                    );
+                }
+            }
+        }
+        if self.conversations_enabled {
+            if let Some(base_state_dir) = self.shared_state_dir.as_deref() {
+                match crate::conversations::sweep_conversation_namespaces(
+                    base_state_dir,
+                    &retention_policy,
+                    true,
+                    true,
+                ) {
+                    Ok(result) => {
+                        if result.prune_result.has_deletions() {
+                            crate::metrics::global().record_conversation_compaction(
+                                result.prune_result.deleted_sessions_total(),
+                                result.prune_result.deleted_diary_entries,
+                                result.prune_result.deleted_hook_events,
+                                result.prune_result.deleted_knowledge_facts,
+                                result.bytes_before.saturating_sub(result.bytes_after),
+                            );
+                            info!(
+                                target: "docdexd",
+                                namespace_count = result.namespace_count,
+                                pruned_namespace_count = result.pruned_namespace_count,
+                                deleted_manual_sessions = result.prune_result.deleted_manual_sessions,
+                                deleted_auto_sessions = result.prune_result.deleted_auto_sessions,
+                                deleted_diary_entries = result.prune_result.deleted_diary_entries,
+                                deleted_hook_events = result.prune_result.deleted_hook_events,
+                                deleted_working_memory_records = result.prune_result.deleted_working_memory_records,
+                                deleted_rollups = result.prune_result.deleted_rollups,
+                                created_rollups = result.prune_result.created_rollups,
+                                deleted_knowledge_facts = result.prune_result.deleted_knowledge_facts,
+                                reclaimed_bytes = result.bytes_before.saturating_sub(result.bytes_after),
+                                "conversation namespace sweep pruned retained state"
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        warn!(
+                            target: "docdexd",
+                            error = ?err,
+                            "conversation namespace sweep failed"
+                        );
+                    }
                 }
             }
         }
@@ -285,6 +441,8 @@ impl RepoManager {
                 }
             }
         }
+        crate::metrics::global()
+            .set_conversation_archive_size_bytes(self.conversation_archive_size_bytes_total());
     }
 
     pub fn mount_repo(&self, repo_root: &Path) -> Result<RepoMount> {
@@ -340,6 +498,19 @@ impl RepoManager {
             embedder,
             repo_id: repo_id.clone(),
         });
+        let conversations = if self.conversations_enabled {
+            Some(ConversationState {
+                store: crate::conversations::ConversationStore::new(indexer.state_dir()),
+                knowledge: crate::knowledge::KnowledgeStore::new(indexer.state_dir()),
+                config: self.conversation_config.clone(),
+                max_wakeup_tokens: self.conversation_config.max_wakeup_tokens,
+                max_episodic_summaries: self.conversation_config.max_episodic_summaries,
+                max_knowledge_facts: self.conversation_config.max_knowledge_facts,
+                max_transcript_snippets: self.conversation_config.max_transcript_snippets,
+            })
+        } else {
+            None
+        };
         let delegation_metrics = self.delegation_metrics_for_repo_id(&repo_id);
         if let Err(err) = delegation_telemetry::restore_repo_metrics_if_empty(
             delegation_metrics.as_ref(),
@@ -359,6 +530,7 @@ impl RepoManager {
             indexer: indexer.clone(),
             libs_indexer,
             memory,
+            conversations,
             delegation_metrics,
         });
         let watcher = if read_only {
@@ -412,9 +584,15 @@ fn is_lock_busy_error(err: &anyhow::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conversations::{
+        import_conversation_with_routing_options, normalize_import_request,
+        ConversationCaptureKind, ConversationImportEnvelope, ConversationImportOptions,
+        ConversationKnowledgeTarget, ConversationRouteTargets,
+    };
     use crate::delegation_telemetry;
     use crate::metrics::Metrics;
     use crate::state_layout::resolve_state_paths;
+    use rusqlite::Connection;
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -425,6 +603,8 @@ mod tests {
         let manager = RepoManager::new_with_timeouts(
             None,
             Some(state_dir.path().to_path_buf()),
+            false,
+            crate::config::MemoryConversationConfig::default(),
             Duration::from_secs(1),
             Duration::from_secs(10),
             Duration::from_secs(1),
@@ -451,6 +631,8 @@ mod tests {
         let manager = RepoManager::new_with_timeouts(
             None,
             Some(state_dir.path().to_path_buf()),
+            false,
+            crate::config::MemoryConversationConfig::default(),
             Duration::from_secs(1),
             Duration::from_secs(3),
             Duration::from_secs(1),
@@ -476,6 +658,8 @@ mod tests {
         let manager = RepoManager::new_with_timeouts(
             None,
             Some(state_dir.path().to_path_buf()),
+            false,
+            crate::config::MemoryConversationConfig::default(),
             Duration::from_secs(60),
             Duration::from_secs(120),
             Duration::from_secs(60),
@@ -492,6 +676,102 @@ mod tests {
         let _ = manager.get_by_id(&mount.repo.repo_id);
         let updated = entry.lock().last_access;
         assert!(updated > stale);
+    }
+
+    #[tokio::test]
+    async fn repo_manager_runs_conversation_archive_sweeper() {
+        let repo = TempDir::new().expect("repo dir");
+        std::fs::write(repo.path().join("README.md"), "# test\n").expect("write file");
+        let state_dir = TempDir::new().expect("state dir");
+        let conversation_config = crate::config::MemoryConversationConfig {
+            manual_retention_days: 1,
+            auto_capture_retention_days: 1,
+            diary_retention_days: 1,
+            hook_event_retention_days: 1,
+            sweeper_interval_seconds: 1,
+            ..crate::config::MemoryConversationConfig::default()
+        };
+        let manager = RepoManager::new_with_timeouts(
+            None,
+            Some(state_dir.path().to_path_buf()),
+            true,
+            conversation_config,
+            Duration::from_secs(60),
+            Duration::from_secs(120),
+            Duration::from_secs(60),
+        );
+        let mount = manager.mount_repo(repo.path()).expect("mount repo");
+        let conversations = mount
+            .repo
+            .conversations
+            .clone()
+            .expect("conversation state");
+
+        let imported = import_conversation_with_routing_options(
+            conversations.store.clone(),
+            normalize_import_request(ConversationImportEnvelope {
+                source: Some("manual".to_string()),
+                source_session_id: None,
+                title: Some("sweeper".to_string()),
+                agent_id: Some("codex".to_string()),
+                transport: Some("http".to_string()),
+                started_at_ms: None,
+                ended_at_ms: None,
+                format: None,
+                messages: None,
+                transcript_text: Some(
+                    "user: Repo fact: knowledge.db uses timeline_index\nassistant: Decision: We decided to keep timeline_index repo-scoped".to_string(),
+                ),
+                metadata: serde_json::json!({}),
+            })
+            .expect("normalize"),
+            ConversationImportOptions {
+                capture_kind: ConversationCaptureKind::Manual,
+                store_raw_messages: true,
+            },
+            ConversationRouteTargets {
+                knowledge: Some(ConversationKnowledgeTarget {
+                    store: conversations.knowledge.clone(),
+                    graph_config: conversations.config.graph.clone(),
+                }),
+                default_agent_id: Some("codex".to_string()),
+                ..ConversationRouteTargets::default()
+            },
+        )
+        .await
+        .expect("import conversation");
+
+        let conn = Connection::open(conversations.store.path()).expect("open conversation archive");
+        conn.execute(
+            "UPDATE conversation_sessions SET imported_at_ms = 1 WHERE id = ?1",
+            rusqlite::params![imported.session_id],
+        )
+        .expect("age session");
+
+        let entry = manager
+            .repos
+            .read()
+            .get(&mount.repo.repo_id)
+            .expect("entry")
+            .clone();
+        let now = Instant::now();
+        {
+            let mut entry = entry.lock();
+            entry.last_conversation_sweep = now - Duration::from_secs(2);
+        }
+
+        manager.sweep_idle(now);
+
+        assert!(conversations
+            .store
+            .read_session(&imported.session_id)
+            .expect("read session")
+            .is_none());
+        assert!(conversations
+            .knowledge
+            .facts_for_session(&imported.session_id)
+            .expect("knowledge facts")
+            .is_empty());
     }
 
     #[tokio::test]
@@ -517,6 +797,8 @@ mod tests {
         let manager = RepoManager::new_with_timeouts(
             None,
             Some(state_dir.path().to_path_buf()),
+            false,
+            crate::config::MemoryConversationConfig::default(),
             Duration::from_secs(60),
             Duration::from_secs(120),
             Duration::from_secs(60),

@@ -732,6 +732,11 @@ fn derive_state_paths_debug(
         index_dir: resolved_index_dir.display().to_string(),
         libs_index_dir: repo_state_root.join("libs_index").display().to_string(),
         memory_path: repo_state_root.join("memory.db").display().to_string(),
+        conversation_path: repo_state_root
+            .join("conversation.db")
+            .display()
+            .to_string(),
+        knowledge_path: repo_state_root.join("knowledge.db").display().to_string(),
         symbols_dir: repo_state_root.join("symbols.db").display().to_string(),
         dag_path: repo_state_root.join("dag.db").display().to_string(),
         cache_web_dir: cache_dir.join("web").display().to_string(),

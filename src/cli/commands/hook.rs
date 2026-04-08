@@ -1,3 +1,4 @@
+use super::decode_json_or_error;
 use crate::cli::http_client::CliHttpClient;
 use crate::config::{self, RepoArgs};
 #[cfg(unix)]
@@ -20,6 +21,8 @@ use hyper::Request;
 use hyper_util::rt::TokioIo;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 #[cfg(unix)]
@@ -58,6 +61,34 @@ struct HookViolation {
 pub(crate) async fn run(command: crate::cli::HookCommand) -> Result<()> {
     match command {
         crate::cli::HookCommand::PreCommit { repo } => run_pre_commit(repo).await,
+        crate::cli::HookCommand::Conversation {
+            scope,
+            action,
+            source,
+            source_session_id,
+            title,
+            agent_id,
+            transport,
+            format,
+            transcript,
+            summary_text,
+            wait_for_processing,
+        } => {
+            run_conversation(
+                scope,
+                action,
+                source,
+                source_session_id,
+                title,
+                agent_id,
+                transport,
+                format,
+                transcript,
+                summary_text,
+                wait_for_processing,
+            )
+            .await
+        }
     }
 }
 
@@ -100,6 +131,82 @@ async fn run_pre_commit(repo: RepoArgs) -> Result<()> {
     };
 
     handle_hook_outcome(outcome)
+}
+
+async fn run_conversation(
+    scope: crate::cli::ConversationScopeArgs,
+    action: String,
+    source: Option<String>,
+    source_session_id: Option<String>,
+    title: Option<String>,
+    agent_id: Option<String>,
+    transport: Option<String>,
+    format: String,
+    transcript: Option<PathBuf>,
+    summary_text: Option<String>,
+    wait_for_processing: bool,
+) -> Result<()> {
+    let transcript_text = match transcript {
+        Some(path) => Some(fs::read_to_string(path)?),
+        None => None,
+    };
+    if transcript_text
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+        && summary_text
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
+    {
+        anyhow::bail!("conversation hook requires --transcript or --summary-text");
+    }
+    let payload = json!({
+        "action": action,
+        "source": source,
+        "source_session_id": source_session_id,
+        "title": title,
+        "agent_id": agent_id,
+        "transport": transport,
+        "format": format,
+        "transcript_text": transcript_text,
+        "summary_text": summary_text,
+        "wait_for_processing": wait_for_processing,
+    });
+    let socket_path = resolve_hook_socket_path()?;
+    let value = match socket_path {
+        Some(_path) => {
+            #[cfg(unix)]
+            {
+                match send_json_unix(
+                    scope.repo_root().as_deref(),
+                    scope.conversation_namespace(),
+                    &_path,
+                    "/v1/hooks/conversation",
+                    &payload,
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(err) if is_connect_or_timeout(&err) => {
+                        send_json_http(&scope, "/v1/hooks/conversation", &payload).await?
+                    }
+                    Err(err) => {
+                        return Err(err).context("conversation hook unix socket request failed");
+                    }
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                send_json_http(&scope, "/v1/hooks/conversation", &payload).await?
+            }
+        }
+        None => send_json_http(&scope, "/v1/hooks/conversation", &payload).await?,
+    };
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
 }
 
 fn resolve_hook_socket_path() -> Result<Option<PathBuf>> {
@@ -173,6 +280,70 @@ async fn send_hook_request(request: reqwest::RequestBuilder) -> Result<HookValid
         .await
         .context("hook validate response parse failed")?;
     Ok(HookValidateOutcome { status, payload })
+}
+
+async fn send_json_http(
+    scope: &crate::cli::ConversationScopeArgs,
+    path: &str,
+    payload: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let client = CliHttpClient::new()?;
+    client.ensure_conversation_scope(scope).await?;
+    let mut req = client.request(Method::POST, path).json(payload);
+    req = client.with_conversation_scope(req, scope)?;
+    decode_json_or_error(req.send().await?, path).await
+}
+
+#[cfg(unix)]
+async fn send_json_unix(
+    repo_root: Option<&Path>,
+    conversation_namespace: Option<&str>,
+    socket_path: &Path,
+    path: &str,
+    payload: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let payload = serde_json::to_vec(payload)?;
+    let timeout_ms = env_u64("DOCDEX_HTTP_TIMEOUT_MS").unwrap_or(30_000);
+    let response = timeout(Duration::from_millis(timeout_ms.max(1)), async {
+        let stream = UnixStream::connect(socket_path).await?;
+        let io = TokioIo::new(stream);
+        let (mut sender, conn) = http1::handshake(io).await?;
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let mut builder = Request::builder()
+            .method(HyperMethod::POST)
+            .uri(format!("http://localhost{}", path))
+            .header(CONTENT_TYPE, "application/json");
+        if let Some(repo_root) = repo_root {
+            let repo_id = repo_manager::repo_fingerprint_sha256(repo_root)?;
+            builder = builder.header("x-docdex-repo-id", repo_id);
+        }
+        if let Some(namespace) = conversation_namespace {
+            builder = builder.header("x-docdex-conversation-namespace", namespace);
+        }
+        if let Some(token) = env_non_empty("DOCDEX_AUTH_TOKEN") {
+            builder = builder.header(AUTHORIZATION, format!("Bearer {token}"));
+        }
+        let request = builder.body(Full::new(Bytes::from(payload)))?;
+        let response = sender.send_request(request).await?;
+        let status = response.status();
+        let body = response.into_body().collect().await?.to_bytes();
+        if !status.is_success() {
+            anyhow::bail!(
+                "request failed ({}): {}",
+                status,
+                String::from_utf8_lossy(&body)
+            );
+        }
+        Ok::<_, anyhow::Error>(serde_json::from_slice(&body)?)
+    })
+    .await;
+
+    match response {
+        Ok(result) => result,
+        Err(err) => Err(err.into()),
+    }
 }
 
 fn handle_hook_outcome(outcome: HookValidateOutcome) -> Result<()> {

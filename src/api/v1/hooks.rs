@@ -4,17 +4,21 @@ use axum::{
     response::{IntoResponse, Json, Response},
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashSet;
 use std::time::Instant;
 use tracing::warn;
 
-use crate::error::{AppError, ERR_INTERNAL_ERROR, ERR_PROFILE_DISABLED};
+use crate::error::{
+    AppError, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED, ERR_PROFILE_DISABLED,
+};
 use crate::profiles::{
     check_any_type_usage, check_circular_dependencies, match_constraint_rules, ConstraintRule,
     PreferenceCategory,
 };
 use crate::search::{
-    json_error, repo_error_response, resolve_repo_context, status_for_app_error, AppState,
+    json_error, repo_error_response, resolve_conversation_context, resolve_repo_context,
+    status_for_app_error, AppState,
 };
 
 #[derive(Deserialize)]
@@ -36,6 +40,41 @@ pub struct HookViolation {
     pub file: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line: Option<u32>,
+}
+
+#[derive(Deserialize)]
+pub struct ConversationHookRequest {
+    pub action: crate::conversations::ConversationHookAction,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub source_session_id: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub transport: Option<String>,
+    #[serde(default)]
+    pub started_at_ms: Option<i64>,
+    #[serde(default)]
+    pub ended_at_ms: Option<i64>,
+    #[serde(default)]
+    pub format: Option<String>,
+    #[serde(default)]
+    pub messages: Option<Vec<crate::api::v1::conversations::ConversationImportMessage>>,
+    #[serde(default)]
+    pub transcript_text: Option<String>,
+    #[serde(default)]
+    pub summary_text: Option<String>,
+    #[serde(default)]
+    pub metadata: Option<Value>,
+    #[serde(default)]
+    pub wait_for_processing: Option<bool>,
+    #[serde(default)]
+    pub repo_id: Option<String>,
+    #[serde(default, alias = "namespace")]
+    pub conversation_namespace: Option<String>,
 }
 
 pub async fn hook_validate_handler(
@@ -186,4 +225,204 @@ pub async fn hook_validate_handler(
         Json(HookValidateResponse { status, errors }).into_response(),
         status == "fail",
     )
+}
+
+pub async fn conversation_hook_handler(
+    State(state): State<AppState>,
+    axum::extract::Extension(request_id): axum::extract::Extension<crate::search::RequestId>,
+    headers: HeaderMap,
+    Json(payload): Json<ConversationHookRequest>,
+) -> Response {
+    let started = Instant::now();
+    let metrics = state.metrics.clone();
+    metrics.inc_hook_check();
+    let finalize = |response: Response, failed: bool| {
+        if failed {
+            metrics.inc_hook_failure();
+        }
+        metrics.record_hook_latency(started.elapsed().as_millis());
+        response
+    };
+    let scope = match resolve_conversation_context(
+        &state,
+        &headers,
+        payload.repo_id.as_deref(),
+        None,
+        payload.conversation_namespace.as_deref(),
+        None,
+        false,
+    ) {
+        Ok(scope) => scope,
+        Err(err) => return finalize(repo_error_response(err), true),
+    };
+    let Some(conversations) = scope.conversations() else {
+        return finalize(
+            json_error(
+                StatusCode::CONFLICT,
+                ERR_MEMORY_DISABLED,
+                "conversation memory is disabled; enable [memory.conversations].enabled",
+            ),
+            true,
+        );
+    };
+    let has_messages = payload
+        .messages
+        .as_ref()
+        .map(|items| !items.is_empty())
+        .unwrap_or(false);
+    let has_transcript = payload
+        .transcript_text
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some();
+    let has_summary = payload
+        .summary_text
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some();
+    if !has_messages && !has_transcript && !has_summary {
+        return finalize(
+            json_error(
+                StatusCode::BAD_REQUEST,
+                ERR_INVALID_ARGUMENT,
+                "conversation hook requires transcript/messages or summary_text",
+            ),
+            true,
+        );
+    }
+    let source = payload
+        .source
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("hook:{}", payload.action.as_str()));
+    if !conversations.config.allows_source(&source) {
+        if let Some(audit) = state.audit.as_ref() {
+            audit.log(
+                "conversation.hook",
+                "deny",
+                Some(&request_id.0),
+                Some("/v1/hooks/conversation"),
+                Some("POST"),
+                Some(StatusCode::FORBIDDEN.as_u16()),
+                None,
+                Some(&format!("scope={} source={}", scope.scope_id(), source)),
+            );
+        }
+        return finalize(
+            json_error(
+                StatusCode::FORBIDDEN,
+                ERR_INVALID_ARGUMENT,
+                "conversation source is blocked by memory.conversations source policy",
+            ),
+            true,
+        );
+    }
+    let wait_for_processing = payload.wait_for_processing.unwrap_or(false);
+    let hook_payload = crate::conversations::ConversationHookPayload {
+        action: payload.action.clone(),
+        source: Some(source.clone()),
+        source_session_id: payload.source_session_id,
+        title: payload.title,
+        agent_id: payload.agent_id.or_else(|| state.default_agent_id.clone()),
+        transport: payload.transport,
+        started_at_ms: payload.started_at_ms,
+        ended_at_ms: payload.ended_at_ms,
+        format: payload.format,
+        messages: crate::api::v1::conversations::map_import_messages(payload.messages),
+        transcript_text: payload.transcript_text,
+        summary_text: payload.summary_text,
+        metadata: payload.metadata.unwrap_or_else(|| serde_json::json!({})),
+    };
+    let route_targets = crate::conversations::build_conversation_route_targets(
+        scope.repo_memory_target(),
+        state.profile_state.as_ref().map(|profile| {
+            crate::conversations::build_conversation_profile_target(
+                profile.manager.clone(),
+                profile.embedder.clone(),
+                "conversation_hook",
+            )
+        }),
+        conversations.knowledge.clone(),
+        conversations.config.graph.clone(),
+        state.default_agent_id.clone(),
+    );
+    let import_options = crate::conversations::ConversationImportOptions {
+        capture_kind: crate::conversations::ConversationCaptureKind::Auto,
+        store_raw_messages: conversations.config.archive_raw_transcripts,
+    };
+    let scope_label = scope.scope_label();
+    let scope_id = scope.scope_id();
+    match crate::conversations::enqueue_conversation_hook(
+        conversations.store.clone(),
+        hook_payload,
+        import_options,
+        route_targets,
+        wait_for_processing,
+    )
+    .await
+    {
+        Ok(result) => {
+            tracing::info!(
+                target: "docdexd",
+                request_id = %request_id.0,
+                scope = %scope_label,
+                latency_ms = started.elapsed().as_millis(),
+                event_id = %result.event_id,
+                status = %result.status,
+                "conversation hook accepted"
+            );
+            if let Some(audit) = state.audit.as_ref() {
+                audit.log(
+                    "conversation.hook",
+                    "ok",
+                    Some(&request_id.0),
+                    Some("/v1/hooks/conversation"),
+                    Some("POST"),
+                    Some(StatusCode::OK.as_u16()),
+                    None,
+                    Some(&format!(
+                        "scope={} source={} event_id={} status={}",
+                        scope_id, source, result.event_id, result.status
+                    )),
+                );
+            }
+            finalize(Json(result).into_response(), false)
+        }
+        Err(err) => {
+            state.metrics.inc_error();
+            warn!(
+                target: "docdexd",
+                request_id = %request_id.0,
+                error = ?err,
+                "conversation hook failed"
+            );
+            if let Some(audit) = state.audit.as_ref() {
+                audit.log(
+                    "conversation.hook",
+                    "error",
+                    Some(&request_id.0),
+                    Some("/v1/hooks/conversation"),
+                    Some("POST"),
+                    Some(StatusCode::INTERNAL_SERVER_ERROR.as_u16()),
+                    None,
+                    Some(&format!(
+                        "scope={} source={} error={}",
+                        scope_id, source, err
+                    )),
+                );
+            }
+            finalize(
+                json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    ERR_INTERNAL_ERROR,
+                    "conversation hook failed",
+                ),
+                true,
+            )
+        }
+    }
 }

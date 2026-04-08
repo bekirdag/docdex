@@ -163,10 +163,19 @@ Core endpoints:
 - `POST /v1/search/batch`
 - `POST /v1/delegate`
 - `POST /v1/chat/completions`
+- `POST /v1/conversations/import`, `GET /v1/conversations`, `GET /v1/conversations/search`
+- `GET /v1/conversations/:session_id/export`, `POST /v1/conversations/:session_id/redact`
+- `POST /v1/conversations/prune`, `POST /v1/diary/write`, `GET /v1/diary/read`, `POST /v1/hooks/conversation`
+- `POST /v1/wakeup`, `GET /v1/kg/query`, `GET /v1/kg/search/*`, `GET /v1/kg/timeline`
+- `GET /v1/kg/neighborhood`, `GET /v1/kg/entity-links`, `GET /v1/kg/episode`
+- `POST /v1/kg/edge/delete`, `POST /v1/kg/episode/delete`, `POST /v1/kg/rebuild`, `POST /v1/kg/clear`
 - `GET /v1/symbols`, `GET /v1/ast`, `GET /v1/graph/impact`
 - `GET /v1/impact/diagnostics`
 - `GET /v1/index/status`
 - `GET /v1/telemetry/delegation`
+
+Redaction note:
+- `POST /v1/conversations/:session_id/redact` removes transcript searchability and wake-up recall for that session, but `read` and `export` keep the original message slots with `[redacted]` placeholder content instead of dropping the array entirely.
 
 Optional retrieval feature negotiation:
 - HTTP: `GET /v1/capabilities`, `POST /v1/search/rerank`, `POST /v1/search/batch`
@@ -257,6 +266,140 @@ docdexd open --repo /path/to/repo --file src/app.ts --start 10 --end 40 --clamp
 docdexd file ensure-newline --repo /path/to/repo --file README.md
 docdexd file write --repo /path/to/repo --file notes.txt --content "hello" --create
 ```
+
+## Conversation memory
+
+Conversation memory is repo-scoped by default and disabled automatically when `[memory].enabled = false`.
+Repo-less sessions must use an explicit `conversation_namespace`; they do not silently fall back to some repo archive.
+Conversation state keeps imported sessions in `conversation.db`, derived knowledge facts in `knowledge.db`, and serves compact wake-up bundles instead of replaying full transcripts.
+
+The `docdexd conversations`, `docdexd diary`, and `docdexd hook conversation` commands are HTTP-backed wrappers. Start `docdex start` or `docdexd daemon` first, and set `DOCDEX_HTTP_BASE_URL` when the daemon is not listening on `http://127.0.0.1:28491`.
+
+Archive and manage sessions:
+```bash
+docdexd conversations import --repo /path/to/repo ./session.txt --format plain_text --agent-id codex
+docdexd conversations list --repo /path/to/repo --agent-id codex
+docdexd conversations search --repo /path/to/repo "timeline_index"
+docdexd conversations read --repo /path/to/repo <session_id>
+docdexd conversations export --repo /path/to/repo <session_id>
+docdexd conversations redact --repo /path/to/repo <session_id>
+docdexd conversations delete --repo /path/to/repo <session_id>
+docdexd conversations prune --repo /path/to/repo --apply --manual-retention-days 30 --working-memory-retention-days 7
+
+docdexd conversations import --conversation-namespace shared-team ./session.txt --format plain_text --agent-id codex
+docdexd conversations search --conversation-namespace shared-team "timeline_index"
+```
+
+Diary and hook capture:
+```bash
+docdexd diary write --repo /path/to/repo --agent-id codex "Wake-up rollout validated for knowledge.db"
+docdexd diary read --repo /path/to/repo --agent-id codex --limit 10
+
+docdexd hook conversation --repo /path/to/repo \
+  --action session_close_summarization \
+  --source codex \
+  --agent-id codex \
+  --transcript ./session.txt \
+  --format plain_text \
+  --wait-for-processing
+
+docdexd hook conversation --conversation-namespace shared-team \
+  --action periodic_memory_save \
+  --source codex \
+  --agent-id codex \
+  --summary-text "timeline_index moved into knowledge.db and needs follow-up tests"
+```
+
+Wake-up bundles and chat context:
+```bash
+curl -X POST http://127.0.0.1:28491/v1/wakeup \
+  -H "Content-Type: application/json" \
+  -d '{"agent_id":"codex","query":"knowledge.db","max_tokens":96}'
+
+curl -X POST http://127.0.0.1:28491/v1/wakeup \
+  -H "Content-Type: application/json" \
+  -H "x-docdex-conversation-namespace: shared-team" \
+  -d '{"agent_id":"codex","query":"timeline_index","max_tokens":96}'
+
+curl -X POST http://127.0.0.1:28491/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "fake-model",
+    "messages": [{"role": "user", "content": "What changed around knowledge.db?"}],
+    "docdex": {
+      "agent_id": "codex",
+      "limit": 6,
+      "include_libs": true,
+      "dag_session_id": "session-123"
+    }
+  }'
+```
+
+Temporal knowledge graph:
+```bash
+docdexd conversations kg-query --repo /path/to/repo "knowledge.db"
+docdexd conversations kg-search-nodes --repo /path/to/repo "knowledge"
+docdexd conversations kg-search-edges --repo /path/to/repo "timeline_index"
+docdexd conversations kg-search-episodes --repo /path/to/repo "wake-up rollout"
+docdexd conversations kg-neighborhood --repo /path/to/repo "knowledge.db"
+docdexd conversations kg-entity-links --repo /path/to/repo "knowledge.db"
+docdexd conversations kg-episode --repo /path/to/repo <episode_id>
+docdexd conversations kg-timeline --repo /path/to/repo "knowledge.db"
+docdexd conversations kg-delete-edge --repo /path/to/repo <edge_id>
+docdexd conversations kg-delete-episode --repo /path/to/repo <episode_id>
+docdexd conversations kg-rebuild --repo /path/to/repo
+docdexd conversations kg-clear --repo /path/to/repo
+```
+
+HTTP examples:
+```bash
+curl -X POST http://127.0.0.1:28491/v1/conversations/import \
+  -H "Content-Type: application/json" \
+  -d '{"source":"manual","agent_id":"codex","transcript_text":"user: Repo fact: knowledge.db uses timeline_index"}'
+
+curl -X POST http://127.0.0.1:28491/v1/diary/write \
+  -H "Content-Type: application/json" \
+  -d '{"agent_id":"codex","content":"Wake-up rollout validated for knowledge.db","entry_type":"note"}'
+
+curl -X POST http://127.0.0.1:28491/v1/hooks/conversation \
+  -H "Content-Type: application/json" \
+  -d '{"action":"session_close_summarization","source":"codex","agent_id":"codex","transcript_text":"user: timeline_index now belongs to knowledge.db","format":"plain_text","wait_for_processing":true}'
+
+curl "http://127.0.0.1:28491/v1/kg/search/nodes?q=knowledge&limit=10"
+curl "http://127.0.0.1:28491/v1/kg/neighborhood?entity=knowledge.db&limit=10"
+curl "http://127.0.0.1:28491/v1/kg/entity-links?entity=knowledge.db&limit=10"
+```
+
+Config example:
+```toml
+[memory.conversations]
+enabled = true
+auto_capture = true
+archive_raw_transcripts = false
+max_wakeup_tokens = 192
+max_episodic_summaries = 6
+max_knowledge_facts = 3
+max_transcript_snippets = 4
+manual_retention_days = 30
+auto_capture_retention_days = 14
+diary_retention_days = 30
+hook_event_retention_days = 7
+working_memory_retention_days = 7
+episodic_rollup_retention_days = 30
+sweeper_interval_seconds = 600
+source_allowlist = []
+source_denylist = ["blocked-source"]
+```
+
+Notes:
+- Wake-up retrieval order is working memory, episodic summaries, KG facts, then transcript snippets.
+- `/v1/chat/completions` can prepend wake-up context, profile truth, and cached `Project map:` context; non-streaming responses can include `reasoning_trace`.
+- `sweeper_interval_seconds` controls automatic prune-and-compact passes for conversation archives.
+- Prune and background sweeps also trim superseded working-memory rows and persist episodic rollups before removing expired sessions.
+- Hook payloads can import transcripts, persist diary entries, or do both depending on the action and supplied fields.
+- `conversation_namespace` and `repo_id` are mutually exclusive on the same HTTP request.
+- MCP exposes the same surfaces as `docdex_conversation_*`, `docdex_diary_*`, `docdex_conversation_hook`, `docdex_wakeup`, and `docdex_kg_*`.
+- MCP tools accept `conversation_namespace` for the same repo-less scope used by the CLI and HTTP API.
 
 Test helper:
 ```bash

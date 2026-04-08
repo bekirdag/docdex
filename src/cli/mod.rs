@@ -781,6 +781,16 @@ pub(crate) enum Command {
         )]
         apply: bool,
     },
+    /// Manage repo-scoped conversation memory sessions.
+    Conversations {
+        #[command(subcommand)]
+        command: ConversationCommand,
+    },
+    /// Manage repo-scoped agent diary entries.
+    Diary {
+        #[command(subcommand)]
+        command: DiaryCommand,
+    },
     /// Manage global agent profiles and preference memory.
     Profile {
         #[command(subcommand)]
@@ -1140,6 +1150,286 @@ pub(crate) enum ProfileCommand {
     },
 }
 
+#[derive(Args, Debug, Clone)]
+pub(crate) struct ConversationScopeArgs {
+    #[arg(
+        long,
+        value_name = "PATH",
+        conflicts_with = "conversation_namespace",
+        help = "Repository/workspace root for repo-scoped conversation memory. Defaults to the current directory unless --conversation-namespace is provided."
+    )]
+    pub repo: Option<PathBuf>,
+    #[arg(
+        long = "conversation-namespace",
+        alias = "namespace",
+        value_parser = config::non_empty_string,
+        conflicts_with = "repo",
+        help = "Explicit global conversation namespace for repo-less conversation memory."
+    )]
+    pub conversation_namespace: Option<String>,
+}
+
+impl ConversationScopeArgs {
+    pub(crate) fn repo_root(&self) -> Option<PathBuf> {
+        if self.conversation_namespace().is_some() {
+            return None;
+        }
+        let candidate = self.repo.clone().unwrap_or_else(|| PathBuf::from("."));
+        Some(candidate.canonicalize().unwrap_or(candidate))
+    }
+
+    pub(crate) fn conversation_namespace(&self) -> Option<&str> {
+        self.conversation_namespace
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum ConversationCommand {
+    /// Import a conversation transcript or native export file into conversation memory.
+    Import {
+        #[command(flatten)]
+        scope: ConversationScopeArgs,
+        #[arg(value_name = "PATH")]
+        path: PathBuf,
+        #[arg(
+            long,
+            default_value = "auto",
+            value_parser = ["auto", "plain_text", "generic_json", "codex_jsonl", "claude_jsonl", "chatgpt_export"]
+        )]
+        format: String,
+        #[arg(long, value_parser = config::non_empty_string)]
+        source: Option<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        source_session_id: Option<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        title: Option<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        agent_id: Option<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        transport: Option<String>,
+    },
+    /// Search imported conversation sessions and matching message snippets in the current scope.
+    Search {
+        #[command(flatten)]
+        scope: ConversationScopeArgs,
+        #[arg(value_name = "QUERY", value_parser = config::non_empty_string)]
+        query: String,
+        #[arg(long, value_parser = config::non_empty_string)]
+        agent_id: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+    },
+    /// List imported conversation sessions for the current scope.
+    List {
+        #[command(flatten)]
+        scope: ConversationScopeArgs,
+        #[arg(long, value_parser = config::non_empty_string)]
+        agent_id: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+    },
+    /// Read one conversation session with ordered messages.
+    Read {
+        #[command(flatten)]
+        scope: ConversationScopeArgs,
+        #[arg(value_name = "SESSION_ID", value_parser = config::non_empty_string)]
+        session_id: String,
+    },
+    /// Export one conversation session with linked diary entries.
+    Export {
+        #[command(flatten)]
+        scope: ConversationScopeArgs,
+        #[arg(value_name = "SESSION_ID", value_parser = config::non_empty_string)]
+        session_id: String,
+    },
+    /// Redact one conversation session and remove its derived wake-up artifacts.
+    Redact {
+        #[command(flatten)]
+        scope: ConversationScopeArgs,
+        #[arg(value_name = "SESSION_ID", value_parser = config::non_empty_string)]
+        session_id: String,
+    },
+    /// Preview or apply conversation retention cleanup.
+    Prune {
+        #[command(flatten)]
+        scope: ConversationScopeArgs,
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        #[arg(long)]
+        manual_retention_days: Option<u32>,
+        #[arg(long)]
+        auto_capture_retention_days: Option<u32>,
+        #[arg(long)]
+        diary_retention_days: Option<u32>,
+        #[arg(long)]
+        hook_event_retention_days: Option<u32>,
+        #[arg(long)]
+        working_memory_retention_days: Option<u32>,
+        #[arg(long)]
+        episodic_rollup_retention_days: Option<u32>,
+    },
+    /// Delete one conversation session and its derived artifacts.
+    Delete {
+        #[command(flatten)]
+        scope: ConversationScopeArgs,
+        #[arg(value_name = "SESSION_ID", value_parser = config::non_empty_string)]
+        session_id: String,
+    },
+    /// Query temporal knowledge facts extracted from conversations in the current scope.
+    KgQuery {
+        #[command(flatten)]
+        scope: ConversationScopeArgs,
+        #[arg(value_name = "QUERY", value_parser = config::non_empty_string)]
+        query: String,
+        #[arg(long, value_parser = config::non_empty_string)]
+        relation: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+    },
+    /// Read the timeline for one entity or decision topic.
+    KgTimeline {
+        #[command(flatten)]
+        scope: ConversationScopeArgs,
+        #[arg(value_name = "ENTITY", value_parser = config::non_empty_string)]
+        entity: String,
+        #[arg(long, value_parser = config::non_empty_string)]
+        relation: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Search canonical graph entities extracted from conversations in the current scope.
+    KgSearchNodes {
+        #[command(flatten)]
+        scope: ConversationScopeArgs,
+        #[arg(value_name = "QUERY", value_parser = config::non_empty_string)]
+        query: String,
+        #[arg(long, value_parser = config::non_empty_string)]
+        entity_type: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+    },
+    /// Search graph edges extracted from conversations in the current scope.
+    KgSearchEdges {
+        #[command(flatten)]
+        scope: ConversationScopeArgs,
+        #[arg(value_name = "QUERY", value_parser = config::non_empty_string)]
+        query: String,
+        #[arg(long, value_parser = config::non_empty_string)]
+        relation: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+    },
+    /// Search provenance episodes extracted from conversations in the current scope.
+    KgSearchEpisodes {
+        #[command(flatten)]
+        scope: ConversationScopeArgs,
+        #[arg(value_name = "QUERY", value_parser = config::non_empty_string)]
+        query: String,
+        #[arg(long, value_parser = config::non_empty_string)]
+        source_type: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+    },
+    /// Inspect graph edges adjacent to one entity or topic.
+    KgNeighborhood {
+        #[command(flatten)]
+        scope: ConversationScopeArgs,
+        #[arg(value_name = "ENTITY", value_parser = config::non_empty_string)]
+        entity: String,
+        #[arg(long, value_parser = config::non_empty_string)]
+        relation: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Fetch code-facing links recorded for one graph entity.
+    KgEntityLinks {
+        #[command(flatten)]
+        scope: ConversationScopeArgs,
+        #[arg(value_name = "ENTITY", value_parser = config::non_empty_string)]
+        entity: String,
+        #[arg(long, value_parser = config::non_empty_string)]
+        link_type: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Fetch one provenance episode with its graph edges and evidence.
+    KgEpisode {
+        #[command(flatten)]
+        scope: ConversationScopeArgs,
+        #[arg(value_name = "EPISODE_ID", value_parser = config::non_empty_string)]
+        episode_id: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Delete one graph edge and its fact projection.
+    KgDeleteEdge {
+        #[command(flatten)]
+        scope: ConversationScopeArgs,
+        #[arg(value_name = "EDGE_ID", value_parser = config::non_empty_string)]
+        edge_id: String,
+    },
+    /// Delete one provenance episode and its graph edges/facts.
+    KgDeleteEpisode {
+        #[command(flatten)]
+        scope: ConversationScopeArgs,
+        #[arg(value_name = "EPISODE_ID", value_parser = config::non_empty_string)]
+        episode_id: String,
+    },
+    /// Rebuild graph-side link projections and SQLite indexes.
+    KgRebuild {
+        #[command(flatten)]
+        scope: ConversationScopeArgs,
+    },
+    /// Delete all knowledge graph data for the current scope.
+    KgClear {
+        #[command(flatten)]
+        scope: ConversationScopeArgs,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum DiaryCommand {
+    /// Write one diary entry for the repo and agent.
+    Write {
+        #[command(flatten)]
+        scope: ConversationScopeArgs,
+        #[arg(long, value_parser = config::non_empty_string)]
+        agent_id: Option<String>,
+        #[arg(long, default_value = "note", value_parser = config::non_empty_string)]
+        entry_type: String,
+        #[arg(long, value_parser = config::non_empty_string)]
+        source_session_id: Option<String>,
+        #[arg(value_name = "CONTENT", value_parser = config::non_empty_string)]
+        content: String,
+    },
+    /// Read diary entries for the repo and optional agent.
+    Read {
+        #[command(flatten)]
+        scope: ConversationScopeArgs,
+        #[arg(long, value_parser = config::non_empty_string)]
+        agent_id: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+    },
+}
+
 #[derive(Subcommand, Debug)]
 pub(crate) enum BrowserCommand {
     /// List browser candidates and the selected binary.
@@ -1214,6 +1504,42 @@ pub(crate) enum HookCommand {
     PreCommit {
         #[command(flatten)]
         repo: RepoArgs,
+    },
+    /// Enqueue or synchronously process a conversation-memory hook action.
+    Conversation {
+        #[command(flatten)]
+        scope: ConversationScopeArgs,
+        #[arg(
+            long,
+            value_parser = [
+                "periodic_memory_save",
+                "pre_compaction_summarization",
+                "session_close_summarization"
+            ]
+        )]
+        action: String,
+        #[arg(long, value_parser = config::non_empty_string)]
+        source: Option<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        source_session_id: Option<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        title: Option<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        agent_id: Option<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        transport: Option<String>,
+        #[arg(
+            long,
+            default_value = "auto",
+            value_parser = ["auto", "plain_text", "generic_json", "codex_jsonl", "claude_jsonl", "chatgpt_export"]
+        )]
+        format: String,
+        #[arg(long, value_name = "PATH")]
+        transcript: Option<PathBuf>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        summary_text: Option<String>,
+        #[arg(long, default_value_t = false)]
+        wait_for_processing: bool,
     },
 }
 
@@ -1432,6 +1758,36 @@ fn repo_hint_for_command(command: &Command) -> Option<PathBuf> {
         Command::MemoryRecall { repo, .. } => Some(repo.repo_root()),
         Command::Mswarm { .. } => None,
         Command::MemoryCompact { repo, .. } => Some(repo.repo_root()),
+        Command::Conversations { command } => match command {
+            ConversationCommand::Import { scope, .. } => scope.repo_root(),
+            ConversationCommand::Search { scope, .. } => scope.repo_root(),
+            ConversationCommand::List { scope, .. } => scope.repo_root(),
+            ConversationCommand::Read { scope, .. } => scope.repo_root(),
+            ConversationCommand::Export { scope, .. } => scope.repo_root(),
+            ConversationCommand::Redact { scope, .. } => scope.repo_root(),
+            ConversationCommand::Prune { scope, .. } => scope.repo_root(),
+            ConversationCommand::Delete { scope, .. } => scope.repo_root(),
+            ConversationCommand::KgQuery { scope, .. } => scope.repo_root(),
+            ConversationCommand::KgTimeline { scope, .. } => scope.repo_root(),
+            ConversationCommand::KgSearchNodes { scope, .. } => scope.repo_root(),
+            ConversationCommand::KgSearchEdges { scope, .. } => scope.repo_root(),
+            ConversationCommand::KgSearchEpisodes { scope, .. } => scope.repo_root(),
+            ConversationCommand::KgNeighborhood { scope, .. } => scope.repo_root(),
+            ConversationCommand::KgEntityLinks { scope, .. } => scope.repo_root(),
+            ConversationCommand::KgEpisode { scope, .. } => scope.repo_root(),
+            ConversationCommand::KgDeleteEdge { scope, .. } => scope.repo_root(),
+            ConversationCommand::KgDeleteEpisode { scope, .. } => scope.repo_root(),
+            ConversationCommand::KgRebuild { scope, .. } => scope.repo_root(),
+            ConversationCommand::KgClear { scope, .. } => scope.repo_root(),
+        },
+        Command::Diary { command } => match command {
+            DiaryCommand::Write { scope, .. } => scope.repo_root(),
+            DiaryCommand::Read { scope, .. } => scope.repo_root(),
+        },
+        Command::Hook { command } => match command {
+            HookCommand::PreCommit { repo } => Some(repo.repo_root()),
+            HookCommand::Conversation { scope, .. } => scope.repo_root(),
+        },
         Command::WebRag { repo, .. } => Some(repo.repo_root()),
         Command::Repo { command } => match command {
             RepoCommand::Init { repo, .. } => Some(repo.repo_root()),

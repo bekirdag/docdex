@@ -25,6 +25,16 @@ const DEFAULT_DELEGATION_MAX_CONTEXT_CHARS: usize = 250_000;
 const DEFAULT_PROFILE_EMBED_MODEL: &str = "nomic-embed-text-v1.5";
 const DEFAULT_PROFILE_EMBED_DIM: usize = 768;
 const DEFAULT_MEMORY_BACKEND: &str = "sqlite";
+const DEFAULT_CONVERSATION_WAKEUP_TOKENS: usize = 160;
+const DEFAULT_CONVERSATION_SUMMARY_LIMIT: usize = 3;
+const DEFAULT_CONVERSATION_KNOWLEDGE_LIMIT: usize = 3;
+const DEFAULT_CONVERSATION_SNIPPET_LIMIT: usize = 2;
+const DEFAULT_CONVERSATION_AUTO_RETENTION_DAYS: u32 = 30;
+const DEFAULT_CONVERSATION_WORKING_MEMORY_RETENTION_DAYS: u32 = 30;
+const DEFAULT_CONVERSATION_HOOK_EVENT_RETENTION_DAYS: u32 = 30;
+const DEFAULT_CONVERSATION_EPISODIC_ROLLUP_RETENTION_DAYS: u32 = 180;
+const DEFAULT_CONVERSATION_SWEEPER_INTERVAL_SECONDS: u64 = 600;
+const DEFAULT_CONVERSATION_GRAPH_STRICT_VALIDATION: bool = true;
 const DEFAULT_DISCOVERY_PROVIDER: &str = "duckduckgo_lite";
 const DEFAULT_WEB_ENGINE: &str = "chromium";
 const DEFAULT_MSWARM_BASE_URL: &str = "https://api.mswarm.org/";
@@ -130,6 +140,76 @@ impl AppConfig {
             );
             self.memory.profile.embedding_dim = DEFAULT_PROFILE_EMBED_DIM;
         }
+        if self.memory.conversations.max_wakeup_tokens == 0 {
+            warn!(
+                target: "docdexd",
+                "memory.conversations.max_wakeup_tokens must be > 0; using default"
+            );
+            self.memory.conversations.max_wakeup_tokens = default_conversation_wakeup_tokens();
+        }
+        if self.memory.conversations.max_episodic_summaries == 0 {
+            warn!(
+                target: "docdexd",
+                "memory.conversations.max_episodic_summaries must be > 0; using default"
+            );
+            self.memory.conversations.max_episodic_summaries = default_conversation_summary_limit();
+        }
+        if self.memory.conversations.max_knowledge_facts == 0 {
+            warn!(
+                target: "docdexd",
+                "memory.conversations.max_knowledge_facts must be > 0; using default"
+            );
+            self.memory.conversations.max_knowledge_facts = default_conversation_knowledge_limit();
+        }
+        if self.memory.conversations.max_transcript_snippets == 0 {
+            warn!(
+                target: "docdexd",
+                "memory.conversations.max_transcript_snippets must be > 0; using default"
+            );
+            self.memory.conversations.max_transcript_snippets =
+                default_conversation_snippet_limit();
+        }
+        if self.memory.conversations.auto_capture_retention_days == 0 {
+            warn!(
+                target: "docdexd",
+                "memory.conversations.auto_capture_retention_days must be > 0; using default"
+            );
+            self.memory.conversations.auto_capture_retention_days =
+                default_conversation_auto_retention_days();
+        }
+        if self.memory.conversations.hook_event_retention_days == 0 {
+            warn!(
+                target: "docdexd",
+                "memory.conversations.hook_event_retention_days must be > 0; using default"
+            );
+            self.memory.conversations.hook_event_retention_days =
+                default_conversation_hook_event_retention_days();
+        }
+        if self.memory.conversations.working_memory_retention_days == 0 {
+            warn!(
+                target: "docdexd",
+                "memory.conversations.working_memory_retention_days must be > 0; using default"
+            );
+            self.memory.conversations.working_memory_retention_days =
+                default_conversation_working_memory_retention_days();
+        }
+        if self.memory.conversations.episodic_rollup_retention_days == 0 {
+            warn!(
+                target: "docdexd",
+                "memory.conversations.episodic_rollup_retention_days must be > 0; using default"
+            );
+            self.memory.conversations.episodic_rollup_retention_days =
+                default_conversation_episodic_rollup_retention_days();
+        }
+        if self.memory.conversations.sweeper_interval_seconds == 0 {
+            warn!(
+                target: "docdexd",
+                "memory.conversations.sweeper_interval_seconds must be > 0; using default"
+            );
+            self.memory.conversations.sweeper_interval_seconds =
+                default_conversation_sweeper_interval_seconds();
+        }
+        self.memory.conversations.graph.apply_defaults();
         if self.code_intelligence.dynamic_import_scan_limit == 0 {
             warn!(
                 target: "docdexd",
@@ -635,6 +715,8 @@ pub struct MemoryConfig {
     pub backend: String,
     #[serde(default)]
     pub profile: MemoryProfileConfig,
+    #[serde(default)]
+    pub conversations: MemoryConversationConfig,
 }
 
 impl Default for MemoryConfig {
@@ -643,6 +725,7 @@ impl Default for MemoryConfig {
             enabled: default_memory_enabled(),
             backend: default_memory_backend(),
             profile: MemoryProfileConfig::default(),
+            conversations: MemoryConversationConfig::default(),
         }
     }
 }
@@ -653,6 +736,76 @@ pub struct MemoryProfileConfig {
     pub embedding_model: String,
     #[serde(default = "default_profile_embed_dim")]
     pub embedding_dim: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryConversationConfig {
+    #[serde(default = "default_conversation_memory_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_conversation_auto_capture")]
+    pub auto_capture: bool,
+    #[serde(default = "default_conversation_archive_raw_transcripts")]
+    pub archive_raw_transcripts: bool,
+    #[serde(default = "default_conversation_wakeup_tokens")]
+    pub max_wakeup_tokens: usize,
+    #[serde(default = "default_conversation_summary_limit")]
+    pub max_episodic_summaries: usize,
+    #[serde(default = "default_conversation_knowledge_limit")]
+    pub max_knowledge_facts: usize,
+    #[serde(default = "default_conversation_snippet_limit")]
+    pub max_transcript_snippets: usize,
+    #[serde(default = "default_conversation_auto_retention_days")]
+    pub auto_capture_retention_days: u32,
+    #[serde(default)]
+    pub manual_retention_days: u32,
+    #[serde(default)]
+    pub diary_retention_days: u32,
+    #[serde(default = "default_conversation_hook_event_retention_days")]
+    pub hook_event_retention_days: u32,
+    #[serde(default = "default_conversation_working_memory_retention_days")]
+    pub working_memory_retention_days: u32,
+    #[serde(default = "default_conversation_episodic_rollup_retention_days")]
+    pub episodic_rollup_retention_days: u32,
+    #[serde(default = "default_conversation_sweeper_interval_seconds")]
+    pub sweeper_interval_seconds: u64,
+    #[serde(default)]
+    pub source_allowlist: Vec<String>,
+    #[serde(default)]
+    pub source_denylist: Vec<String>,
+    #[serde(default)]
+    pub graph: MemoryConversationGraphConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryConversationGraphConfig {
+    #[serde(default = "default_conversation_graph_strict_validation")]
+    pub strict_ontology_validation: bool,
+    #[serde(default)]
+    pub entity_types: Vec<MemoryConversationGraphEntityTypeConfig>,
+    #[serde(default)]
+    pub relation_types: Vec<MemoryConversationGraphRelationTypeConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryConversationGraphEntityTypeConfig {
+    pub name: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryConversationGraphRelationTypeConfig {
+    pub name: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    #[serde(default)]
+    pub subject_types: Vec<String>,
+    #[serde(default)]
+    pub object_types: Vec<String>,
+    #[serde(default = "default_conversation_graph_relation_allow_literal_object")]
+    pub allow_literal_object: bool,
+    #[serde(default)]
+    pub cardinality: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -683,6 +836,89 @@ impl Default for MemoryProfileConfig {
         Self {
             embedding_model: default_profile_embed_model(),
             embedding_dim: default_profile_embed_dim(),
+        }
+    }
+}
+
+impl Default for MemoryConversationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_conversation_memory_enabled(),
+            auto_capture: default_conversation_auto_capture(),
+            archive_raw_transcripts: default_conversation_archive_raw_transcripts(),
+            max_wakeup_tokens: default_conversation_wakeup_tokens(),
+            max_episodic_summaries: default_conversation_summary_limit(),
+            max_knowledge_facts: default_conversation_knowledge_limit(),
+            max_transcript_snippets: default_conversation_snippet_limit(),
+            auto_capture_retention_days: default_conversation_auto_retention_days(),
+            manual_retention_days: 0,
+            diary_retention_days: 0,
+            hook_event_retention_days: default_conversation_hook_event_retention_days(),
+            working_memory_retention_days: default_conversation_working_memory_retention_days(),
+            episodic_rollup_retention_days: default_conversation_episodic_rollup_retention_days(),
+            sweeper_interval_seconds: default_conversation_sweeper_interval_seconds(),
+            source_allowlist: Vec::new(),
+            source_denylist: Vec::new(),
+            graph: MemoryConversationGraphConfig::default(),
+        }
+    }
+}
+
+impl MemoryConversationConfig {
+    pub fn allows_source(&self, source: &str) -> bool {
+        let normalized = source.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            return true;
+        }
+        if self
+            .source_denylist
+            .iter()
+            .map(|item| item.trim().to_ascii_lowercase())
+            .any(|item| !item.is_empty() && item == normalized)
+        {
+            return false;
+        }
+        if self.source_allowlist.is_empty() {
+            return true;
+        }
+        self.source_allowlist
+            .iter()
+            .map(|item| item.trim().to_ascii_lowercase())
+            .any(|item| !item.is_empty() && item == normalized)
+    }
+}
+
+impl Default for MemoryConversationGraphConfig {
+    fn default() -> Self {
+        Self {
+            strict_ontology_validation: default_conversation_graph_strict_validation(),
+            entity_types: Vec::new(),
+            relation_types: Vec::new(),
+        }
+    }
+}
+
+impl MemoryConversationGraphConfig {
+    fn apply_defaults(&mut self) {
+        self.entity_types
+            .retain(|item| !item.name.trim().is_empty());
+        for item in &mut self.entity_types {
+            item.aliases.retain(|alias| !alias.trim().is_empty());
+        }
+        self.relation_types
+            .retain(|item| !item.name.trim().is_empty());
+        for item in &mut self.relation_types {
+            item.aliases.retain(|alias| !alias.trim().is_empty());
+            item.subject_types
+                .retain(|entity_type| !entity_type.trim().is_empty());
+            item.object_types
+                .retain(|entity_type| !entity_type.trim().is_empty());
+            item.cardinality = item
+                .cardinality
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned);
         }
     }
 }
@@ -1336,6 +1572,62 @@ fn default_memory_enabled() -> bool {
 
 fn default_memory_backend() -> String {
     DEFAULT_MEMORY_BACKEND.to_string()
+}
+
+fn default_conversation_memory_enabled() -> bool {
+    true
+}
+
+fn default_conversation_auto_capture() -> bool {
+    false
+}
+
+fn default_conversation_archive_raw_transcripts() -> bool {
+    true
+}
+
+fn default_conversation_wakeup_tokens() -> usize {
+    DEFAULT_CONVERSATION_WAKEUP_TOKENS
+}
+
+fn default_conversation_summary_limit() -> usize {
+    DEFAULT_CONVERSATION_SUMMARY_LIMIT
+}
+
+fn default_conversation_knowledge_limit() -> usize {
+    DEFAULT_CONVERSATION_KNOWLEDGE_LIMIT
+}
+
+fn default_conversation_snippet_limit() -> usize {
+    DEFAULT_CONVERSATION_SNIPPET_LIMIT
+}
+
+fn default_conversation_auto_retention_days() -> u32 {
+    DEFAULT_CONVERSATION_AUTO_RETENTION_DAYS
+}
+
+fn default_conversation_working_memory_retention_days() -> u32 {
+    DEFAULT_CONVERSATION_WORKING_MEMORY_RETENTION_DAYS
+}
+
+fn default_conversation_hook_event_retention_days() -> u32 {
+    DEFAULT_CONVERSATION_HOOK_EVENT_RETENTION_DAYS
+}
+
+fn default_conversation_episodic_rollup_retention_days() -> u32 {
+    DEFAULT_CONVERSATION_EPISODIC_ROLLUP_RETENTION_DAYS
+}
+
+fn default_conversation_sweeper_interval_seconds() -> u64 {
+    DEFAULT_CONVERSATION_SWEEPER_INTERVAL_SECONDS
+}
+
+fn default_conversation_graph_strict_validation() -> bool {
+    DEFAULT_CONVERSATION_GRAPH_STRICT_VALIDATION
+}
+
+fn default_conversation_graph_relation_allow_literal_object() -> bool {
+    true
 }
 
 fn default_http_bind_addr() -> String {

@@ -308,6 +308,7 @@ pub async fn serve(
     hook_socket_path: Option<PathBuf>,
     mcp_ipc_config: crate::ipc::mcp_ipc::McpIpcConfig,
     feature_flags: crate::config::FeatureFlagsConfig,
+    conversation_config: crate::config::MemoryConversationConfig,
     default_agent_id: Option<String>,
     global_state_dir: Option<PathBuf>,
     daemon_mode: bool,
@@ -593,12 +594,27 @@ pub async fn serve(
         embedder,
         repo_id: repo_id.clone(),
     });
+    let conversations = if conversation_config.enabled {
+        Some(search::ConversationState {
+            store: crate::conversations::ConversationStore::new(indexer.state_dir()),
+            knowledge: crate::knowledge::KnowledgeStore::new(indexer.state_dir()),
+            config: conversation_config.clone(),
+            max_wakeup_tokens: conversation_config.max_wakeup_tokens,
+            max_episodic_summaries: conversation_config.max_episodic_summaries,
+            max_knowledge_facts: conversation_config.max_knowledge_facts,
+            max_transcript_snippets: conversation_config.max_transcript_snippets,
+        })
+    } else {
+        None
+    };
     let shared_state_dir =
         repo_manager::split_scoped_state_dir(indexer.state_dir()).map(|(base_dir, _, _)| base_dir);
     let (repo_manager, delegation_metrics) = if daemon_mode {
         let manager = Arc::new(crate::daemon::multi_repo::RepoManager::new(
             memory_embedder.clone(),
             shared_state_dir,
+            conversation_config.enabled,
+            conversation_config.clone(),
         ));
         let delegation_metrics = manager.delegation_metrics_for_repo_id(&repo_id);
         if let Err(err) = delegation_telemetry::restore_repo_metrics_if_empty(
@@ -619,6 +635,7 @@ pub async fn serve(
             indexer: indexer.clone(),
             libs_indexer: libs_indexer.clone(),
             memory: memory.clone(),
+            conversations: conversations.clone(),
             delegation_metrics: delegation_metrics.clone(),
         });
         manager.pin_repo(repo_id.clone());
@@ -716,6 +733,7 @@ pub async fn serve(
         metrics: metrics.clone(),
         delegation_metrics,
         memory,
+        conversations,
         profile_state,
         features: feature_flags.clone(),
         default_agent_id,
@@ -723,12 +741,147 @@ pub async fn serve(
         llm_config,
         llm_base_url,
         llm_default_model,
-        global_state_dir,
+        global_state_dir: global_state_dir.clone(),
         repos: repo_manager,
         multi_repo: daemon_mode,
         require_repo_id,
         mcp_router,
     };
+    if let Some(conversations) = state.conversations.clone() {
+        state.metrics.set_conversation_archive_size_bytes(
+            crate::conversations::archive_size_bytes_total(
+                crate::conversations::combined_archive_size_bytes(
+                    &conversations.store,
+                    &conversations.knowledge,
+                ),
+                global_state_dir.as_deref(),
+            ),
+        );
+        if !daemon_mode {
+            let repo_for_task = repo_display.clone();
+            let global_state_dir_for_task = global_state_dir.clone();
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(Duration::from_secs(
+                    conversations.config.sweeper_interval_seconds.max(1),
+                ));
+                let retention_policy = crate::conversations::ConversationRetentionPolicy {
+                    manual_retention_days: conversations.config.manual_retention_days,
+                    auto_capture_retention_days: conversations.config.auto_capture_retention_days,
+                    diary_retention_days: conversations.config.diary_retention_days,
+                    hook_event_retention_days: conversations.config.hook_event_retention_days,
+                    working_memory_retention_days: conversations
+                        .config
+                        .working_memory_retention_days,
+                    episodic_rollup_retention_days: conversations
+                        .config
+                        .episodic_rollup_retention_days,
+                };
+                loop {
+                    ticker.tick().await;
+                    let before_size = crate::conversations::combined_archive_size_bytes(
+                        &conversations.store,
+                        &conversations.knowledge,
+                    );
+                    match crate::conversations::prune_with_knowledge(
+                        &conversations.store,
+                        &conversations.knowledge,
+                        &retention_policy,
+                        true,
+                        true,
+                    ) {
+                        Ok(result) => {
+                            let after_size = crate::conversations::combined_archive_size_bytes(
+                                &conversations.store,
+                                &conversations.knowledge,
+                            );
+                            if result.has_deletions() {
+                                crate::metrics::global().record_conversation_compaction(
+                                    result.deleted_sessions_total(),
+                                    result.deleted_diary_entries,
+                                    result.deleted_hook_events,
+                                    result.deleted_knowledge_facts,
+                                    before_size.saturating_sub(after_size),
+                                );
+                                info!(
+                                    target: "docdexd",
+                                    repo = %repo_for_task,
+                                    deleted_manual_sessions = result.deleted_manual_sessions,
+                                    deleted_auto_sessions = result.deleted_auto_sessions,
+                                    deleted_diary_entries = result.deleted_diary_entries,
+                                    deleted_hook_events = result.deleted_hook_events,
+                                    deleted_knowledge_facts = result.deleted_knowledge_facts,
+                                    reclaimed_bytes = before_size.saturating_sub(after_size),
+                                    "conversation archive sweep pruned retained state"
+                                );
+                            }
+                        }
+                        Err(err) => {
+                            warn!(
+                                target: "docdexd",
+                                repo = %repo_for_task,
+                                error = ?err,
+                                "conversation archive sweep failed"
+                            );
+                        }
+                    }
+                    if let Some(base_state_dir) = global_state_dir_for_task.as_deref() {
+                        match crate::conversations::sweep_conversation_namespaces(
+                            base_state_dir,
+                            &retention_policy,
+                            true,
+                            true,
+                        ) {
+                            Ok(result) => {
+                                if result.prune_result.has_deletions() {
+                                    crate::metrics::global().record_conversation_compaction(
+                                        result.prune_result.deleted_sessions_total(),
+                                        result.prune_result.deleted_diary_entries,
+                                        result.prune_result.deleted_hook_events,
+                                        result.prune_result.deleted_knowledge_facts,
+                                        result.bytes_before.saturating_sub(result.bytes_after),
+                                    );
+                                    info!(
+                                        target: "docdexd",
+                                        repo = %repo_for_task,
+                                        namespace_count = result.namespace_count,
+                                        pruned_namespace_count = result.pruned_namespace_count,
+                                        deleted_manual_sessions = result.prune_result.deleted_manual_sessions,
+                                        deleted_auto_sessions = result.prune_result.deleted_auto_sessions,
+                                        deleted_diary_entries = result.prune_result.deleted_diary_entries,
+                                        deleted_hook_events = result.prune_result.deleted_hook_events,
+                                        deleted_working_memory_records = result.prune_result.deleted_working_memory_records,
+                                        deleted_rollups = result.prune_result.deleted_rollups,
+                                        created_rollups = result.prune_result.created_rollups,
+                                        deleted_knowledge_facts = result.prune_result.deleted_knowledge_facts,
+                                        reclaimed_bytes = result.bytes_before.saturating_sub(result.bytes_after),
+                                        "conversation namespace sweep pruned retained state"
+                                    );
+                                }
+                            }
+                            Err(err) => {
+                                warn!(
+                                    target: "docdexd",
+                                    repo = %repo_for_task,
+                                    error = ?err,
+                                    "conversation namespace sweep failed"
+                                );
+                            }
+                        }
+                    }
+                    let repo_total = crate::conversations::combined_archive_size_bytes(
+                        &conversations.store,
+                        &conversations.knowledge,
+                    );
+                    crate::metrics::global().set_conversation_archive_size_bytes(
+                        crate::conversations::archive_size_bytes_total(
+                            repo_total,
+                            global_state_dir_for_task.as_deref(),
+                        ),
+                    );
+                }
+            });
+        }
+    }
     if !daemon_mode {
         let _watcher = watcher::spawn(indexer.clone()).map_err(|err| {
             StartupError::new(

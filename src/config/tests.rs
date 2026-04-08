@@ -89,6 +89,139 @@ fn apply_defaults_sets_profile_embedding_dim() -> Result<(), Box<dyn std::error:
 }
 
 #[test]
+fn apply_defaults_sets_conversation_memory_defaults() -> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let _env = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
+
+    let mut config = AppConfig::default();
+    config.memory.conversations.archive_raw_transcripts = false;
+    config.memory.conversations.max_wakeup_tokens = 0;
+    config.memory.conversations.max_episodic_summaries = 0;
+    config.memory.conversations.max_knowledge_facts = 0;
+    config.memory.conversations.max_transcript_snippets = 0;
+    config.memory.conversations.auto_capture_retention_days = 0;
+    config.memory.conversations.hook_event_retention_days = 0;
+    config.memory.conversations.working_memory_retention_days = 0;
+    config.memory.conversations.episodic_rollup_retention_days = 0;
+    config.memory.conversations.sweeper_interval_seconds = 0;
+    config.apply_defaults()?;
+
+    assert!(config.memory.conversations.enabled);
+    assert!(!config.memory.conversations.auto_capture);
+    assert!(!config.memory.conversations.archive_raw_transcripts);
+    assert_eq!(
+        config.memory.conversations.max_wakeup_tokens,
+        DEFAULT_CONVERSATION_WAKEUP_TOKENS
+    );
+    assert_eq!(
+        config.memory.conversations.max_episodic_summaries,
+        DEFAULT_CONVERSATION_SUMMARY_LIMIT
+    );
+    assert_eq!(
+        config.memory.conversations.max_knowledge_facts,
+        DEFAULT_CONVERSATION_KNOWLEDGE_LIMIT
+    );
+    assert_eq!(
+        config.memory.conversations.max_transcript_snippets,
+        DEFAULT_CONVERSATION_SNIPPET_LIMIT
+    );
+    assert_eq!(
+        config.memory.conversations.auto_capture_retention_days,
+        DEFAULT_CONVERSATION_AUTO_RETENTION_DAYS
+    );
+    assert_eq!(config.memory.conversations.manual_retention_days, 0);
+    assert_eq!(config.memory.conversations.diary_retention_days, 0);
+    assert_eq!(
+        config.memory.conversations.hook_event_retention_days,
+        DEFAULT_CONVERSATION_HOOK_EVENT_RETENTION_DAYS
+    );
+    assert_eq!(
+        config.memory.conversations.working_memory_retention_days,
+        DEFAULT_CONVERSATION_WORKING_MEMORY_RETENTION_DAYS
+    );
+    assert_eq!(
+        config.memory.conversations.episodic_rollup_retention_days,
+        DEFAULT_CONVERSATION_EPISODIC_ROLLUP_RETENTION_DAYS
+    );
+    assert_eq!(
+        config.memory.conversations.sweeper_interval_seconds,
+        DEFAULT_CONVERSATION_SWEEPER_INTERVAL_SECONDS
+    );
+    assert!(config.memory.conversations.source_allowlist.is_empty());
+    assert!(config.memory.conversations.source_denylist.is_empty());
+    assert!(config.memory.conversations.graph.strict_ontology_validation);
+    assert!(config.memory.conversations.graph.entity_types.is_empty());
+    assert!(config.memory.conversations.graph.relation_types.is_empty());
+    Ok(())
+}
+
+#[test]
+fn apply_defaults_sanitizes_conversation_graph_extensions() -> Result<(), Box<dyn std::error::Error>>
+{
+    let temp = TempDir::new()?;
+    let _env = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
+
+    let mut config = AppConfig::default();
+    config.memory.conversations.graph.entity_types = vec![
+        MemoryConversationGraphEntityTypeConfig {
+            name: "".to_string(),
+            aliases: vec!["ignored".to_string()],
+        },
+        MemoryConversationGraphEntityTypeConfig {
+            name: "component".to_string(),
+            aliases: vec!["".to_string(), "service".to_string()],
+        },
+    ];
+    config.memory.conversations.graph.relation_types = vec![
+        MemoryConversationGraphRelationTypeConfig {
+            name: "".to_string(),
+            aliases: vec!["ignored".to_string()],
+            subject_types: vec!["repo".to_string()],
+            object_types: vec!["component".to_string()],
+            allow_literal_object: true,
+            cardinality: Some("many_to_one".to_string()),
+        },
+        MemoryConversationGraphRelationTypeConfig {
+            name: "implements".to_string(),
+            aliases: vec!["".to_string(), "realizes".to_string()],
+            subject_types: vec!["repo".to_string(), "".to_string()],
+            object_types: vec!["component".to_string(), "".to_string()],
+            allow_literal_object: false,
+            cardinality: Some("".to_string()),
+        },
+    ];
+
+    config.apply_defaults()?;
+
+    assert_eq!(config.memory.conversations.graph.entity_types.len(), 1);
+    assert_eq!(
+        config.memory.conversations.graph.entity_types[0].name,
+        "component"
+    );
+    assert_eq!(
+        config.memory.conversations.graph.entity_types[0].aliases,
+        vec!["service".to_string()]
+    );
+    assert_eq!(config.memory.conversations.graph.relation_types.len(), 1);
+    assert_eq!(
+        config.memory.conversations.graph.relation_types[0].aliases,
+        vec!["realizes".to_string()]
+    );
+    assert_eq!(
+        config.memory.conversations.graph.relation_types[0].subject_types,
+        vec!["repo".to_string()]
+    );
+    assert_eq!(
+        config.memory.conversations.graph.relation_types[0].object_types,
+        vec!["component".to_string()]
+    );
+    assert!(config.memory.conversations.graph.relation_types[0]
+        .cardinality
+        .is_none());
+    Ok(())
+}
+
+#[test]
 fn apply_defaults_sets_delegation_defaults() -> Result<(), Box<dyn std::error::Error>> {
     let temp = TempDir::new()?;
     let _env = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());

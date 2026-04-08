@@ -23,6 +23,12 @@ fn metrics_baseline_includes_required_counters() -> Result<(), Box<dyn Error>> {
     metrics.inc_hook_check();
     metrics.inc_hook_failure();
     metrics.record_hook_latency(7);
+    metrics.record_conversation_wakeup(true, 24, 8, 6, 5, 5);
+    metrics.record_conversation_extraction_lag(13);
+    metrics.record_conversation_hook_enqueue_latency(9);
+    metrics.record_conversation_transcript_search_latency(5);
+    metrics.set_conversation_archive_size_bytes(2048);
+    metrics.record_conversation_compaction(1, 2, 3, 4, 256);
     metrics.inc_project_map_cache_hit();
     metrics.inc_project_map_cache_miss();
     metrics.record_delegate_token_estimate(100);
@@ -40,6 +46,23 @@ fn metrics_baseline_includes_required_counters() -> Result<(), Box<dyn Error>> {
     let recall = metric_value(&body, "docdex_profile_recall_requests_total")?;
     let evolution = metric_value(&body, "docdex_profile_evolution_decisions_total")?;
     let hook_checks = metric_value(&body, "docdex_hook_checks_total")?;
+    let wakeup_requests = metric_value(&body, "docdex_conversation_wakeup_requests_total")?;
+    let wakeup_useful = metric_value(&body, "docdex_conversation_wakeup_useful_total")?;
+    let saved_tokens = metric_value(
+        &body,
+        "docdex_conversation_prompt_budget_saved_tokens_total",
+    )?;
+    let extraction_lag = metric_value(&body, "docdex_conversation_extraction_lag_count_total")?;
+    let hook_enqueue = metric_value(
+        &body,
+        "docdex_conversation_hook_enqueue_latency_count_total",
+    )?;
+    let transcript_search = metric_value(
+        &body,
+        "docdex_conversation_transcript_search_latency_count_total",
+    )?;
+    let archive_size = metric_value(&body, "docdex_conversation_archive_size_bytes")?;
+    let compaction_runs = metric_value(&body, "docdex_conversation_compaction_runs_total")?;
     let map_hits = metric_value(&body, "docdex_project_map_cache_hits_total")?;
     let budget_drops = metric_value(&body, "docdex_profile_budget_drops_total")?;
     let delegate_tokens = metric_value(&body, "docdex_delegate_token_estimate_total")?;
@@ -61,6 +84,35 @@ fn metrics_baseline_includes_required_counters() -> Result<(), Box<dyn Error>> {
     assert!(
         hook_checks > 0.0,
         "expected hook check counter to increment"
+    );
+    assert!(
+        wakeup_requests > 0.0,
+        "expected conversation wakeup counter to increment"
+    );
+    assert!(
+        wakeup_useful > 0.0,
+        "expected wakeup usefulness counter to increment"
+    );
+    assert!(
+        saved_tokens > 0.0,
+        "expected wakeup saved-token counter to increment"
+    );
+    assert!(
+        extraction_lag > 0.0,
+        "expected extraction lag counter to increment"
+    );
+    assert!(
+        hook_enqueue > 0.0,
+        "expected hook enqueue latency counter to increment"
+    );
+    assert!(
+        transcript_search > 0.0,
+        "expected transcript search latency counter to increment"
+    );
+    assert!(archive_size > 0.0, "expected archive size gauge to be set");
+    assert!(
+        compaction_runs > 0.0,
+        "expected compaction counter to increment"
     );
     assert!(
         map_hits > 0.0,

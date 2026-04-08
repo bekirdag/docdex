@@ -1,7 +1,9 @@
 pub mod agent;
 pub mod browser;
 pub mod check;
+pub mod conversations;
 pub mod dag;
+pub mod diary;
 pub mod file;
 pub mod help_all;
 pub mod hook;
@@ -29,6 +31,24 @@ pub mod tui;
 pub mod web;
 
 use anyhow::Result;
+
+pub(super) async fn decode_json_or_error(
+    resp: reqwest::Response,
+    label: &str,
+) -> Result<serde_json::Value> {
+    let status = resp.status();
+    let text = resp.text().await?;
+    if !status.is_success() {
+        anyhow::bail!("docdexd {} failed ({}): {}", label, status, text);
+    }
+    Ok(serde_json::from_str(&text)?)
+}
+
+pub(super) async fn emit_json_or_error(resp: reqwest::Response, label: &str) -> Result<()> {
+    let value = decode_json_or_error(resp, label).await?;
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
+}
 
 pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
     match command {
@@ -177,6 +197,8 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
             .await
         }
         super::Command::MemoryCompact { repo, apply } => memory::run_compact(repo, apply).await,
+        super::Command::Conversations { command } => conversations::run(command).await,
+        super::Command::Diary { command } => diary::run(command).await,
         super::Command::Profile { command } => profile::run(command).await,
         super::Command::Hook { command } => hook::run(command).await,
         super::Command::SymbolsStatus { repo } => symbols::run_status(repo).await,

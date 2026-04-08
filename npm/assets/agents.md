@@ -1,4 +1,4 @@
----- START OF DOCDEX INFO V0.2.58 ----
+---- START OF DOCDEX INFO V0.2.59 ----
 Docdex URL: http://127.0.0.1:28491
 Use this base URL for Docdex HTTP endpoints.
 Health check endpoint: `GET /healthz` (not `/v1/health`).
@@ -11,6 +11,7 @@ Health check endpoint: `GET /healthz` (not `/v1/health`).
 - Use impact analysis for every code change: prefer MCP tools `docdex_impact_graph` / `docdex_dag_export` (IPC/HTTP). If shell networking is blocked, do not use curl; use MCP/IPC instead. If unavailable, state it and proceed cautiously.
 - Apply DAG reasoning for planning: prefer dependency graph facts (impact results and /v1/dag/export) to choose the right change order and scope.
 - Use Docdex tools intentionally: docdex_search/symbols/ast for repo truth; docdex_stats/files/repo_inspect/index for index health.
+- When session history matters, use conversation-memory tools intentionally: archive/search/read with `docdex_conversation_*`, build compact context with `docdex_wakeup`, record durable notes with `docdex_diary_*`, and inspect temporal graph state with `docdex_kg_*` instead of replaying full transcripts.
 - For folder structure, use docdex_tree instead of raw `rg --files`/`find` to avoid noisy folders.
 - When you do not know something, run docdex_web_research (force_web=true). Web research is encouraged by default for non-repo facts and external APIs.
 - When a Docdex feature makes a task easier/safer, you MUST use it instead of ad-hoc inspection. Examples: `docdex_search` for context, `docdex_open`/`/v1/snippet` for file slices, `docdex_symbols`/`docdex_ast` for structure, `docdex_impact_graph`/`docdex_impact_diagnostics` for dependency safety, and `docdex_dag_export` to review session traces.
@@ -92,7 +93,20 @@ Precision tools for structural analysis. Do not rely on text search for definiti
 | docdex_save_preference | Store a global user preference (Style, Tooling, Constraint). |
 | docdex_get_profile | Retrieve global preferences. |
 
-### D. Local Delegation (Cheap Models)
+### D. Conversation Memory + Temporal Knowledge Graph
+
+Use these when prior sessions, durable notes, wake-up context, or graph-derived facts matter.
+
+| MCP Tool / HTTP | Purpose |
+| --- | --- |
+| docdex_conversation_import / search / list / read / export / redact / delete | Manage archived conversations inside the current repo scope or an explicit conversation namespace. |
+| docdex_conversation_prune | Preview or apply retention and compaction for sessions, diary entries, hook events, working memory, and episodic rollups. |
+| docdex_diary_write / docdex_diary_read | Persist concise durable notes for an agent and read them back later. |
+| docdex_conversation_hook | Trigger periodic or session-close summarization from transcript or summary payloads. |
+| docdex_wakeup | Build a compact wake-up bundle from working memory, episodic summaries, KG facts, and transcript snippets. |
+| docdex_kg_query / search_nodes / search_edges / search_episodes / timeline / neighborhood / entity_links / episode / delete_edge / delete_episode / rebuild / clear | Query and maintain the temporal knowledge graph derived from conversations. |
+
+### E. Local Delegation (Cheap Models)
 
 Use local delegation for low-complexity code-writing tasks and lightweight general questions to reduce paid-model usage.
 
@@ -125,7 +139,7 @@ Table output shows `USAGE`, `COMPLEXITY`, `RATING`, `REASON`, `COST/$1M`, and `H
 Use `agent: model:<ollama-model>` to force a specific local model (for example, `model:phi3.5:3.8b`).
 Avoid entries that only advertise `embedding` or `vision`.
 
-### E. Index Health + File Access
+### F. Index Health + File Access
 
 Use these to verify index coverage, repo binding, and to read precise file slices.
 
@@ -146,6 +160,12 @@ Use these to verify index coverage, repo binding, and to read precise file slice
 - docdex_index: Reindex the full repo or ingest specific files when stale.
 - docdex_search diff: Limit search to working tree, staged, or ref ranges; filter by paths.
 - docdex_web_research knobs: force_web, skip_local_search, repo_only, no_cache, web_limit, llm_filter_local_results, llm_model.
+- docdex_conversation_import/search/list/read/export/redact/delete: Archive and inspect scoped conversation sessions instead of depending on transient chat history. After redaction, read/export keep message slots but replace stored content with `[redacted]` placeholders.
+- docdex_conversation_prune: Dry-run or apply retention across sessions, diary entries, hook events, working memory, and episodic rollups.
+- docdex_diary_write/read: Persist concise durable notes tied to an agent and repo or conversation namespace.
+- docdex_conversation_hook: Enqueue or synchronously process periodic/session-close summarization from transcript or summary input.
+- docdex_wakeup: Build a bounded wake-up bundle before answering instead of replaying whole transcripts.
+- docdex_kg_*: Inspect derived entities, edges, episodes, timelines, neighborhoods, entity links, and graph maintenance actions.
 - docdex_open: Read narrow file slices after targets are identified.
 - docdex_tree: Render a filtered folder tree (prefer this over `rg --files` / `find`).
 - docdex_impact_diagnostics: Scan dynamic imports when imports are unclear or failing.
@@ -160,6 +180,7 @@ Use these to verify index coverage, repo binding, and to read precise file slice
 - HTTP /v1/search/batch: Execute bounded multi-query retrieval in one request.
 - MCP tools `docdex_capabilities`, `docdex_rerank`, `docdex_batch_search`: optional capability/flow surfaces for Codali integration.
 - HTTP /v1/snippet: Fetch exact line-safe snippets for a doc_id returned by search.
+- HTTP /v1/chat/completions: OpenAI-compatible chat can inject wake-up, profile, and cached project-map context; non-streaming responses may include `reasoning_trace`.
 - HTTP /v1/impact/diagnostics: Inspect unresolved/dynamic imports when impact graphs look incomplete.
 
 ## CLI Fallbacks (when MCP/IPC is unavailable)
@@ -171,6 +192,11 @@ Use these only when MCP tools cannot be called (e.g., blocked sandbox networking
 - `docdexd impact-graph --repo <path> --file <rel>`: impact graph (HTTP/local).
 - `docdexd dag view --repo <path> <session_id>` / `docdexd dag export --repo <path> <session_id>`: DAG export/render.
 - `docdexd search --repo <path> --query "<q>"`: /search equivalent (HTTP/local).
+- `docdexd conversations import|list|search|read|export|redact|delete --repo <path>`: conversation archive management via the daemon HTTP API.
+- `docdexd conversations prune --repo <path> [--apply] [--manual-retention-days ... --auto-capture-retention-days ... --diary-retention-days ... --hook-event-retention-days ... --working-memory-retention-days ... --episodic-rollup-retention-days ...]`: retention preview/apply.
+- `docdexd diary write|read --repo <path>`: store and read agent diary entries in the current scope.
+- `docdexd hook conversation --repo <path> --action <periodic_memory_save|pre_compaction_summarization|session_close_summarization>`: trigger conversation-memory hooks.
+- `docdexd conversations kg-query|kg-search-nodes|kg-search-edges|kg-search-episodes|kg-neighborhood|kg-entity-links|kg-episode|kg-timeline|kg-delete-edge|kg-delete-episode|kg-rebuild|kg-clear --repo <path>`: temporal KG exploration and maintenance.
 - `docdexd delegation savings`: delegation telemetry (JSON: offloaded count, local/primary tokens & costs, savings).
 - `docdexd delegation agents --json`: list local delegation targets and capabilities (mcoda agents include `max_complexity`, `rating`, `cost_per_million`, `usage`, `reasoning_rating`, `health_status`).
 - `mcoda agent list --json --refresh-health`: preferred machine-consumer inventory command for fresh health; fallback to plain `--json` for older mcoda versions.
@@ -332,6 +358,35 @@ Do not guess fields; use these canonical shapes.
 - `docdex_save_preference`: `{ agent_id, category, content }`
 - `docdex_local_completion`: `{ task_type, instruction, context, max_tokens?, timeout_ms?, mode?, max_context_chars?, agent?, caller_agent_id?, caller_model?, primary_cost_per_million?, project_root?, repo_path? }`
 - `docdex_web_research`: `{ project_root, query, force_web, skip_local_search?, web_limit?, no_cache? }`
+- `docdex_conversation_import`: `{ source?, source_session_id?, title?, agent_id?, transport?, started_at_ms?, ended_at_ms?, format?, messages?, transcript_text?, metadata?, project_root?, repo_path?, conversation_namespace? }`
+- `docdex_conversation_search`: `{ query, agent_id?, limit?, offset?, project_root?, repo_path?, conversation_namespace? }`
+- `docdex_conversation_list`: `{ agent_id?, limit?, offset?, project_root?, repo_path?, conversation_namespace? }`
+- `docdex_conversation_read`: `{ session_id, project_root?, repo_path?, conversation_namespace? }`
+- `docdex_conversation_delete`: `{ session_id, project_root?, repo_path?, conversation_namespace? }`
+- `docdex_conversation_export`: `{ session_id, project_root?, repo_path?, conversation_namespace? }`
+- `docdex_conversation_redact`: `{ session_id, project_root?, repo_path?, conversation_namespace? }`
+- `docdex_conversation_prune`: `{ manual_retention_days?, auto_capture_retention_days?, diary_retention_days?, hook_event_retention_days?, working_memory_retention_days?, episodic_rollup_retention_days?, apply?, project_root?, repo_path?, conversation_namespace? }`
+- `docdex_diary_write`: `{ content, agent_id?, entry_type?, source_session_id?, metadata?, project_root?, repo_path?, conversation_namespace? }`
+- `docdex_diary_read`: `{ agent_id?, limit?, offset?, project_root?, repo_path?, conversation_namespace? }`
+- `docdex_conversation_hook`: `{ action, source?, source_session_id?, title?, agent_id?, transport?, started_at_ms?, ended_at_ms?, format?, messages?, transcript_text?, summary_text?, metadata?, wait_for_processing?, project_root?, repo_path?, conversation_namespace? }`
+- `docdex_wakeup`: `{ agent_id?, query?, max_tokens?, project_root?, repo_path?, conversation_namespace? }`
+- `docdex_kg_query`: `{ query, relation?, limit?, offset?, project_root?, repo_path?, conversation_namespace? }`
+- `docdex_kg_search_nodes`: `{ query, entity_type?, limit?, offset?, project_root?, repo_path?, conversation_namespace? }`
+- `docdex_kg_search_edges`: `{ query, relation?, limit?, offset?, project_root?, repo_path?, conversation_namespace? }`
+- `docdex_kg_timeline`: `{ entity, relation?, limit?, project_root?, repo_path?, conversation_namespace? }`
+- `docdex_kg_search_episodes`: `{ query, source_type?, limit?, offset?, project_root?, repo_path?, conversation_namespace? }`
+- `docdex_kg_neighborhood`: `{ entity, relation?, limit?, project_root?, repo_path?, conversation_namespace? }`
+- `docdex_kg_entity_links`: `{ entity, link_type?, limit?, project_root?, repo_path?, conversation_namespace? }`
+- `docdex_kg_episode`: `{ episode_id?, id?, limit?, project_root?, repo_path?, conversation_namespace? }`
+- `docdex_kg_delete_edge`: `{ edge_id, id?, project_root?, repo_path?, conversation_namespace? }`
+- `docdex_kg_delete_episode`: `{ episode_id, id?, project_root?, repo_path?, conversation_namespace? }`
+- `docdex_kg_rebuild`: `{ project_root?, repo_path?, conversation_namespace? }`
+- `docdex_kg_clear`: `{ project_root?, repo_path?, conversation_namespace? }`
+
+Notes:
+- `docdex_conversation_import.format` must be one of `auto`, `plain_text`, `generic_json`, `codex_jsonl`, `claude_jsonl`, or `chatgpt_export`.
+- `docdex_conversation_hook.action` must be one of `periodic_memory_save`, `pre_compaction_summarization`, or `session_close_summarization`.
+- Conversation-memory MCP tools accept `conversation_namespace`; use it instead of `project_root` / `repo_path` for repo-less shared archives.
 
 ### 9) Common error fixes (do not guess)
 
@@ -340,6 +395,8 @@ Do not guess fields; use these canonical shapes.
   - Calling `/v1/initialize` on the multi-repo daemon with `rootUri`, then using the returned repo_id.
 - `missing_repo`: Supply repo_id (HTTP) or project_root (MCP), or call /v1/initialize.
 - `invalid_range` (docdex_open): Adjust start/end line to fit total_lines.
+- `missing conversation scope`: Supply `project_root` / `repo_path` for repo-scoped archives or `conversation_namespace` for repo-less shared archives.
+- `conflicting conversation scope`: Do not combine `repo_id` / `project_root` with `conversation_namespace` on the same request.
 
 ## Interaction Patterns
 
@@ -350,10 +407,11 @@ When answering a complex coding query, follow this "Reasoning Trace":
 1. Retrieve Profile: Call docdex_get_profile to load user style/constraints (e.g., "Use functional components").
 2. Search Code: Call docdex_search or docdex_symbols to find the relevant code.
 3. Check Memory: Call docdex_memory_recall for project-specific caveats (e.g., "Auth logic was refactored last week").
-4. Validate structure: Use docdex_ast/docdex_symbols to confirm targets before editing.
-5. Read context: Use docdex_open to fetch minimal file slices after locating targets.
-6. Plan with DAG: Use /v1/dag/export or /v1/graph/impact to order changes by dependencies.
-7. Synthesize: Generate code that matches the Repo Truth while adhering to the Profile Style.
+4. If prior sessions matter: call `docdex_conversation_search`, `docdex_conversation_read`, or `docdex_wakeup` before relying on implicit chat history.
+5. Validate structure: Use docdex_ast/docdex_symbols to confirm targets before editing.
+6. Read context: Use docdex_open to fetch minimal file slices after locating targets.
+7. Plan with DAG: Use /v1/dag/export or /v1/graph/impact to order changes by dependencies.
+8. Synthesize: Generate code that matches the Repo Truth while adhering to the Profile Style.
 
 ### 2. Memory Capture (Mandatory)
 
@@ -362,8 +420,9 @@ Save more memories for both lobes during the task, not just at the end.
 1. Repo memory: After each meaningful discovery or code change, save at least one durable fact (file location, behavior, config, gotcha) via `docdex_memory_save`.
 2. Memory overrides: When a new repo memory replaces older facts, include `metadata.supersedes` with the prior memory id(s). Docdex marks the superseded entries with `supersededBy`/`supersededAtMs`, down-ranks them during recall, and they can be removed via `docdex memory compact` (dry-run unless `--apply`).
 3. Profile memory: When the user expresses a preference, constraint, or workflow correction, call `docdex_save_preference` immediately with the right category.
-4. Keep it crisp: 1-3 short sentences, include file paths when relevant, avoid raw code blobs.
-5. Safety: Never store secrets, tokens, or sensitive user data. Skip transient or speculative info.
+4. Use `docdex_diary_write` for concise session outcomes, handoff notes, or reminders that are useful later but are not durable repo facts.
+5. Keep it crisp: 1-3 short sentences, include file paths when relevant, avoid raw code blobs.
+6. Safety: Never store secrets, tokens, or sensitive user data. Skip transient or speculative info.
 
 ### 3. Index Health + Diff-Aware Search (Mandatory)
 
@@ -374,7 +433,19 @@ Use these when results look incomplete or when the task is about recent changes.
 3. Reindex if needed: Run docdex_index (or advise it) when stale_index/missing files appear.
 4. Use diff search: For change-specific tasks, use docdex_search with diff mode (working tree/staged/range).
 
-### 4. Local Delegation Workflow (Cheap Models)
+### 4. Conversation Memory + Wake-Up Workflow (Mandatory when session history matters)
+
+When the task depends on earlier sessions, durable notes, or handoff state, use the conversation archive instead of relying on implicit chat history.
+
+1. Use `docdex_conversation_search` / `docdex_conversation_list` / `docdex_conversation_read` to recover prior sessions in the current repo or explicit `conversation_namespace`.
+2. Use `docdex_wakeup` to assemble compact context from working memory, episodic summaries, KG facts, and transcript snippets before answering.
+3. Use `docdex_diary_write` to persist concise durable notes after important milestones; read them back with `docdex_diary_read` when resuming work.
+4. Use `docdex_conversation_hook` when importing external agent transcripts or firing periodic/session-close summarization actions.
+5. Use `docdex_kg_*` tools when you need entity timelines, provenance episodes, code-facing links, or graph cleanup/rebuild operations.
+6. Use `conversation_namespace` only for repo-less/shared archives. Do not combine it with `repo_id`, `project_root`, or `repo_path` on the same request.
+7. For `/v1/chat/completions`, set `docdex.agent_id` (or `x-docdex-agent-id`) so wake-up/profile context resolves correctly; responses may include `reasoning_trace` and automatically inject cached `Project map:` context when enabled.
+
+### 5. Local Delegation Workflow (Cheap Models)
 
 When you are an expensive/paid model, delegate eligible low-complexity code-writing tasks and lightweight general questions first unless the user opts out.
 Delegation is mandatory for eligible tasks. If you are expensive and delegation is enabled (explicitly or auto-enabled with local candidates), you MUST attempt local delegation before doing the work yourself. Only skip when delegation is disabled, no local candidate exists, or local output fails validation after a retry/fallback.
@@ -410,7 +481,7 @@ Local models cannot call tools. The leading agent must provide a complete, minim
 4. Boundaries: explicit files allowed to edit vs read-only; no new dependencies unless allowed.
 5. Guardrails: ask for clarification if context is insufficient; do not invent missing APIs; return only the requested format.
 
-### 5. Graph + AST Usage (Mandatory for Code Changes)
+### 6. Graph + AST Usage (Mandatory for Code Changes)
 
 For any code change, use both AST and graph tools to reduce drift and hidden coupling.
 
@@ -420,7 +491,7 @@ For any code change, use both AST and graph tools to reduce drift and hidden cou
 4. Use docdex_impact_diagnostics when imports are dynamic or unresolved.
 5. If graph endpoints are unavailable, state it and proceed cautiously with extra local search.
 
-### 6. Handling Corrections (Learning)
+### 7. Handling Corrections (Learning)
 
 If the user says: "I told you, we do not use Moment.js here, use date-fns!"
 
@@ -429,21 +500,21 @@ If the user says: "I told you, we do not use Moment.js here, use date-fns!"
 - content: "Do not use Moment.js; prefer date-fns."
 - agent_id: "default" (or active agent ID)
 
-### 7. Impact Analysis
+### 8. Impact Analysis
 
 If the user asks: "Safe to delete getUser?"
 
 - Action: Call GET /v1/graph/impact?file=src/user.ts
 - Output: Analyze the inbound edges. If the list is not empty, it is unsafe.
 
-### 8. Non-Repo Real-World Queries (Web First)
+### 9. Non-Repo Real-World Queries (Web First)
 
 If the user asks a non-repo, real-world question (weather, news, general facts), immediately call docdex_web_research with force_web=true.
 - Resolve relative dates ("yesterday", "last week") using system time by default.
 - Do not run docdex_search unless the user explicitly wants repo-local context.
 - Assume web access is allowed unless the user forbids it; if the web call fails, report the failure and ask for a source or permission.
 
-### 9. Failure Handling (Missing Results or Errors)
+### 10. Failure Handling (Missing Results or Errors)
 
 - Ensure project_root or repo_path is set, or call /v1/initialize to bind a default root.
 - Use docdex_repo_inspect to confirm repo identity and normalized root.

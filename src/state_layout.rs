@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
@@ -15,6 +16,8 @@ pub struct StateLayout {
     base_dir: PathBuf,
 }
 
+pub const CONVERSATION_NAMESPACES_DIR_NAME: &str = "conversation_namespaces";
+
 #[derive(Debug, Clone)]
 pub struct StatePaths {
     layout: StateLayout,
@@ -22,6 +25,8 @@ pub struct StatePaths {
     index_dir: PathBuf,
     libs_index_dir: PathBuf,
     memory_path: PathBuf,
+    conversation_path: PathBuf,
+    knowledge_path: PathBuf,
     symbols_dir: PathBuf,
     dag_path: PathBuf,
     fingerprint: String,
@@ -38,6 +43,8 @@ pub struct StatePathsDebug {
     pub index_dir: String,
     pub libs_index_dir: String,
     pub memory_path: String,
+    pub conversation_path: String,
+    pub knowledge_path: String,
     pub symbols_dir: String,
     pub dag_path: String,
     pub cache_web_dir: String,
@@ -72,6 +79,10 @@ impl StateLayout {
 
     pub fn cache_dir(&self) -> PathBuf {
         self.base_dir.join("cache")
+    }
+
+    pub fn conversation_namespaces_dir(&self) -> PathBuf {
+        self.base_dir.join(CONVERSATION_NAMESPACES_DIR_NAME)
     }
 
     pub fn cache_web_dir(&self) -> PathBuf {
@@ -141,6 +152,7 @@ impl StateLayout {
     pub fn ensure_global_dirs(&self) -> Result<()> {
         ensure_state_dir_secure(&self.base_dir)?;
         ensure_state_dir_secure(&self.repos_dir())?;
+        ensure_state_dir_secure(&self.conversation_namespaces_dir())?;
         ensure_state_dir_secure(&self.cache_dir())?;
         ensure_state_dir_secure(&self.cache_web_dir())?;
         ensure_state_dir_secure(&self.cache_libs_dir())?;
@@ -162,6 +174,62 @@ impl StateLayout {
     }
 }
 
+pub fn conversation_namespace_state_key(namespace: &str) -> String {
+    let trimmed = namespace.trim();
+    let digest = Sha256::digest(trimmed.as_bytes());
+    let mut hash = String::with_capacity(16);
+    for byte in digest.iter().take(8) {
+        hash.push_str(&format!("{byte:02x}"));
+    }
+    let mut slug = String::with_capacity(trimmed.len().min(48));
+    let mut last_was_dash = false;
+    for ch in trimmed.chars() {
+        let mapped = if ch.is_ascii_alphanumeric() {
+            ch.to_ascii_lowercase()
+        } else {
+            '-'
+        };
+        if mapped == '-' {
+            if last_was_dash || slug.is_empty() {
+                continue;
+            }
+            last_was_dash = true;
+            slug.push(mapped);
+        } else {
+            last_was_dash = false;
+            slug.push(mapped);
+        }
+        if slug.len() >= 48 {
+            break;
+        }
+    }
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        format!("ns-{hash}")
+    } else {
+        format!("{slug}-{hash}")
+    }
+}
+
+pub fn conversation_namespace_state_dir(base_dir: &Path, namespace: &str) -> PathBuf {
+    StateLayout::new(base_dir.to_path_buf())
+        .conversation_namespaces_dir()
+        .join(conversation_namespace_state_key(namespace))
+}
+
+pub fn list_conversation_namespace_state_dirs(base_dir: &Path) -> Result<Vec<PathBuf>> {
+    let dir = StateLayout::new(base_dir.to_path_buf()).conversation_namespaces_dir();
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut items = fs::read_dir(&dir)?
+        .filter_map(|entry| entry.ok().map(|item| item.path()))
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+    items.sort();
+    Ok(items)
+}
+
 impl StatePaths {
     pub fn layout(&self) -> &StateLayout {
         &self.layout
@@ -181,6 +249,14 @@ impl StatePaths {
 
     pub fn memory_path(&self) -> &Path {
         &self.memory_path
+    }
+
+    pub fn conversation_path(&self) -> &Path {
+        &self.conversation_path
+    }
+
+    pub fn knowledge_path(&self) -> &Path {
+        &self.knowledge_path
     }
 
     pub fn symbols_dir(&self) -> &Path {
@@ -214,6 +290,8 @@ impl StatePaths {
             index_dir: self.index_dir.display().to_string(),
             libs_index_dir: self.libs_index_dir.display().to_string(),
             memory_path: self.memory_path.display().to_string(),
+            conversation_path: self.conversation_path.display().to_string(),
+            knowledge_path: self.knowledge_path.display().to_string(),
             symbols_dir: self.symbols_dir.display().to_string(),
             dag_path: self.dag_path.display().to_string(),
             cache_web_dir: self.layout.cache_web_dir().display().to_string(),
@@ -268,6 +346,8 @@ pub fn resolve_state_paths(
         index_dir: repo_state_root.join("index"),
         libs_index_dir: repo_state_root.join("libs_index"),
         memory_path: repo_state_root.join("memory.db"),
+        conversation_path: repo_state_root.join("conversation.db"),
+        knowledge_path: repo_state_root.join("knowledge.db"),
         symbols_dir: repo_state_root.join("symbols.db"),
         dag_path: repo_state_root.join("dag.db"),
         fingerprint,
@@ -297,6 +377,8 @@ pub(crate) fn resolve_state_paths_for_inspect(
         index_dir: repo_state_root.join("index"),
         libs_index_dir: repo_state_root.join("libs_index"),
         memory_path: repo_state_root.join("memory.db"),
+        conversation_path: repo_state_root.join("conversation.db"),
+        knowledge_path: repo_state_root.join("knowledge.db"),
         symbols_dir: repo_state_root.join("symbols.db"),
         dag_path: repo_state_root.join("dag.db"),
         fingerprint,
@@ -570,6 +652,8 @@ mod tests {
 
         assert_eq!(paths.state_key(), fingerprint);
         assert_eq!(paths.index_dir(), expected_index);
+        assert!(paths.conversation_path().ends_with("conversation.db"));
+        assert!(paths.knowledge_path().ends_with("knowledge.db"));
         Ok(())
     }
 

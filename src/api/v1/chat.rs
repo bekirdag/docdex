@@ -580,8 +580,83 @@ pub(crate) async fn chat_completions_handler(
                     reasoning_trace: reasoning_trace.clone(),
                 }
             } else {
+                let (wakeup_text, wakeup_trace) =
+                    if let Some(conversations) = repo.conversations.as_ref() {
+                        match tokio::task::spawn_blocking({
+                            let conversations = conversations.clone();
+                            let query = query.clone();
+                            let agent_id = profile_agent_id.clone();
+                            let wakeup_budget = budgets.wakeup_tokens;
+                            move || {
+                                crate::api::v1::wakeup::load_wakeup_bundle_for_chat(
+                                    &conversations,
+                                    agent_id.as_deref(),
+                                    Some(query.as_str()),
+                                    wakeup_budget,
+                                )
+                            }
+                        })
+                        .await
+                        {
+                            Ok(Ok((_bundle, rendered, trace))) => (
+                                Some(rendered),
+                                WakeupContextTrace {
+                                    available: trace.available,
+                                    selected: trace.selected,
+                                    truncated: trace.truncated,
+                                    budget_tokens: trace.budget_tokens,
+                                },
+                            ),
+                            Ok(Err(err)) => {
+                                warn!(
+                                target: "docdexd",
+                                    request_id = %request_id,
+                                    error = ?err,
+                                    "failed to assemble wake-up context"
+                                );
+                                (
+                                    None,
+                                    WakeupContextTrace {
+                                        available: 0,
+                                        selected: 0,
+                                        truncated: 0,
+                                        budget_tokens: budgets.wakeup_tokens,
+                                    },
+                                )
+                            }
+                            Err(err) => {
+                                warn!(
+                                    target: "docdexd",
+                                    request_id = %request_id,
+                                    error = ?err,
+                                    "wake-up task join failed"
+                                );
+                                (
+                                    None,
+                                    WakeupContextTrace {
+                                        available: 0,
+                                        selected: 0,
+                                        truncated: 0,
+                                        budget_tokens: budgets.wakeup_tokens,
+                                    },
+                                )
+                            }
+                        }
+                    } else {
+                        (
+                            None,
+                            WakeupContextTrace {
+                                available: 0,
+                                selected: 0,
+                                truncated: 0,
+                                budget_tokens: budgets.wakeup_tokens,
+                            },
+                        )
+                    };
                 let (context, context_trace) = build_context_summary(
                     &query,
+                    wakeup_text.as_deref(),
+                    wakeup_trace,
                     &result.search_response.hits,
                     result.search_response.symbols_context.as_ref(),
                     web_context.as_deref(),
@@ -836,6 +911,7 @@ fn extract_message_text(content: &MessageContent) -> Option<String> {
 
 struct ChatContextBudgets {
     system_tokens: usize,
+    wakeup_tokens: usize,
     profile_tokens: usize,
     map_tokens: usize,
     memory_tokens: usize,
@@ -877,6 +953,13 @@ struct MemorySnippetTrace {
     budget_tokens: usize,
 }
 
+struct WakeupContextTrace {
+    available: usize,
+    selected: usize,
+    truncated: usize,
+    budget_tokens: usize,
+}
+
 struct RepoContextTrace {
     candidates: usize,
     selected: usize,
@@ -899,6 +982,7 @@ struct WebContextTrace {
 }
 
 struct ChatContextTrace {
+    wakeup: WakeupContextTrace,
     profile: ProfileSnippetTrace,
     map: MapSnippetTrace,
     memory: MemorySnippetTrace,
@@ -930,11 +1014,18 @@ fn chat_context_budgets(max_answer_tokens: u32) -> ChatContextBudgets {
     let repo_floor = (total_tokens / 5).max(1);
     let reserved_for_repo = repo_floor.min(remaining);
     let max_non_repo = remaining.saturating_sub(reserved_for_repo);
-    let profile_tokens = profile_cap.min(max_non_repo);
-    let map_tokens = PROJECT_MAP_TOKEN_CAP.min(max_non_repo.saturating_sub(profile_tokens));
-    let repo_tokens = remaining.saturating_sub(profile_tokens + map_tokens);
+    let wakeup_tokens = (max_non_repo / 4).max(1).min(max_non_repo);
+    let remaining_after_wakeup = max_non_repo.saturating_sub(wakeup_tokens);
+    let map_tokens = if remaining_after_wakeup == 0 {
+        0
+    } else {
+        PROJECT_MAP_TOKEN_CAP.min((remaining_after_wakeup / 3).max(1))
+    };
+    let profile_tokens = profile_cap.min(remaining_after_wakeup.saturating_sub(map_tokens));
+    let repo_tokens = remaining.saturating_sub(wakeup_tokens + profile_tokens + map_tokens);
     ChatContextBudgets {
         system_tokens,
+        wakeup_tokens,
         profile_tokens,
         map_tokens,
         memory_tokens,
@@ -1175,6 +1266,8 @@ fn format_diff_context_with_budget(
 
 fn build_context_summary(
     query: &str,
+    wakeup_context: Option<&str>,
+    wakeup_trace: WakeupContextTrace,
     hits: &[crate::index::Hit],
     symbols_context: Option<&SymbolContextAssembly>,
     web_context: Option<&[crate::orchestrator::web::WebFetchResult]>,
@@ -1187,6 +1280,13 @@ fn build_context_summary(
 ) -> (String, ChatContextTrace) {
     let mut lines = Vec::new();
     let trimmed = query.trim();
+
+    if let Some(wakeup_context) = wakeup_context
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        lines.push(wakeup_context.to_string());
+    }
 
     let style_categories = [crate::profiles::PreferenceCategory::Style];
     let (profile_snippets, profile_trace) = select_profile_snippets(
@@ -1368,6 +1468,7 @@ fn build_context_summary(
     (
         lines.join("\n"),
         ChatContextTrace {
+            wakeup: wakeup_trace,
             profile: profile_trace,
             map: map_trace,
             memory: memory_trace,
@@ -1477,6 +1578,8 @@ fn build_prompt(
 }
 
 fn log_budget_drops(request_id: &str, repo_root: &Path, trace: &ChatContextTrace) {
+    let wakeup_dropped = trace.wakeup.available.saturating_sub(trace.wakeup.selected);
+    let wakeup_truncated = trace.wakeup.truncated;
     let profile_dropped = trace
         .profile
         .available
@@ -1514,7 +1617,9 @@ fn log_budget_drops(request_id: &str, repo_root: &Path, trace: &ChatContextTrace
         crate::metrics::global().inc_profile_budget_drop(profile_drop_total);
     }
 
-    if profile_dropped > 0
+    if wakeup_dropped > 0
+        || wakeup_truncated > 0
+        || profile_dropped > 0
         || profile_truncated > 0
         || map_dropped > 0
         || map_truncated > 0
@@ -1529,6 +1634,9 @@ fn log_budget_drops(request_id: &str, repo_root: &Path, trace: &ChatContextTrace
             target: "docdexd",
             request_id = %request_id,
             repo_root = %repo_root.display(),
+            wakeup_dropped,
+            wakeup_truncated,
+            wakeup_budget_tokens = trace.wakeup.budget_tokens,
             profile_dropped,
             profile_truncated,
             profile_budget_tokens = trace.profile.budget_tokens,
@@ -2099,6 +2207,7 @@ mod tests {
 
         let budgets = ChatContextBudgets {
             system_tokens: 0,
+            wakeup_tokens: 0,
             profile_tokens: 0,
             map_tokens: 0,
             memory_tokens: 10,
@@ -2109,6 +2218,13 @@ mod tests {
 
         let (context, trace) = build_context_summary(
             "hello",
+            None,
+            WakeupContextTrace {
+                available: 0,
+                selected: 0,
+                truncated: 0,
+                budget_tokens: 0,
+            },
             &hits,
             None,
             None,
@@ -2203,6 +2319,7 @@ mod tests {
 
         let budgets = ChatContextBudgets {
             system_tokens: 0,
+            wakeup_tokens: 0,
             profile_tokens: 3,
             map_tokens: 0,
             memory_tokens: 10,
@@ -2213,6 +2330,13 @@ mod tests {
 
         let (context, trace) = build_context_summary(
             "hello",
+            None,
+            WakeupContextTrace {
+                available: 0,
+                selected: 0,
+                truncated: 0,
+                budget_tokens: 0,
+            },
             &hits,
             None,
             None,
@@ -2239,6 +2363,7 @@ mod tests {
     fn history_budget_reuses_repo_unused_tokens() {
         let budgets = ChatContextBudgets {
             system_tokens: 0,
+            wakeup_tokens: 0,
             profile_tokens: 0,
             map_tokens: 0,
             memory_tokens: 0,
@@ -2249,6 +2374,13 @@ mod tests {
 
         let (context, trace) = build_context_summary(
             "hello",
+            None,
+            WakeupContextTrace {
+                available: 0,
+                selected: 0,
+                truncated: 0,
+                budget_tokens: 0,
+            },
             &[],
             None,
             None,
@@ -2269,5 +2401,15 @@ mod tests {
 
         assert!(prompt.contains("Conversation history:"));
         assert!(prompt.contains("one"));
+    }
+
+    #[test]
+    fn default_chat_budgets_reserve_project_map_tokens() {
+        let budgets = chat_context_budgets(1024);
+
+        assert!(budgets.wakeup_tokens > 0);
+        assert!(budgets.profile_tokens > 0);
+        assert!(budgets.map_tokens > 0);
+        assert!(budgets.map_tokens <= PROJECT_MAP_TOKEN_CAP);
     }
 }

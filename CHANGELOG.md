@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.59
+- Backfill wake-up knowledge episodes from matched facts and graph edges so `/v1/wakeup`, CLI, and MCP return episode context even when retrieval matches graph artifacts instead of episode summary text.
+- Reserve chat prompt budget for the project map so OpenAI-compatible chat responses include cached map context under the default answer-token configuration.
+
 ## 0.2.58
 - Export Docdex delegation savings in hourly mswarm telemetry packages and expose matching runtime/admin mswarm summaries for frontend visibility.
 

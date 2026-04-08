@@ -79,7 +79,12 @@ pub fn run(repo: RepoArgs, target: Option<PathBuf>) -> Result<()> {
     let target_value = target_arg
         .as_ref()
         .map(|path| path.to_string_lossy().replace('\\', "/"));
-    let args = apply_target(config.args.clone(), target_value.as_deref());
+    let args = apply_target(
+        &repo_root,
+        &config.command,
+        config.args.clone(),
+        target_arg.as_deref(),
+    )?;
 
     let mut cmd = Command::new(&config.command);
     cmd.args(&args);
@@ -254,28 +259,245 @@ fn resolve_target(repo_root: &Path, target: &Path) -> Result<PathBuf> {
     Ok(rel.to_path_buf())
 }
 
-fn apply_target(mut args: Vec<String>, target: Option<&str>) -> Vec<String> {
+fn apply_target(
+    repo_root: &Path,
+    command: &str,
+    mut args: Vec<String>,
+    target: Option<&Path>,
+) -> Result<Vec<String>> {
     let mut replaced = false;
     if let Some(target) = target {
+        let target_value = target.to_string_lossy().replace('\\', "/");
         for arg in &mut args {
             if arg.contains("{target}") {
-                *arg = arg.replace("{target}", target);
+                *arg = arg.replace("{target}", &target_value);
                 replaced = true;
             }
         }
         args.retain(|arg| !arg.trim().is_empty());
-        if !replaced {
-            args.push(target.to_string());
+        if replaced {
+            return Ok(args);
         }
-    } else {
-        for arg in &mut args {
-            if arg.contains("{target}") {
-                *arg = arg.replace("{target}", "");
+
+        if target == Path::new(".") {
+            return Ok(args);
+        }
+
+        if is_cargo_command(command) {
+            if let Some(extra_args) = cargo_target_args(repo_root, target)? {
+                insert_before_passthrough(&mut args, extra_args);
+                return Ok(args);
             }
+            return Err(unsupported_cargo_target_error(&target_value).into());
         }
-        args.retain(|arg| !arg.trim().is_empty());
+
+        insert_before_passthrough(&mut args, [target_value]);
+        return Ok(args);
     }
-    args
+
+    for arg in &mut args {
+        if arg.contains("{target}") {
+            *arg = arg.replace("{target}", "");
+        }
+    }
+    args.retain(|arg| !arg.trim().is_empty());
+    Ok(args)
+}
+
+fn is_cargo_command(command: &str) -> bool {
+    let program = Path::new(command)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(command);
+    let program = program.strip_suffix(".exe").unwrap_or(program);
+    program.eq_ignore_ascii_case("cargo")
+}
+
+fn cargo_target_args(repo_root: &Path, target: &Path) -> Result<Option<Vec<String>>> {
+    let Some(root) = target.components().next() else {
+        return Ok(None);
+    };
+    let Some(root) = root.as_os_str().to_str() else {
+        return Ok(None);
+    };
+    match root {
+        "tests" => cargo_named_target_args(repo_root, target, "test"),
+        "benches" => cargo_named_target_args(repo_root, target, "bench"),
+        _ => Ok(None),
+    }
+}
+
+fn unsupported_cargo_target_error(target: &str) -> AppError {
+    AppError::new(
+        ERR_INVALID_ARGUMENT,
+        "unsupported Cargo test target for run-tests",
+    )
+    .with_details(json!({
+        "target": target,
+        "recoverySteps": [
+            "Use a top-level integration test file like tests/<name>.rs.",
+            "Use a top-level tests/ or benches/ directory to run named targets.",
+            "Or add a `{target}` placeholder in .docdex/run-tests.json if this repo needs custom target mapping."
+        ]
+    }))
+}
+
+fn cargo_named_target_args(
+    repo_root: &Path,
+    target: &Path,
+    flag: &str,
+) -> Result<Option<Vec<String>>> {
+    if target.extension().and_then(|value| value.to_str()) == Some("rs") {
+        if let Some(name) = target.file_stem().and_then(|value| value.to_str()) {
+            return Ok(Some(vec![format!("--{flag}"), name.to_string()]));
+        }
+    }
+
+    if target.components().count() != 1 {
+        return Ok(None);
+    }
+
+    let names = collect_direct_rust_target_names(&repo_root.join(target))?;
+    if names.is_empty() {
+        return Ok(None);
+    }
+
+    let mut args = Vec::with_capacity(names.len() * 2);
+    for name in names {
+        args.push(format!("--{flag}"));
+        args.push(name);
+    }
+    Ok(Some(args))
+}
+
+fn collect_direct_rust_target_names(dir: &Path) -> Result<Vec<String>> {
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(dir)
+        .with_context(|| format!("read target directory {}", dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|value| value.to_str()) != Some("rs") {
+            continue;
+        }
+        let Some(name) = path.file_stem().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if name == "mod" {
+            continue;
+        }
+        names.push(name.to_string());
+    }
+    names.sort();
+    names.dedup();
+    Ok(names)
+}
+
+fn insert_before_passthrough<I>(args: &mut Vec<String>, extras: I)
+where
+    I: IntoIterator<Item = String>,
+{
+    let index = args
+        .iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(args.len());
+    args.splice(index..index, extras);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn apply_target_preserves_explicit_placeholder_configs() -> Result<()> {
+        let args = apply_target(
+            Path::new("."),
+            "cargo",
+            vec!["test".to_string(), "{target}".to_string()],
+            Some(Path::new("tests/conversation_memory_http.rs")),
+        )?;
+        assert_eq!(args, vec!["test", "tests/conversation_memory_http.rs"]);
+        Ok(())
+    }
+
+    #[test]
+    fn apply_target_maps_cargo_integration_test_files() -> Result<()> {
+        let args = apply_target(
+            Path::new("."),
+            "cargo",
+            vec!["test".to_string()],
+            Some(Path::new("tests/conversation_memory_http.rs")),
+        )?;
+        assert_eq!(args, vec!["test", "--test", "conversation_memory_http"]);
+        Ok(())
+    }
+
+    #[test]
+    fn apply_target_inserts_cargo_targets_before_passthrough_args() -> Result<()> {
+        let args = apply_target(
+            Path::new("."),
+            "cargo",
+            vec![
+                "test".to_string(),
+                "--".to_string(),
+                "--nocapture".to_string(),
+            ],
+            Some(Path::new("tests/conversation_memory_http.rs")),
+        )?;
+        assert_eq!(
+            args,
+            vec![
+                "test",
+                "--test",
+                "conversation_memory_http",
+                "--",
+                "--nocapture"
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn apply_target_maps_top_level_tests_directory_to_named_targets() -> Result<()> {
+        let dir = tempdir()?;
+        let tests_dir = dir.path().join("tests");
+        std::fs::create_dir_all(tests_dir.join("common"))?;
+        std::fs::write(tests_dir.join("alpha.rs"), "fn main() {}\n")?;
+        std::fs::write(tests_dir.join("beta.rs"), "fn main() {}\n")?;
+        std::fs::write(
+            tests_dir.join("common").join("mod.rs"),
+            "pub fn helper() {}\n",
+        )?;
+
+        let args = apply_target(
+            dir.path(),
+            "cargo",
+            vec!["test".to_string()],
+            Some(Path::new("tests")),
+        )?;
+        assert_eq!(args, vec!["test", "--test", "alpha", "--test", "beta"]);
+        Ok(())
+    }
+
+    #[test]
+    fn apply_target_rejects_unsupported_cargo_source_file_targets() {
+        let err = apply_target(
+            Path::new("."),
+            "cargo",
+            vec!["test".to_string()],
+            Some(Path::new("src/cli/commands/run_tests.rs")),
+        )
+        .expect_err("src paths should not be forwarded as cargo filters");
+        let message = format!("{err:#}");
+        assert!(message.contains("unsupported Cargo test target"));
+    }
 }
 
 fn read_limited<R: Read>(mut reader: R, max_bytes: usize) -> (String, bool) {

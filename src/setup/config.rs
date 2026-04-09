@@ -4,7 +4,6 @@ use uuid::Uuid;
 
 use crate::config::{self, AppConfig};
 use crate::mswarm;
-use toml;
 
 const LEGACY_MSWARM_BASE_URL: &str = "http://127.0.0.1:8080";
 
@@ -393,7 +392,7 @@ fn load_config_no_browser(path: &std::path::Path) -> Result<AppConfig> {
         config::apply_browser_defaults(&mut config);
         return Ok(config);
     }
-    let mut config: AppConfig = toml::from_str(&text).context("parse config")?;
+    let mut config = config::parse_config_text(&text).context("parse config")?;
     config.apply_defaults()?;
     config::apply_browser_defaults(&mut config);
     Ok(config)

@@ -796,6 +796,11 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: ProfileCommand,
     },
+    /// Manage global personal-preferences memory captures and derived records.
+    PersonalPreferences {
+        #[command(subcommand)]
+        command: PersonalPreferencesCommand,
+    },
     /// Run semantic gatekeeper hooks against staged changes (HTTP or Unix socket).
     Hook {
         #[command(subcommand)]
@@ -1147,6 +1152,94 @@ pub(crate) enum ProfileCommand {
     Import {
         #[arg(value_name = "PATH")]
         path: PathBuf,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum PersonalPreferencesCommand {
+    /// Show personal-preferences storage and queue status.
+    Status,
+    /// List configured personal-preferences categories and context policy.
+    Categories,
+    /// List captured sessions.
+    List {
+        #[arg(long, value_parser = config::non_empty_string)]
+        status: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+    },
+    /// Read one captured session with ordered messages.
+    Read {
+        #[arg(value_parser = config::non_empty_string)]
+        capture_id: String,
+    },
+    /// Search derived personal-preference records.
+    Search {
+        #[arg(value_parser = config::non_empty_string)]
+        query: String,
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+        #[arg(long, default_value_t = false)]
+        include_sensitive: bool,
+    },
+    /// List records by review status.
+    Reviews {
+        #[arg(long, value_parser = config::non_empty_string)]
+        status: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+    },
+    /// Approve, reject, or re-queue one derived record.
+    Review {
+        #[arg(value_parser = config::non_empty_string)]
+        record_id: String,
+        #[arg(long, value_parser = config::non_empty_string)]
+        verdict: String,
+        #[arg(long)]
+        notes: Option<String>,
+    },
+    /// Manually process queued captures with a local mcoda agent.
+    Process {
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Scan supported local AI-client transcript roots and queue new captures.
+    Scan {
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Apply or preview retention pruning.
+    Prune {
+        #[arg(long)]
+        raw_retention_days: Option<u32>,
+        #[arg(long)]
+        derived_retention_days: Option<u32>,
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+    },
+    /// Export one capture or the whole store to a JSON bundle.
+    Export {
+        #[arg(long, value_parser = config::non_empty_string)]
+        capture_id: Option<String>,
+    },
+    /// Redact raw transcript content for one capture.
+    Redact {
+        #[arg(value_parser = config::non_empty_string)]
+        capture_id: String,
+    },
+    /// Delete one capture and its derived records.
+    Delete {
+        #[arg(value_parser = config::non_empty_string)]
+        capture_id: String,
+    },
+    /// Purge all captures and derived records.
+    Purge {
+        #[arg(long, default_value_t = false)]
+        include_exports: bool,
     },
 }
 

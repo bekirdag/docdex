@@ -336,6 +336,132 @@ fn map_conversation_import_messages(
     })
 }
 
+fn map_personal_preferences_messages(
+    messages: Option<&[crate::conversations::ConversationMessage]>,
+) -> Vec<crate::personal_preferences::PersonalPreferencesMessage> {
+    messages
+        .unwrap_or(&[])
+        .iter()
+        .map(
+            |message| crate::personal_preferences::PersonalPreferencesMessage {
+                role: message.role.as_str().to_string(),
+                content: message.content.clone(),
+                created_at_ms: message.created_at_ms,
+                metadata: message.metadata.clone(),
+            },
+        )
+        .collect::<Vec<_>>()
+}
+
+fn personal_preferences_scope_details(
+    repo_root: &Path,
+    scope: &McpConversationScope,
+    conversation_namespace: Option<&str>,
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+) {
+    match scope {
+        McpConversationScope::Repo { repo_id, .. } => {
+            let repo_root = repo_root.display().to_string();
+            (
+                Some(repo_id.clone()),
+                Some(repo_root.clone()),
+                Some(repo_id.clone()),
+                Some(repo_root),
+            )
+        }
+        McpConversationScope::Namespace { .. } => {
+            let label = conversation_namespace
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("global")
+                .to_string();
+            (None, None, Some(format!("namespace:{label}")), Some(label))
+        }
+    }
+}
+
+fn build_personal_preferences_capture_request_from_import(
+    repo_root: &Path,
+    scope: &McpConversationScope,
+    conversation_namespace: Option<&str>,
+    payload: &crate::conversations::ConversationImport,
+) -> crate::personal_preferences::PersonalPreferencesCaptureRequest {
+    let (repo_id, repo_root, scope_id, scope_label) =
+        personal_preferences_scope_details(repo_root, scope, conversation_namespace);
+    let messages = map_personal_preferences_messages(Some(&payload.messages));
+    let transcript_text = if messages.is_empty() {
+        None
+    } else {
+        Some(
+            messages
+                .iter()
+                .filter_map(|message| {
+                    let content = message.content.trim();
+                    if content.is_empty() {
+                        None
+                    } else {
+                        Some(format!("{}: {}", message.role, content))
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    };
+    crate::personal_preferences::PersonalPreferencesCaptureRequest {
+        source: payload.source.clone(),
+        source_session_id: payload.source_session_id.clone(),
+        capture_kind: Some("conversation_import".to_string()),
+        title: payload.title.clone(),
+        agent_id: payload.agent_id.clone(),
+        transport: payload.transport.clone(),
+        repo_id,
+        repo_root,
+        scope_id,
+        scope_label,
+        started_at_ms: payload.started_at_ms,
+        ended_at_ms: payload.ended_at_ms,
+        messages,
+        transcript_text,
+        summary_text: None,
+        metadata: payload.metadata.clone(),
+    }
+}
+
+fn build_personal_preferences_capture_request_from_hook(
+    repo_root: &Path,
+    scope: &McpConversationScope,
+    conversation_namespace: Option<&str>,
+    payload: &crate::conversations::ConversationHookPayload,
+) -> crate::personal_preferences::PersonalPreferencesCaptureRequest {
+    let (repo_id, repo_root, scope_id, scope_label) =
+        personal_preferences_scope_details(repo_root, scope, conversation_namespace);
+    crate::personal_preferences::PersonalPreferencesCaptureRequest {
+        source: payload
+            .source
+            .clone()
+            .unwrap_or_else(|| format!("hook:{}", payload.action.as_str())),
+        source_session_id: payload.source_session_id.clone(),
+        capture_kind: Some(format!("conversation_hook:{}", payload.action.as_str())),
+        title: payload.title.clone(),
+        agent_id: payload.agent_id.clone(),
+        transport: payload.transport.clone(),
+        repo_id,
+        repo_root,
+        scope_id,
+        scope_label,
+        started_at_ms: payload.started_at_ms,
+        ended_at_ms: payload.ended_at_ms,
+        messages: map_personal_preferences_messages(payload.messages.as_deref()),
+        transcript_text: payload.transcript_text.clone(),
+        summary_text: payload.summary_text.clone(),
+        metadata: payload.metadata.clone(),
+    }
+}
+
 fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json::Value>) {
     if let Some(rate) = err.downcast_ref::<RateLimited>() {
         return (rate.code, Some(mcp_rate_limited_data(rate)));
@@ -1152,6 +1278,97 @@ struct ProfileGetArgs {
     agent_id: Option<String>,
 }
 
+#[derive(Default, Deserialize)]
+struct PersonalPreferencesStatusArgs {}
+
+#[derive(Default, Deserialize)]
+struct PersonalPreferencesCategoriesArgs {}
+
+#[derive(Deserialize)]
+struct PersonalPreferencesListArgs {
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    offset: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct PersonalPreferencesReadArgs {
+    #[serde(alias = "id")]
+    capture_id: String,
+}
+
+#[derive(Deserialize)]
+struct PersonalPreferencesSearchArgs {
+    #[serde(alias = "q")]
+    query: String,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    include_sensitive: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct PersonalPreferencesReviewQueueArgs {
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    offset: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct PersonalPreferencesReviewArgs {
+    #[serde(alias = "id")]
+    record_id: String,
+    verdict: String,
+    #[serde(default)]
+    notes: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PersonalPreferencesProcessArgs {
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct PersonalPreferencesScanArgs {
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct PersonalPreferencesExportArgs {
+    #[serde(default)]
+    capture_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PersonalPreferencesDeleteArgs {
+    #[serde(alias = "id")]
+    capture_id: String,
+}
+
+#[derive(Deserialize)]
+struct PersonalPreferencesPruneArgs {
+    #[serde(default)]
+    raw_retention_days: Option<u32>,
+    #[serde(default)]
+    derived_retention_days: Option<u32>,
+    #[serde(default)]
+    apply: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct PersonalPreferencesPurgeArgs {
+    #[serde(default)]
+    include_exports: Option<bool>,
+}
+
 #[derive(Deserialize)]
 struct ResourceReadParams {
     uri: String,
@@ -1238,6 +1455,9 @@ impl McpService {
         };
         let indexer = Arc::new(indexer);
         let config = config::AppConfig::load_default().ok();
+        let global_state_dir = config
+            .as_ref()
+            .and_then(|cfg| cfg.core.global_state_dir.clone());
         let memory_enabled = if std::env::var_os("DOCDEX_ENABLE_MEMORY").is_some() {
             env_flag_enabled("DOCDEX_ENABLE_MEMORY")
         } else {
@@ -1304,9 +1524,20 @@ impl McpService {
             .as_ref()
             .map(|cfg| cfg.llm.clone())
             .unwrap_or_default();
-        let global_state_dir = config
+        let personal_preferences_config = config
             .as_ref()
-            .and_then(|cfg| cfg.core.global_state_dir.clone());
+            .map(|cfg| cfg.memory.personal_preferences.clone())
+            .unwrap_or_default();
+        let personal_preferences = if personal_preferences_config.enabled {
+            let state_dir =
+                personal_preferences_config.resolved_storage_root(global_state_dir.as_deref())?;
+            Some(search::PersonalPreferencesState {
+                store: crate::personal_preferences::PersonalPreferencesStore::new(&state_dir)?,
+                config: personal_preferences_config.clone(),
+            })
+        } else {
+            None
+        };
         let profile_embedding_base_url = std::env::var("DOCDEX_EMBEDDING_BASE_URL")
             .ok()
             .filter(|v| !v.trim().is_empty())
@@ -1395,6 +1626,7 @@ impl McpService {
             default_agent_model: None,
             memory,
             conversations,
+            personal_preferences,
             profile_state,
             max_answer_tokens,
             llm_config,
@@ -1523,6 +1755,7 @@ struct McpServer {
     default_agent_model: Option<String>,
     memory: Option<McpMemoryState>,
     conversations: Option<McpConversationState>,
+    personal_preferences: Option<search::PersonalPreferencesState>,
     profile_state: Option<search::ProfileState>,
     max_answer_tokens: u32,
     llm_config: config::LlmConfig,
@@ -3448,6 +3681,541 @@ impl McpServer {
                             }
                         }
                     }
+                    "docdex_personal_preferences_status" | "docdex.personal_preferences_status" => {
+                        let args_res: Result<PersonalPreferencesStatusArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_personal_preferences_status"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_personal_preferences_status" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_personal_preferences_status(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_personal_preferences_status"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_personal_preferences_categories"
+                    | "docdex.personal_preferences_categories" => {
+                        let args_res: Result<PersonalPreferencesCategoriesArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_personal_preferences_categories"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_personal_preferences_categories" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_personal_preferences_categories(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_personal_preferences_categories"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_personal_preferences_list" | "docdex.personal_preferences_list" => {
+                        let args_res: Result<PersonalPreferencesListArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_personal_preferences_list"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_personal_preferences_list" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_personal_preferences_list(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_personal_preferences_list"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_personal_preferences_read" | "docdex.personal_preferences_read" => {
+                        let args_res: Result<PersonalPreferencesReadArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_personal_preferences_read"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_personal_preferences_read" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_personal_preferences_read(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_personal_preferences_read"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_personal_preferences_search" | "docdex.personal_preferences_search" => {
+                        let args_res: Result<PersonalPreferencesSearchArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_personal_preferences_search"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_personal_preferences_search" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_personal_preferences_search(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_personal_preferences_search"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_personal_preferences_reviews"
+                    | "docdex.personal_preferences_reviews" => {
+                        let args_res: Result<PersonalPreferencesReviewQueueArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_personal_preferences_reviews"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_personal_preferences_reviews" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_personal_preferences_reviews(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_personal_preferences_reviews"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_personal_preferences_review" | "docdex.personal_preferences_review" => {
+                        let args_res: Result<PersonalPreferencesReviewArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_personal_preferences_review"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_personal_preferences_review" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_personal_preferences_review(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_personal_preferences_review"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_personal_preferences_process"
+                    | "docdex.personal_preferences_process" => {
+                        let args_res: Result<PersonalPreferencesProcessArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_personal_preferences_process"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_personal_preferences_process" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_personal_preferences_process(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_personal_preferences_process"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_personal_preferences_scan" | "docdex.personal_preferences_scan" => {
+                        let args_res: Result<PersonalPreferencesScanArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_personal_preferences_scan"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_personal_preferences_scan" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_personal_preferences_scan(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_personal_preferences_scan"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_personal_preferences_export" | "docdex.personal_preferences_export" => {
+                        let args_res: Result<PersonalPreferencesExportArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_personal_preferences_export"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_personal_preferences_export" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_personal_preferences_export(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_personal_preferences_export"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_personal_preferences_redact" | "docdex.personal_preferences_redact" => {
+                        let args_res: Result<PersonalPreferencesDeleteArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_personal_preferences_redact"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_personal_preferences_redact" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_personal_preferences_redact(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_personal_preferences_redact"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_personal_preferences_delete" | "docdex.personal_preferences_delete" => {
+                        let args_res: Result<PersonalPreferencesDeleteArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_personal_preferences_delete"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_personal_preferences_delete" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_personal_preferences_delete(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_personal_preferences_delete"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_personal_preferences_prune" | "docdex.personal_preferences_prune" => {
+                        let args_res: Result<PersonalPreferencesPruneArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_personal_preferences_prune"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_personal_preferences_prune" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_personal_preferences_prune(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_personal_preferences_prune"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_personal_preferences_purge" | "docdex.personal_preferences_purge" => {
+                        let args_res: Result<PersonalPreferencesPurgeArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_personal_preferences_purge"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_personal_preferences_purge" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_personal_preferences_purge(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_personal_preferences_purge"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
                     "docdex_save_preference" => {
                         let args_res: Result<ProfileSaveArgs, _> =
                             serde_json::from_value(params.arguments.clone());
@@ -3578,6 +4346,20 @@ impl McpServer {
                                         "docdex_kg_rebuild",
                                         "docdex_kg_clear",
                                         "docdex_local_completion",
+                                        "docdex_personal_preferences_status",
+                                        "docdex_personal_preferences_categories",
+                                        "docdex_personal_preferences_list",
+                                        "docdex_personal_preferences_read",
+                                        "docdex_personal_preferences_search",
+                                        "docdex_personal_preferences_reviews",
+                                        "docdex_personal_preferences_review",
+                                        "docdex_personal_preferences_process",
+                                        "docdex_personal_preferences_scan",
+                                        "docdex_personal_preferences_export",
+                                        "docdex_personal_preferences_redact",
+                                        "docdex_personal_preferences_delete",
+                                        "docdex_personal_preferences_prune",
+                                        "docdex_personal_preferences_purge",
                                         "docdex_save_preference",
                                         "docdex_get_profile"
                                     ]
@@ -4472,6 +5254,184 @@ impl McpServer {
                         "repo_path": { "type": "string", "description": "Alias for project_root (optional)" }
                     },
                     "required": ["task_type", "instruction", "context"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_status",
+                title: "Personal Preferences Status",
+                description: "Show personal-preferences storage and queue status.",
+                annotations: Some(annotations_with_priority(0.4)),
+                input_schema: json!({ "type": "object", "properties": {} }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_categories",
+                title: "Personal Preferences Categories",
+                description: "List personal-preferences categories and context policy.",
+                annotations: Some(annotations_with_priority(0.4)),
+                input_schema: json!({ "type": "object", "properties": {} }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_list",
+                title: "List Personal Preference Captures",
+                description: "List captured personal-preferences sessions.",
+                annotations: Some(annotations_with_priority(0.4)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "status": { "type": "string" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
+                        "offset": { "type": "integer", "minimum": 0 }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_read",
+                title: "Read Personal Preference Capture",
+                description: "Read one captured personal-preferences session.",
+                annotations: Some(annotations_with_priority(0.4)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "capture_id": { "type": "string", "minLength": 1 },
+                        "id": { "type": "string", "minLength": 1 }
+                    },
+                    "required": ["capture_id"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_search",
+                title: "Search Personal Preferences",
+                description: "Search derived personal-preferences records.",
+                annotations: Some(annotations_with_priority(0.4)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "minLength": 1 },
+                        "q": { "type": "string", "minLength": 1 },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+                        "include_sensitive": { "type": "boolean" }
+                    },
+                    "required": ["query"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_reviews",
+                title: "List Personal Preference Reviews",
+                description: "List derived personal-preferences records by review status.",
+                annotations: Some(annotations_with_priority(0.4)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "status": { "type": "string" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
+                        "offset": { "type": "integer", "minimum": 0 }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_review",
+                title: "Review Personal Preference Record",
+                description: "Approve, reject, or re-queue one derived personal-preferences record.",
+                annotations: Some(annotations_with_priority(0.4)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "record_id": { "type": "string", "minLength": 1 },
+                        "id": { "type": "string", "minLength": 1 },
+                        "verdict": { "type": "string", "enum": ["approved", "pending_review", "rejected"] },
+                        "notes": { "type": "string" }
+                    },
+                    "required": ["record_id", "verdict"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_process",
+                title: "Process Personal Preference Captures",
+                description: "Manually process queued captures with a local mcoda agent.",
+                annotations: Some(annotations_with_priority(0.4)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "limit": { "type": "integer", "minimum": 1 }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_scan",
+                title: "Scan Personal Preference Transcripts",
+                description: "Scan supported local AI-client transcript roots and queue new personal-preferences captures.",
+                annotations: Some(annotations_with_priority(0.4)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "limit": { "type": "integer", "minimum": 1 }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_export",
+                title: "Export Personal Preferences",
+                description: "Export one capture or the whole personal-preferences store to JSON.",
+                annotations: Some(annotations_with_priority(0.4)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "capture_id": { "type": "string", "minLength": 1 }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_redact",
+                title: "Redact Personal Preference Capture",
+                description: "Redact raw transcript content for one captured session.",
+                annotations: Some(annotations_with_priority(0.4)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "capture_id": { "type": "string", "minLength": 1 },
+                        "id": { "type": "string", "minLength": 1 }
+                    },
+                    "required": ["capture_id"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_delete",
+                title: "Delete Personal Preference Capture",
+                description: "Delete one captured personal-preferences session and its derived records.",
+                annotations: Some(annotations_with_priority(0.4)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "capture_id": { "type": "string", "minLength": 1 },
+                        "id": { "type": "string", "minLength": 1 }
+                    },
+                    "required": ["capture_id"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_prune",
+                title: "Prune Personal Preferences",
+                description: "Preview or apply personal-preferences retention pruning.",
+                annotations: Some(annotations_with_priority(0.4)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "raw_retention_days": { "type": "integer", "minimum": 0 },
+                        "derived_retention_days": { "type": "integer", "minimum": 0 },
+                        "apply": { "type": "boolean" }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_purge",
+                title: "Purge Personal Preferences",
+                description: "Purge all personal-preferences captures and derived records.",
+                annotations: Some(annotations_with_priority(0.4)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "include_exports": { "type": "boolean" }
+                    }
                 }),
             },
             ToolDefinition {
@@ -6167,6 +7127,7 @@ Produce a phased plan with risks and tests to run."
         &self,
         args: ConversationImportArgs,
     ) -> Result<serde_json::Value> {
+        let personal_preferences_namespace = args.conversation_namespace.clone();
         let scope = self.resolve_conversation_scope(
             args.project_root.clone(),
             args.repo_path.clone(),
@@ -6196,6 +7157,27 @@ Produce a phased plan with risks and tests to run."
             )
             .into());
         }
+        let personal_preferences_capture = self
+            .personal_preferences
+            .as_ref()
+            .filter(|personal_preferences| {
+                crate::personal_preferences::should_capture_external_source(
+                    &personal_preferences.config,
+                    &payload.source,
+                    personal_preferences.config.capture_imported_conversations,
+                )
+            })
+            .map(|personal_preferences| {
+                (
+                    personal_preferences.clone(),
+                    build_personal_preferences_capture_request_from_import(
+                        &self.repo_root,
+                        &scope,
+                        personal_preferences_namespace.as_deref(),
+                        &payload,
+                    ),
+                )
+            });
         let route_targets = crate::conversations::build_conversation_route_targets(
             scope.repo_memory_target(),
             self.profile_state.as_ref().map(|profile| {
@@ -6220,6 +7202,13 @@ Produce a phased plan with risks and tests to run."
             route_targets,
         )
         .await?;
+        if let Some((personal_preferences, capture_request)) = personal_preferences_capture {
+            personal_preferences.store.capture_conversation(
+                capture_request,
+                personal_preferences.config.digest_enabled,
+                personal_preferences.config.archive_raw_conversations,
+            )?;
+        }
         self.update_conversation_archive_metric(&conversations);
         Ok(json!({
             "session_id": imported.session_id,
@@ -6855,6 +7844,7 @@ Produce a phased plan with risks and tests to run."
         &self,
         args: ConversationHookArgs,
     ) -> Result<serde_json::Value> {
+        let personal_preferences_namespace = args.conversation_namespace.clone();
         let scope = self.resolve_conversation_scope(
             args.project_root.clone(),
             args.repo_path.clone(),
@@ -6915,6 +7905,27 @@ Produce a phased plan with risks and tests to run."
             summary_text: args.summary_text,
             metadata: args.metadata.unwrap_or_else(|| json!({})),
         };
+        let personal_preferences_capture = self
+            .personal_preferences
+            .as_ref()
+            .filter(|personal_preferences| {
+                crate::personal_preferences::should_capture_external_source(
+                    &personal_preferences.config,
+                    payload.source.as_deref().unwrap_or_default(),
+                    personal_preferences.config.capture_conversation_hooks,
+                )
+            })
+            .map(|personal_preferences| {
+                (
+                    personal_preferences.clone(),
+                    build_personal_preferences_capture_request_from_hook(
+                        &self.repo_root,
+                        &scope,
+                        personal_preferences_namespace.as_deref(),
+                        &payload,
+                    ),
+                )
+            });
         let route_targets = crate::conversations::build_conversation_route_targets(
             scope.repo_memory_target(),
             self.profile_state.as_ref().map(|profile| {
@@ -6939,6 +7950,13 @@ Produce a phased plan with risks and tests to run."
             wait_for_processing,
         )
         .await?;
+        if let Some((personal_preferences, capture_request)) = personal_preferences_capture {
+            personal_preferences.store.capture_conversation(
+                capture_request,
+                personal_preferences.config.digest_enabled,
+                personal_preferences.config.archive_raw_conversations,
+            )?;
+        }
         Ok(serde_json::to_value(result)?)
     }
 
@@ -7039,6 +8057,247 @@ Produce a phased plan with risks and tests to run."
                 self.global_state_dir.as_deref(),
             ),
         );
+    }
+
+    fn personal_preferences_state(&self) -> Result<search::PersonalPreferencesState> {
+        self.personal_preferences.clone().ok_or_else(|| {
+            AppError::new(
+                ERR_MEMORY_DISABLED,
+                "personal preferences memory is disabled; enable [personal_preferences].enabled",
+            )
+            .into()
+        })
+    }
+
+    async fn handle_personal_preferences_status(
+        &self,
+        _args: PersonalPreferencesStatusArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        Ok(serde_json::to_value(personal_preferences.store.status()?)?)
+    }
+
+    async fn handle_personal_preferences_categories(
+        &self,
+        _args: PersonalPreferencesCategoriesArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        Ok(serde_json::to_value(
+            personal_preferences.store.list_categories()?,
+        )?)
+    }
+
+    async fn handle_personal_preferences_list(
+        &self,
+        args: PersonalPreferencesListArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        Ok(serde_json::to_value(
+            personal_preferences.store.list_captures(
+                args.status.as_deref(),
+                args.limit.unwrap_or(20).clamp(1, 200),
+                args.offset.unwrap_or(0),
+            )?,
+        )?)
+    }
+
+    async fn handle_personal_preferences_read(
+        &self,
+        args: PersonalPreferencesReadArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        let capture_id = args.capture_id.trim().to_string();
+        if capture_id.is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "capture_id must not be empty").into());
+        }
+        let Some(capture) = personal_preferences.store.read_capture(&capture_id)? else {
+            return Err(AppError::new(
+                ERR_INVALID_ARGUMENT,
+                "personal preferences capture not found",
+            )
+            .into());
+        };
+        Ok(serde_json::to_value(capture)?)
+    }
+
+    async fn handle_personal_preferences_search(
+        &self,
+        args: PersonalPreferencesSearchArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        let query = args.query.trim().to_string();
+        Ok(serde_json::to_value(
+            personal_preferences.store.search_records_with_policy(
+                &query,
+                args.limit.unwrap_or(10).clamp(1, 100),
+                args.include_sensitive.unwrap_or(true),
+            )?,
+        )?)
+    }
+
+    async fn handle_personal_preferences_reviews(
+        &self,
+        args: PersonalPreferencesReviewQueueArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        Ok(serde_json::to_value(
+            personal_preferences.store.list_review_records(
+                args.status.as_deref(),
+                args.limit.unwrap_or(20).clamp(1, 200),
+                args.offset.unwrap_or(0),
+            )?,
+        )?)
+    }
+
+    async fn handle_personal_preferences_review(
+        &self,
+        args: PersonalPreferencesReviewArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        Ok(serde_json::to_value(
+            personal_preferences.store.review_record(
+                args.record_id.trim(),
+                args.verdict.trim(),
+                args.notes.as_deref(),
+            )?,
+        )?)
+    }
+
+    async fn handle_personal_preferences_process(
+        &self,
+        args: PersonalPreferencesProcessArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        if !personal_preferences.config.digest_enabled {
+            return Err(AppError::new(
+                ERR_MEMORY_DISABLED,
+                "personal preferences digest is disabled; enable [personal_preferences].digest_enabled",
+            )
+            .into());
+        }
+        let mut summary = crate::personal_preferences::process_pending_with_local_agents(
+            &personal_preferences.store,
+            self.global_state_dir.as_deref(),
+            &self.llm_config,
+            &personal_preferences.config,
+            args.limit,
+        )
+        .await?;
+        if let Some(profile_state) = self.profile_state.as_ref() {
+            summary.projected_profile_preferences =
+                crate::personal_preferences::project_safe_preferences_to_profile(
+                    &personal_preferences.store,
+                    &profile_state.manager,
+                    profile_state.embedder.as_ref(),
+                    &personal_preferences.config,
+                    self.default_agent_id.as_deref(),
+                )
+                .await?;
+        }
+        Ok(serde_json::to_value(summary)?)
+    }
+
+    async fn handle_personal_preferences_scan(
+        &self,
+        args: PersonalPreferencesScanArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        if !personal_preferences
+            .config
+            .capture_supported_client_transcripts
+        {
+            return Err(AppError::new(
+                ERR_MEMORY_DISABLED,
+                "supported client transcript capture is disabled; enable [personal_preferences].capture_supported_client_transcripts",
+            )
+            .into());
+        }
+        if matches!(args.limit, Some(0)) {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "limit must be > 0").into());
+        }
+        Ok(serde_json::to_value(
+            personal_preferences
+                .store
+                .scan_supported_client_transcripts(&personal_preferences.config, args.limit)?,
+        )?)
+    }
+
+    async fn handle_personal_preferences_export(
+        &self,
+        args: PersonalPreferencesExportArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        if !personal_preferences.config.export_enabled {
+            return Err(AppError::new(
+                ERR_MEMORY_DISABLED,
+                "personal preferences export is disabled; enable [personal_preferences].export_enabled",
+            )
+            .into());
+        }
+        Ok(serde_json::to_value(
+            personal_preferences
+                .store
+                .export_bundle(args.capture_id.as_deref())?,
+        )?)
+    }
+
+    async fn handle_personal_preferences_redact(
+        &self,
+        args: PersonalPreferencesDeleteArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        Ok(serde_json::to_value(
+            personal_preferences
+                .store
+                .redact_capture(args.capture_id.trim())?,
+        )?)
+    }
+
+    async fn handle_personal_preferences_delete(
+        &self,
+        args: PersonalPreferencesDeleteArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        Ok(serde_json::to_value(
+            personal_preferences
+                .store
+                .delete_capture(args.capture_id.trim())?,
+        )?)
+    }
+
+    async fn handle_personal_preferences_prune(
+        &self,
+        args: PersonalPreferencesPruneArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        Ok(serde_json::to_value(
+            personal_preferences.store.prune_retention(
+                args.raw_retention_days
+                    .unwrap_or(personal_preferences.config.raw_retention_days),
+                args.derived_retention_days
+                    .unwrap_or(personal_preferences.config.derived_retention_days),
+                args.apply.unwrap_or(false),
+            )?,
+        )?)
+    }
+
+    async fn handle_personal_preferences_purge(
+        &self,
+        args: PersonalPreferencesPurgeArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        if !personal_preferences.config.purge_enabled {
+            return Err(AppError::new(
+                ERR_MEMORY_DISABLED,
+                "personal preferences purge is disabled; enable [personal_preferences].purge_enabled",
+            )
+            .into());
+        }
+        Ok(serde_json::to_value(
+            personal_preferences
+                .store
+                .purge_all(args.include_exports.unwrap_or(false))?,
+        )?)
     }
 
     async fn handle_profile_save_preference(

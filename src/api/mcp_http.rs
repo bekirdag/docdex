@@ -480,6 +480,7 @@ mod tests {
             delegation_metrics: Arc::new(crate::metrics::DelegationMetrics::default()),
             memory: None,
             conversations: None,
+            personal_preferences: None,
             profile_state: None,
             features: crate::config::FeatureFlagsConfig::default(),
             default_agent_id: None,

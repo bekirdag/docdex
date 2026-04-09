@@ -16,6 +16,7 @@ pub mod mcp_add;
 pub mod memory;
 pub mod mswarm;
 pub mod open;
+pub mod personal_preferences;
 pub mod profile;
 pub mod query;
 pub mod repo;
@@ -200,6 +201,7 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
         super::Command::Conversations { command } => conversations::run(command).await,
         super::Command::Diary { command } => diary::run(command).await,
         super::Command::Profile { command } => profile::run(command).await,
+        super::Command::PersonalPreferences { command } => personal_preferences::run(command).await,
         super::Command::Hook { command } => hook::run(command).await,
         super::Command::SymbolsStatus { repo } => symbols::run_status(repo).await,
         super::Command::ImpactDiagnostics {

@@ -337,6 +337,22 @@ pub async fn conversation_hook_handler(
         summary_text: payload.summary_text,
         metadata: payload.metadata.unwrap_or_else(|| serde_json::json!({})),
     };
+    let personal_preferences_capture = state
+        .personal_preferences
+        .as_ref()
+        .filter(|personal_preferences| {
+            crate::personal_preferences::should_capture_external_source(
+                &personal_preferences.config,
+                &source,
+                personal_preferences.config.capture_conversation_hooks,
+            )
+        })
+        .map(|personal_preferences| {
+            (
+                personal_preferences.clone(),
+                build_personal_preferences_capture_request(&scope, &hook_payload),
+            )
+        });
     let route_targets = crate::conversations::build_conversation_route_targets(
         scope.repo_memory_target(),
         state.profile_state.as_ref().map(|profile| {
@@ -366,6 +382,20 @@ pub async fn conversation_hook_handler(
     .await
     {
         Ok(result) => {
+            if let Some((personal_preferences, capture_request)) = personal_preferences_capture {
+                if let Err(err) = personal_preferences.store.capture_conversation(
+                    capture_request,
+                    personal_preferences.config.digest_enabled,
+                    personal_preferences.config.archive_raw_conversations,
+                ) {
+                    warn!(
+                        target: "docdexd",
+                        request_id = %request_id.0,
+                        error = ?err,
+                        "personal preferences capture failed for conversation hook"
+                    );
+                }
+            }
             tracing::info!(
                 target: "docdexd",
                 request_id = %request_id.0,
@@ -424,5 +454,60 @@ pub async fn conversation_hook_handler(
                 true,
             )
         }
+    }
+}
+
+fn build_personal_preferences_capture_request(
+    scope: &crate::search::ConversationRequestContext,
+    payload: &crate::conversations::ConversationHookPayload,
+) -> crate::personal_preferences::PersonalPreferencesCaptureRequest {
+    let (repo_id, repo_root) = scope
+        .repo()
+        .map(|repo| {
+            (
+                Some(repo.repo_id.clone()),
+                Some(repo.indexer.repo_root().display().to_string()),
+            )
+        })
+        .unwrap_or((None, None));
+    crate::personal_preferences::PersonalPreferencesCaptureRequest {
+        source: payload
+            .source
+            .clone()
+            .unwrap_or_else(|| format!("hook:{}", payload.action.as_str())),
+        source_session_id: payload.source_session_id.clone(),
+        capture_kind: Some("conversation_hook".to_string()),
+        title: payload.title.clone(),
+        agent_id: payload.agent_id.clone(),
+        transport: payload.transport.clone(),
+        repo_id,
+        repo_root,
+        scope_id: Some(scope.scope_id()),
+        scope_label: Some(scope.scope_label()),
+        started_at_ms: payload.started_at_ms,
+        ended_at_ms: payload.ended_at_ms,
+        messages: payload
+            .messages
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(
+                |message| crate::personal_preferences::PersonalPreferencesMessage {
+                    role: message.role.as_str().to_string(),
+                    content: message.content,
+                    created_at_ms: message.created_at_ms,
+                    metadata: message.metadata,
+                },
+            )
+            .collect(),
+        transcript_text: payload.transcript_text.clone(),
+        summary_text: payload.summary_text.clone(),
+        metadata: serde_json::json!({
+            "hook_action": payload.action.as_str(),
+            "scope_id": scope.scope_id(),
+            "scope_label": scope.scope_label(),
+            "format": payload.format,
+            "metadata": payload.metadata,
+        }),
     }
 }

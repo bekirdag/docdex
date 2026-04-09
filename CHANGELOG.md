@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.61
+- Add the optional personal-preferences memory subsystem: capture Docdex and supported local client conversations into a dedicated local store, digest them in the background, and expose status/search/process/export/redact/delete/purge controls over HTTP, CLI, and MCP.
+- Align the personal-preferences release surface with the new top-level `[personal_preferences]` config, richer record lineage/materialization, review and retention controls, bounded chat-context injection, and supported-client transcript scanning.
+- Harden the npm installer against whitespace-padded Docdex config keys and section names so reinstalling does not leave malformed duplicate Docdex entries in Codex, Gemini, Claude, and related client configs.
+
 ## 0.2.60
 - Deduplicate installer-managed Docdex client config on reinstall: collapse stale `docdex` entries in JSON client configs, normalize Codex TOML to one canonical Docdex entry, and replace older versioned Docdex agent-instruction blocks without duplicating Codex/Gemini/Claude prompt files.
 - Fix the nightly security audit failure by moving the direct `tokio-rustls` dependency to 0.26 with explicit `ring`/`tls12` features so the vulnerable `rustls-webpki` dependency chain is removed from the release build.

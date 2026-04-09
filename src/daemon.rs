@@ -14,6 +14,7 @@ use crate::memory::repo_state_root_from_state_dir;
 use crate::memory::MemoryStore;
 use crate::metrics;
 use crate::ollama::OllamaEmbedder;
+use crate::personal_preferences::PersonalPreferencesStore;
 use crate::profiles::{ProfileEmbedder, ProfileManager};
 use crate::repo_manager;
 use crate::search::{self, AppState, SecurityConfig};
@@ -309,6 +310,7 @@ pub async fn serve(
     mcp_ipc_config: crate::ipc::mcp_ipc::McpIpcConfig,
     feature_flags: crate::config::FeatureFlagsConfig,
     conversation_config: crate::config::MemoryConversationConfig,
+    personal_preferences_config: crate::config::MemoryPersonalPreferencesConfig,
     default_agent_id: Option<String>,
     global_state_dir: Option<PathBuf>,
     daemon_mode: bool,
@@ -572,6 +574,33 @@ pub async fn serve(
             search::ProfileState { manager, embedder }
         })
     };
+    let personal_preferences = if personal_preferences_config.enabled {
+        match personal_preferences_config.resolved_storage_root(global_state_dir.as_deref()) {
+            Ok(storage_root) => match PersonalPreferencesStore::new(&storage_root) {
+                Ok(store) => Some(search::PersonalPreferencesState {
+                    store,
+                    config: personal_preferences_config.clone(),
+                }),
+                Err(err) => {
+                    warn!(
+                        error = ?err,
+                        storage_root = %storage_root.display(),
+                        "personal preferences store initialization failed; feature disabled"
+                    );
+                    None
+                }
+            },
+            Err(err) => {
+                warn!(
+                    error = ?err,
+                    "personal preferences storage root resolution failed; feature disabled"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
     let mcp_auth_token = security.auth_token.clone();
     let metrics = Arc::new(metrics::Metrics::default());
     if let Err(err) = delegation_telemetry::restore_global_metrics_if_empty(
@@ -734,6 +763,7 @@ pub async fn serve(
         delegation_metrics,
         memory,
         conversations,
+        personal_preferences: personal_preferences.clone(),
         profile_state,
         features: feature_flags.clone(),
         default_agent_id,
@@ -747,6 +777,132 @@ pub async fn serve(
         require_repo_id,
         mcp_router,
     };
+    if let Some(personal_preferences) = state.personal_preferences.clone() {
+        if personal_preferences.config.process_in_background {
+            let global_state_dir_for_task = global_state_dir.clone();
+            let llm_config_for_task = state.llm_config.clone();
+            let profile_state_for_task = state.profile_state.clone();
+            let default_agent_id_for_task = state.default_agent_id.clone();
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(Duration::from_secs(
+                    personal_preferences.config.digest_interval_seconds.max(1),
+                ));
+                loop {
+                    ticker.tick().await;
+                    if personal_preferences
+                        .config
+                        .capture_supported_client_transcripts
+                    {
+                        match personal_preferences
+                            .store
+                            .scan_supported_client_transcripts(&personal_preferences.config, None)
+                        {
+                            Ok(scan_summary) => {
+                                if scan_summary.captures_created > 0
+                                    || scan_summary.parse_errors > 0
+                                {
+                                    info!(
+                                        target: "docdexd",
+                                        scanned_files = scan_summary.scanned_files,
+                                        sessions_detected = scan_summary.sessions_detected,
+                                        captures_created = scan_summary.captures_created,
+                                        skipped_existing = scan_summary.skipped_existing,
+                                        parse_errors = scan_summary.parse_errors,
+                                        "personal preferences transcript scan completed"
+                                    );
+                                }
+                            }
+                            Err(err) => {
+                                warn!(
+                                    target: "docdexd",
+                                    error = ?err,
+                                    "personal preferences transcript scan failed"
+                                );
+                            }
+                        }
+                    }
+                    match crate::personal_preferences::process_pending_with_local_agents(
+                        &personal_preferences.store,
+                        global_state_dir_for_task.as_deref(),
+                        &llm_config_for_task,
+                        &personal_preferences.config,
+                        None,
+                    )
+                    .await
+                    {
+                        Ok(mut summary) => {
+                            if let Some(profile_state) = profile_state_for_task.as_ref() {
+                                match crate::personal_preferences::project_safe_preferences_to_profile(
+                                    &personal_preferences.store,
+                                    &profile_state.manager,
+                                    profile_state.embedder.as_ref(),
+                                    &personal_preferences.config,
+                                    default_agent_id_for_task.as_deref(),
+                                )
+                                .await
+                                {
+                                    Ok(projected) => {
+                                        summary.projected_profile_preferences = projected;
+                                    }
+                                    Err(err) => {
+                                        warn!(
+                                            target: "docdexd",
+                                            error = ?err,
+                                            "personal preferences profile projection failed"
+                                        );
+                                    }
+                                }
+                            }
+                            match personal_preferences.store.prune_retention(
+                                personal_preferences.config.raw_retention_days,
+                                personal_preferences.config.derived_retention_days,
+                                true,
+                            ) {
+                                Ok(prune_summary) => {
+                                    if prune_summary.raw_redacted > 0
+                                        || prune_summary.derived_deleted > 0
+                                    {
+                                        info!(
+                                            target: "docdexd",
+                                            raw_redacted = prune_summary.raw_redacted,
+                                            derived_deleted = prune_summary.derived_deleted,
+                                            "personal preferences retention prune applied"
+                                        );
+                                    }
+                                }
+                                Err(err) => {
+                                    warn!(
+                                        target: "docdexd",
+                                        error = ?err,
+                                        "personal preferences retention prune failed"
+                                    );
+                                }
+                            }
+                            if summary.processed_captures > 0 {
+                                info!(
+                                    target: "docdexd",
+                                    processed_captures = summary.processed_captures,
+                                    completed_captures = summary.completed_captures,
+                                    deferred_captures = summary.deferred_captures,
+                                    failed_captures = summary.failed_captures,
+                                    records_written = summary.records_written,
+                                    projected_profile_preferences = summary.projected_profile_preferences,
+                                    "personal preferences background digest processed captures"
+                                );
+                            }
+                        }
+                        Err(err) => {
+                            warn!(
+                                target: "docdexd",
+                                error = ?err,
+                                "personal preferences background digest failed"
+                            );
+                        }
+                    }
+                }
+            });
+        }
+    }
     if let Some(conversations) = state.conversations.clone() {
         state.metrics.set_conversation_archive_size_bytes(
             crate::conversations::archive_size_bytes_total(

@@ -30,6 +30,7 @@ pub mod mswarm;
 pub mod mswarm_telemetry;
 pub mod ollama;
 pub mod orchestrator;
+pub mod personal_preferences;
 pub mod profiles;
 pub mod project_map;
 pub mod ratelimit;

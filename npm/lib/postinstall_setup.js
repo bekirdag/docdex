@@ -1102,20 +1102,39 @@ function upsertMcpServerJson(pathname, url, options = {}) {
       : {};
   const isPlainObject = (entry) =>
     typeof entry === "object" && entry != null && !Array.isArray(entry);
+  const normalizeManagedServerName = (value) =>
+    typeof value === "string" ? value.trim().toLowerCase() : null;
+  const collectDocdexSectionEntry = (section) => {
+    if (!isPlainObject(section)) return {};
+    for (const [key, value] of Object.entries(section)) {
+      if (normalizeManagedServerName(key) === "docdex" && isPlainObject(value)) {
+        return { ...value };
+      }
+    }
+    return {};
+  };
   const removeDocdexFromSection = (key) => {
     const section = root[key];
     if (Array.isArray(section)) {
-      const filtered = section.filter((entry) => !(entry && entry.name === "docdex"));
+      const filtered = section.filter(
+        (entry) => normalizeManagedServerName(entry?.name) !== "docdex"
+      );
       if (filtered.length !== section.length) {
         root[key] = filtered;
       }
       return;
     }
-    if (!isPlainObject(section) || !Object.prototype.hasOwnProperty.call(section, "docdex")) {
+    if (!isPlainObject(section)) {
       return;
     }
-    delete section.docdex;
-    if (Object.keys(section).length === 0) {
+    let removed = false;
+    for (const configKey of Object.keys(section)) {
+      if (normalizeManagedServerName(configKey) === "docdex") {
+        delete section[configKey];
+        removed = true;
+      }
+    }
+    if (removed && Object.keys(section).length === 0) {
       delete root[key];
     }
   };
@@ -1133,7 +1152,7 @@ function upsertMcpServerJson(pathname, url, options = {}) {
     let insertIndex = -1;
     let current = {};
     for (const entry of root.mcpServers) {
-      if (entry && entry.name === "docdex") {
+      if (normalizeManagedServerName(entry?.name) === "docdex") {
         if (insertIndex === -1) {
           insertIndex = nextEntries.length;
           current = isPlainObject(entry) ? { ...entry } : {};
@@ -1156,9 +1175,12 @@ function upsertMcpServerJson(pathname, url, options = {}) {
     if (!picked) {
       root[sectionKey] = {};
     }
-    const section = root[sectionKey];
-    const current = isPlainObject(section.docdex) ? section.docdex : {};
-    section.docdex = { ...current, ...extra, url };
+    const current = collectDocdexSectionEntry(root[sectionKey]);
+    removeDocdexFromSection(sectionKey);
+    if (!root[sectionKey] || !isPlainObject(root[sectionKey])) {
+      root[sectionKey] = {};
+    }
+    root[sectionKey].docdex = { ...current, ...extra, url };
     removeDocdexFromSection(sectionKey === "mcpServers" ? "mcp_servers" : "mcpServers");
   }
   if (JSON.stringify(root) === before) return false;
@@ -1173,7 +1195,15 @@ function upsertZedConfig(pathname, url) {
   if (!root.experimental_mcp_servers || typeof root.experimental_mcp_servers !== "object" || Array.isArray(root.experimental_mcp_servers)) {
     root.experimental_mcp_servers = {};
   }
-  const current = root.experimental_mcp_servers.docdex;
+  const normalizeManagedServerName = (value) =>
+    typeof value === "string" ? value.trim().toLowerCase() : null;
+  let current = root.experimental_mcp_servers.docdex;
+  for (const key of Object.keys(root.experimental_mcp_servers)) {
+    if (normalizeManagedServerName(key) === "docdex" && key !== "docdex") {
+      if (current == null) current = root.experimental_mcp_servers[key];
+      delete root.experimental_mcp_servers[key];
+    }
+  }
   if (current && current.url === url) return false;
   root.experimental_mcp_servers.docdex = { url };
   writeJson(pathname, root);
@@ -1182,16 +1212,52 @@ function upsertZedConfig(pathname, url) {
 
 function upsertCodexConfig(pathname, url) {
   const codexTimeoutSec = 300;
-  const hasSection = (contents, section) =>
-    new RegExp(`^\\s*\\[${section}\\]\\s*$`, "m").test(contents);
-  const hasNestedMcpServers = (contents) =>
-    /^\s*\[mcp_servers\.[^\]]+\]\s*$/m.test(contents);
   const legacyInstructionPath = "~/.docdex/agents.md";
   const parseTomlString = (value) => {
     const trimmed = value.trim();
     const quoted = trimmed.match(/^"(.*)"$/) || trimmed.match(/^'(.*)'$/);
     return quoted ? quoted[1] : trimmed;
   };
+  const normalizeTomlKeyPart = (value) => parseTomlString(value).trim();
+  const parseTomlHeaderParts = (line) => {
+    const match = line.match(/^\s*\[([^\]]+)\]\s*$/);
+    if (!match) return null;
+    return match[1].split(".").map(normalizeTomlKeyPart).filter((part) => part.length > 0);
+  };
+  const hasSection = (contents, section) => {
+    const expectedParts = section.split(".").map(normalizeTomlKeyPart);
+    return contents
+      .split(/\r?\n/)
+      .some((line) => {
+        const parts = parseTomlHeaderParts(line);
+        return (
+          parts &&
+          parts.length === expectedParts.length &&
+          parts.every((part, index) => part === expectedParts[index])
+        );
+      });
+  };
+  const isTomlSectionLine = (line) => parseTomlHeaderParts(line) != null;
+  const isMcpServersSectionLine = (line) => {
+    const parts = parseTomlHeaderParts(line);
+    return !!parts && parts.length === 1 && parts[0] === "mcp_servers";
+  };
+  const isDocdexNestedMcpServerSectionLine = (line) => {
+    const parts = parseTomlHeaderParts(line);
+    return !!parts && parts.length === 2 && parts[0] === "mcp_servers" && parts[1] === "docdex";
+  };
+  const hasNestedMcpServers = (contents) =>
+    contents
+      .split(/\r?\n/)
+      .some((line) => {
+        const parts = parseTomlHeaderParts(line);
+        return !!parts && parts.length > 1 && parts[0] === "mcp_servers";
+      });
+  const parseTomlAssignmentKey = (line) => {
+    const match = line.match(/^\s*([^=]+?)\s*=/);
+    return match ? normalizeTomlKeyPart(match[1]) : null;
+  };
+  const isDocdexAssignmentLine = (line) => parseTomlAssignmentKey(line) === "docdex";
   const migrateLegacyMcpServers = (contents) => {
     if (!/\[\[mcp_servers\]\]/m.test(contents)) {
       return { contents, migrated: false };
@@ -1256,8 +1322,7 @@ function upsertCodexConfig(pathname, url) {
       ["startup_timeout_sec", `${codexTimeoutSec}`]
     ];
     const lines = contents.split(/\r?\n/);
-    const headerRe = /^\s*\[mcp_servers\.docdex\]\s*$/;
-    let start = lines.findIndex((line) => headerRe.test(line));
+    let start = lines.findIndex((line) => isDocdexNestedMcpServerSectionLine(line));
     if (start === -1) {
       if (lines.length && lines[lines.length - 1].trim()) lines.push("");
       lines.push("[mcp_servers.docdex]");
@@ -1267,7 +1332,7 @@ function upsertCodexConfig(pathname, url) {
       return { contents: lines.join("\n"), updated: true };
     }
     let end = start + 1;
-    while (end < lines.length && !/^\s*\[.+\]\s*$/.test(lines[end])) {
+    while (end < lines.length && !isTomlSectionLine(lines[end])) {
       end += 1;
     }
     let updated = false;
@@ -1275,7 +1340,7 @@ function upsertCodexConfig(pathname, url) {
       const lineValue = `${key} = ${value}`;
       let keyIndex = -1;
       for (let i = start + 1; i < end; i += 1) {
-        if (new RegExp(`^\\s*${key}\\s*=`).test(lines[i])) {
+        if (parseTomlAssignmentKey(lines[i]) === key) {
           keyIndex = i;
           break;
         }
@@ -1296,8 +1361,7 @@ function upsertCodexConfig(pathname, url) {
     const entryLine =
       `docdex = { url = "${urlValue}", tool_timeout_sec = ${codexTimeoutSec}, startup_timeout_sec = ${codexTimeoutSec} }`;
     const lines = contents.split(/\r?\n/);
-    const headerRe = /^\s*\[mcp_servers\]\s*$/;
-    const start = lines.findIndex((line) => headerRe.test(line));
+    const start = lines.findIndex((line) => isMcpServersSectionLine(line));
     if (start === -1) {
       if (lines.length && lines[lines.length - 1].trim()) lines.push("");
       lines.push("[mcp_servers]");
@@ -1305,13 +1369,13 @@ function upsertCodexConfig(pathname, url) {
       return { contents: lines.join("\n"), updated: true };
     }
     let end = start + 1;
-    while (end < lines.length && !/^\s*\[.+\]\s*$/.test(lines[end])) {
+    while (end < lines.length && !isTomlSectionLine(lines[end])) {
       end += 1;
     }
     let updated = false;
     const docdexLines = [];
     for (let i = start + 1; i < end; i += 1) {
-      if (/^\s*docdex\s*=/.test(lines[i])) {
+      if (isDocdexAssignmentLine(lines[i])) {
         docdexLines.push(i);
       }
     }
@@ -1349,10 +1413,10 @@ function upsertCodexConfig(pathname, url) {
     };
 
     for (const line of lines) {
-      const section = line.match(/^\s*\[([^\]]+)\]\s*$/);
+      const section = parseTomlHeaderParts(line);
       if (section) {
         flushFeatures();
-        if (section[1].trim() === "features") {
+        if (section.length === 1 && section[0] === "features") {
           inFeatures = true;
           buffer = [line];
           continue;
@@ -1384,13 +1448,13 @@ function upsertCodexConfig(pathname, url) {
     let inRootSection = false;
     let updated = false;
     for (const line of lines) {
-      const section = line.match(/^\s*\[([^\]]+)\]\s*$/);
+      const section = parseTomlHeaderParts(line);
       if (section) {
-        inRootSection = section[1].trim() === "mcp_servers";
+        inRootSection = section.length === 1 && section[0] === "mcp_servers";
         output.push(line);
         continue;
       }
-      if (inRootSection && /^\s*docdex\s*=/.test(line)) {
+      if (inRootSection && isDocdexAssignmentLine(line)) {
         updated = true;
         continue;
       }
@@ -1404,12 +1468,12 @@ function upsertCodexConfig(pathname, url) {
     let inRootSection = false;
     let count = 0;
     for (const line of lines) {
-      const section = line.match(/^\s*\[([^\]]+)\]\s*$/);
+      const section = parseTomlHeaderParts(line);
       if (section) {
-        inRootSection = section[1].trim() === "mcp_servers";
+        inRootSection = section.length === 1 && section[0] === "mcp_servers";
         continue;
       }
-      if (inRootSection && /^\s*docdex\s*=/.test(line)) {
+      if (inRootSection && isDocdexAssignmentLine(line)) {
         count += 1;
       }
     }
@@ -1422,7 +1486,7 @@ function upsertCodexConfig(pathname, url) {
     let skipping = false;
     let updated = false;
     for (const line of lines) {
-      const isSection = /^\s*\[.+\]\s*$/.test(line);
+      const isSection = isTomlSectionLine(line);
       if (skipping) {
         if (isSection) {
           skipping = false;
@@ -1430,7 +1494,7 @@ function upsertCodexConfig(pathname, url) {
           continue;
         }
       }
-      if (/^\s*\[mcp_servers\.docdex\]\s*$/.test(line)) {
+      if (isDocdexNestedMcpServerSectionLine(line)) {
         skipping = true;
         updated = true;
         continue;
@@ -1441,7 +1505,9 @@ function upsertCodexConfig(pathname, url) {
   };
 
   const countNestedDocdexSections = (text) =>
-    (text.match(/^\s*\[mcp_servers\.docdex\]\s*$/gm) || []).length;
+    text
+      .split(/\r?\n/)
+      .filter((line) => isDocdexNestedMcpServerSectionLine(line)).length;
 
   let contents = "";
   if (fs.existsSync(pathname)) {

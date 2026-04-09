@@ -35,6 +35,12 @@ const DEFAULT_CONVERSATION_HOOK_EVENT_RETENTION_DAYS: u32 = 30;
 const DEFAULT_CONVERSATION_EPISODIC_ROLLUP_RETENTION_DAYS: u32 = 180;
 const DEFAULT_CONVERSATION_SWEEPER_INTERVAL_SECONDS: u64 = 600;
 const DEFAULT_CONVERSATION_GRAPH_STRICT_VALIDATION: bool = true;
+const DEFAULT_PERSONAL_PREFERENCES_CONTEXT_RECORD_LIMIT: usize = 8;
+const DEFAULT_PERSONAL_PREFERENCES_CONTEXT_TOKEN_BUDGET: usize = 600;
+const DEFAULT_PERSONAL_PREFERENCES_MAX_PARALLEL_DIGEST_JOBS: usize = 1;
+const DEFAULT_PERSONAL_PREFERENCES_DIGEST_INTERVAL_SECONDS: u64 = 30;
+const DEFAULT_PERSONAL_PREFERENCES_RAW_RETENTION_DAYS: u32 = 0;
+const DEFAULT_PERSONAL_PREFERENCES_DERIVED_RETENTION_DAYS: u32 = 0;
 const DEFAULT_DISCOVERY_PROVIDER: &str = "duckduckgo_lite";
 const DEFAULT_WEB_ENGINE: &str = "chromium";
 const DEFAULT_MSWARM_BASE_URL: &str = "https://api.mswarm.org/";
@@ -60,6 +66,65 @@ pub struct AppConfig {
     pub features: FeatureFlagsConfig,
     #[serde(default)]
     pub server: ServerConfig,
+}
+
+#[derive(Debug, Deserialize)]
+struct AppConfigCompat {
+    #[serde(flatten)]
+    config: AppConfig,
+    #[serde(default)]
+    personal_preferences: Option<MemoryPersonalPreferencesConfig>,
+}
+
+#[derive(Debug, Serialize)]
+struct AppConfigWrite<'a> {
+    core: &'a CoreConfig,
+    llm: &'a LlmConfig,
+    search: &'a SearchConfig,
+    code_intelligence: &'a CodeIntelligenceConfig,
+    web: &'a WebConfigSection,
+    integrations: &'a IntegrationsConfig,
+    memory: MemoryConfigWrite<'a>,
+    features: &'a FeatureFlagsConfig,
+    server: &'a ServerConfig,
+    personal_preferences: &'a MemoryPersonalPreferencesConfig,
+}
+
+#[derive(Debug, Serialize)]
+struct MemoryConfigWrite<'a> {
+    backend: &'a str,
+    profile: &'a MemoryProfileConfig,
+    conversations: &'a MemoryConversationConfig,
+}
+
+impl<'a> From<&'a AppConfig> for AppConfigWrite<'a> {
+    fn from(config: &'a AppConfig) -> Self {
+        Self {
+            core: &config.core,
+            llm: &config.llm,
+            search: &config.search,
+            code_intelligence: &config.code_intelligence,
+            web: &config.web,
+            integrations: &config.integrations,
+            memory: MemoryConfigWrite {
+                backend: config.memory.backend.as_str(),
+                profile: &config.memory.profile,
+                conversations: &config.memory.conversations,
+            },
+            features: &config.features,
+            server: &config.server,
+            personal_preferences: &config.memory.personal_preferences,
+        }
+    }
+}
+
+impl AppConfigCompat {
+    fn into_config(mut self) -> AppConfig {
+        if let Some(personal_preferences) = self.personal_preferences.take() {
+            self.config.memory.personal_preferences = personal_preferences;
+        }
+        self.config
+    }
 }
 
 impl Default for AppConfig {
@@ -210,6 +275,58 @@ impl AppConfig {
                 default_conversation_sweeper_interval_seconds();
         }
         self.memory.conversations.graph.apply_defaults();
+        if self.memory.personal_preferences.max_context_records == 0 {
+            warn!(
+                target: "docdexd",
+                "memory.personal_preferences.max_context_records must be > 0; using default"
+            );
+            self.memory.personal_preferences.max_context_records =
+                default_personal_preferences_context_record_limit();
+        }
+        if self.memory.personal_preferences.max_context_tokens == 0 {
+            warn!(
+                target: "docdexd",
+                "memory.personal_preferences.max_context_tokens must be > 0; using default"
+            );
+            self.memory.personal_preferences.max_context_tokens =
+                default_personal_preferences_context_token_budget();
+        }
+        if self.memory.personal_preferences.max_parallel_digest_jobs == 0 {
+            warn!(
+                target: "docdexd",
+                "memory.personal_preferences.max_parallel_digest_jobs must be > 0; using default"
+            );
+            self.memory.personal_preferences.max_parallel_digest_jobs =
+                default_personal_preferences_max_parallel_digest_jobs();
+        }
+        if self.memory.personal_preferences.digest_interval_seconds == 0 {
+            warn!(
+                target: "docdexd",
+                "memory.personal_preferences.digest_interval_seconds must be > 0; using default"
+            );
+            self.memory.personal_preferences.digest_interval_seconds =
+                default_personal_preferences_digest_interval_seconds();
+        }
+        self.memory
+            .personal_preferences
+            .source_allowlist
+            .retain(|item| !item.trim().is_empty());
+        self.memory
+            .personal_preferences
+            .source_denylist
+            .retain(|item| !item.trim().is_empty());
+        self.memory
+            .personal_preferences
+            .client_transcript_roots
+            .retain(|item| !item.trim().is_empty());
+        self.memory.personal_preferences.content_encryption_key_env = self
+            .memory
+            .personal_preferences
+            .content_encryption_key_env
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
         if self.code_intelligence.dynamic_import_scan_limit == 0 {
             warn!(
                 target: "docdexd",
@@ -717,6 +834,8 @@ pub struct MemoryConfig {
     pub profile: MemoryProfileConfig,
     #[serde(default)]
     pub conversations: MemoryConversationConfig,
+    #[serde(default)]
+    pub personal_preferences: MemoryPersonalPreferencesConfig,
 }
 
 impl Default for MemoryConfig {
@@ -726,6 +845,7 @@ impl Default for MemoryConfig {
             backend: default_memory_backend(),
             profile: MemoryProfileConfig::default(),
             conversations: MemoryConversationConfig::default(),
+            personal_preferences: MemoryPersonalPreferencesConfig::default(),
         }
     }
 }
@@ -774,6 +894,81 @@ pub struct MemoryConversationConfig {
     pub source_denylist: Vec<String>,
     #[serde(default)]
     pub graph: MemoryConversationGraphConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryPersonalPreferencesConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_personal_preferences_storage_root")]
+    pub storage_root: String,
+    #[serde(default = "default_personal_preferences_capture_enabled")]
+    pub capture_enabled: bool,
+    #[serde(
+        default = "default_personal_preferences_capture_docdex_conversations",
+        alias = "auto_capture_chat_completions"
+    )]
+    pub capture_docdex_conversations: bool,
+    #[serde(
+        default = "default_personal_preferences_capture_conversation_hooks",
+        alias = "auto_capture_conversation_hooks"
+    )]
+    pub capture_conversation_hooks: bool,
+    #[serde(default = "default_personal_preferences_capture_imported_conversations")]
+    pub capture_imported_conversations: bool,
+    #[serde(default = "default_personal_preferences_capture_supported_client_transcripts")]
+    pub capture_supported_client_transcripts: bool,
+    #[serde(
+        default = "default_personal_preferences_archive_raw_conversations",
+        alias = "archive_raw_messages"
+    )]
+    pub archive_raw_conversations: bool,
+    #[serde(default = "default_personal_preferences_export_enabled")]
+    pub export_enabled: bool,
+    #[serde(default = "default_personal_preferences_purge_enabled")]
+    pub purge_enabled: bool,
+    #[serde(default = "default_personal_preferences_digest_enabled")]
+    pub digest_enabled: bool,
+    #[serde(default = "default_personal_preferences_process_in_background")]
+    pub process_in_background: bool,
+    #[serde(
+        default = "default_personal_preferences_digest_with_local_mcoda_only",
+        alias = "local_mcoda_only"
+    )]
+    pub digest_with_local_mcoda_only: bool,
+    #[serde(default = "default_personal_preferences_context_injection_enabled")]
+    pub context_injection_enabled: bool,
+    #[serde(default = "default_personal_preferences_context_record_limit")]
+    pub max_context_records: usize,
+    #[serde(default = "default_personal_preferences_context_token_budget")]
+    pub max_context_tokens: usize,
+    #[serde(default = "default_personal_preferences_allow_sensitive_context")]
+    pub allow_sensitive_context: bool,
+    #[serde(default = "default_personal_preferences_auto_project_safe_preferences_to_profile")]
+    pub auto_project_safe_preferences_to_profile: bool,
+    #[serde(default = "default_personal_preferences_max_parallel_digest_jobs")]
+    pub max_parallel_digest_jobs: usize,
+    #[serde(
+        default = "default_personal_preferences_digest_interval_seconds",
+        alias = "processing_interval_seconds"
+    )]
+    pub digest_interval_seconds: u64,
+    #[serde(default = "default_personal_preferences_review_required_for_sensitive")]
+    pub review_required_for_sensitive: bool,
+    #[serde(default = "default_personal_preferences_transcript_secret_scrubber_enabled")]
+    pub transcript_secret_scrubber_enabled: bool,
+    #[serde(default)]
+    pub content_encryption_key_env: Option<String>,
+    #[serde(default)]
+    pub client_transcript_roots: Vec<String>,
+    #[serde(default)]
+    pub source_allowlist: Vec<String>,
+    #[serde(default)]
+    pub source_denylist: Vec<String>,
+    #[serde(default = "default_personal_preferences_raw_retention_days")]
+    pub raw_retention_days: u32,
+    #[serde(default = "default_personal_preferences_derived_retention_days")]
+    pub derived_retention_days: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -864,6 +1059,48 @@ impl Default for MemoryConversationConfig {
     }
 }
 
+impl Default for MemoryPersonalPreferencesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            storage_root: default_personal_preferences_storage_root(),
+            capture_enabled: default_personal_preferences_capture_enabled(),
+            capture_docdex_conversations: default_personal_preferences_capture_docdex_conversations(
+            ),
+            capture_conversation_hooks: default_personal_preferences_capture_conversation_hooks(),
+            capture_imported_conversations:
+                default_personal_preferences_capture_imported_conversations(),
+            capture_supported_client_transcripts:
+                default_personal_preferences_capture_supported_client_transcripts(),
+            archive_raw_conversations: default_personal_preferences_archive_raw_conversations(),
+            export_enabled: default_personal_preferences_export_enabled(),
+            purge_enabled: default_personal_preferences_purge_enabled(),
+            digest_enabled: default_personal_preferences_digest_enabled(),
+            process_in_background: default_personal_preferences_process_in_background(),
+            digest_with_local_mcoda_only: default_personal_preferences_digest_with_local_mcoda_only(
+            ),
+            context_injection_enabled: default_personal_preferences_context_injection_enabled(),
+            max_context_records: default_personal_preferences_context_record_limit(),
+            max_context_tokens: default_personal_preferences_context_token_budget(),
+            allow_sensitive_context: default_personal_preferences_allow_sensitive_context(),
+            auto_project_safe_preferences_to_profile:
+                default_personal_preferences_auto_project_safe_preferences_to_profile(),
+            max_parallel_digest_jobs: default_personal_preferences_max_parallel_digest_jobs(),
+            digest_interval_seconds: default_personal_preferences_digest_interval_seconds(),
+            review_required_for_sensitive:
+                default_personal_preferences_review_required_for_sensitive(),
+            transcript_secret_scrubber_enabled:
+                default_personal_preferences_transcript_secret_scrubber_enabled(),
+            content_encryption_key_env: None,
+            client_transcript_roots: Vec::new(),
+            source_allowlist: Vec::new(),
+            source_denylist: Vec::new(),
+            raw_retention_days: default_personal_preferences_raw_retention_days(),
+            derived_retention_days: default_personal_preferences_derived_retention_days(),
+        }
+    }
+}
+
 impl MemoryConversationConfig {
     pub fn allows_source(&self, source: &str) -> bool {
         let normalized = source.trim().to_ascii_lowercase();
@@ -885,6 +1122,43 @@ impl MemoryConversationConfig {
             .iter()
             .map(|item| item.trim().to_ascii_lowercase())
             .any(|item| !item.is_empty() && item == normalized)
+    }
+}
+
+impl MemoryPersonalPreferencesConfig {
+    pub fn allows_source(&self, source: &str) -> bool {
+        let normalized = source.trim();
+        if normalized.is_empty() {
+            return true;
+        }
+        let normalized = normalized.to_ascii_lowercase();
+        if self
+            .source_denylist
+            .iter()
+            .any(|item| item.trim().eq_ignore_ascii_case(&normalized))
+        {
+            return false;
+        }
+        if self.source_allowlist.is_empty() {
+            return true;
+        }
+        self.source_allowlist
+            .iter()
+            .any(|item| item.trim().eq_ignore_ascii_case(&normalized))
+    }
+
+    pub fn resolved_storage_root(&self, global_state_dir: Option<&Path>) -> Result<PathBuf> {
+        let configured = self.storage_root.trim();
+        if !configured.is_empty() {
+            return expand_config_path(configured, global_state_dir);
+        }
+        let state_dir = match global_state_dir {
+            Some(path) => path.to_path_buf(),
+            None => default_state_dir()?,
+        };
+        Ok(crate::state_layout::personal_preferences_root_for_base(
+            &state_dir,
+        ))
     }
 }
 
@@ -978,8 +1252,8 @@ pub fn load_config_from_path(path: &Path) -> Result<AppConfig> {
         });
         return Ok(config);
     }
-    let mut config: AppConfig =
-        toml::from_str(&text).with_context(|| format!("parse config {}", path.display()))?;
+    let mut config =
+        parse_config_text(&text).with_context(|| format!("parse config {}", path.display()))?;
     config.apply_defaults()?;
     apply_env_overrides(&mut config);
     let mut updated = false;
@@ -994,6 +1268,11 @@ pub fn load_config_from_path(path: &Path) -> Result<AppConfig> {
         import_traces_enabled: config.code_intelligence.import_traces_enabled,
     });
     Ok(config)
+}
+
+pub(crate) fn parse_config_text(text: &str) -> Result<AppConfig, toml::de::Error> {
+    let parsed: AppConfigCompat = toml::from_str(text)?;
+    Ok(parsed.into_config())
 }
 
 pub fn default_config_path() -> Result<PathBuf> {
@@ -1178,13 +1457,52 @@ pub fn write_config(path: &Path, config: &AppConfig) -> Result<()> {
     };
     std::fs::create_dir_all(parent)
         .with_context(|| format!("create config directory {}", parent.display()))?;
-    let payload = toml::to_string_pretty(config).context("serialize config")?;
+    let payload =
+        toml::to_string_pretty(&AppConfigWrite::from(config)).context("serialize config")?;
     std::fs::write(path, payload).with_context(|| format!("write config {}", path.display()))?;
     Ok(())
 }
 
 fn default_state_dir() -> Result<PathBuf> {
     crate::state_paths::default_state_base_dir()
+}
+
+fn resolve_home_dir() -> Result<PathBuf> {
+    if let Some(home) = std::env::var_os("HOME") {
+        return Ok(PathBuf::from(home));
+    }
+    if let Some(home) = std::env::var_os("USERPROFILE") {
+        return Ok(PathBuf::from(home));
+    }
+    let drive =
+        std::env::var_os("HOMEDRIVE").ok_or_else(|| anyhow!("unable to resolve home directory"))?;
+    let path =
+        std::env::var_os("HOMEPATH").ok_or_else(|| anyhow!("unable to resolve home directory"))?;
+    Ok(PathBuf::from(drive).join(path))
+}
+
+fn expand_config_path(raw: &str, global_state_dir: Option<&Path>) -> Result<PathBuf> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return match global_state_dir {
+            Some(path) => Ok(path.to_path_buf()),
+            None => default_state_dir(),
+        };
+    }
+    if trimmed == "~" {
+        return resolve_home_dir();
+    }
+    if let Some(suffix) = trimmed.strip_prefix("~/") {
+        return Ok(resolve_home_dir()?.join(suffix));
+    }
+    let path = PathBuf::from(trimmed);
+    if path.is_absolute() {
+        return Ok(path);
+    }
+    match global_state_dir {
+        Some(base) => Ok(base.join(path)),
+        None => Ok(default_state_dir()?.join(path)),
+    }
 }
 
 fn env_trimmed(key: &str) -> Option<String> {
@@ -1628,6 +1946,98 @@ fn default_conversation_graph_strict_validation() -> bool {
 
 fn default_conversation_graph_relation_allow_literal_object() -> bool {
     true
+}
+
+fn default_personal_preferences_storage_root() -> String {
+    "~/.docdex/personal_preferences".to_string()
+}
+
+fn default_personal_preferences_capture_enabled() -> bool {
+    true
+}
+
+fn default_personal_preferences_capture_docdex_conversations() -> bool {
+    true
+}
+
+fn default_personal_preferences_capture_conversation_hooks() -> bool {
+    true
+}
+
+fn default_personal_preferences_capture_imported_conversations() -> bool {
+    true
+}
+
+fn default_personal_preferences_capture_supported_client_transcripts() -> bool {
+    false
+}
+
+fn default_personal_preferences_archive_raw_conversations() -> bool {
+    true
+}
+
+fn default_personal_preferences_export_enabled() -> bool {
+    true
+}
+
+fn default_personal_preferences_purge_enabled() -> bool {
+    true
+}
+
+fn default_personal_preferences_digest_enabled() -> bool {
+    true
+}
+
+fn default_personal_preferences_process_in_background() -> bool {
+    true
+}
+
+fn default_personal_preferences_digest_with_local_mcoda_only() -> bool {
+    true
+}
+
+fn default_personal_preferences_context_injection_enabled() -> bool {
+    true
+}
+
+fn default_personal_preferences_context_record_limit() -> usize {
+    DEFAULT_PERSONAL_PREFERENCES_CONTEXT_RECORD_LIMIT
+}
+
+fn default_personal_preferences_context_token_budget() -> usize {
+    DEFAULT_PERSONAL_PREFERENCES_CONTEXT_TOKEN_BUDGET
+}
+
+fn default_personal_preferences_allow_sensitive_context() -> bool {
+    false
+}
+
+fn default_personal_preferences_auto_project_safe_preferences_to_profile() -> bool {
+    true
+}
+
+fn default_personal_preferences_max_parallel_digest_jobs() -> usize {
+    DEFAULT_PERSONAL_PREFERENCES_MAX_PARALLEL_DIGEST_JOBS
+}
+
+fn default_personal_preferences_digest_interval_seconds() -> u64 {
+    DEFAULT_PERSONAL_PREFERENCES_DIGEST_INTERVAL_SECONDS
+}
+
+fn default_personal_preferences_review_required_for_sensitive() -> bool {
+    true
+}
+
+fn default_personal_preferences_transcript_secret_scrubber_enabled() -> bool {
+    true
+}
+
+fn default_personal_preferences_raw_retention_days() -> u32 {
+    DEFAULT_PERSONAL_PREFERENCES_RAW_RETENTION_DAYS
+}
+
+fn default_personal_preferences_derived_retention_days() -> u32 {
+    DEFAULT_PERSONAL_PREFERENCES_DERIVED_RETENTION_DAYS
 }
 
 fn default_http_bind_addr() -> String {

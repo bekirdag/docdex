@@ -24,6 +24,7 @@ use crate::orchestrator::{
     memory_budget_from_max_answer_tokens, run_waterfall, MemoryContextAssembly, ProfileBudget,
     SymbolContextAssembly, WaterfallPlan, WaterfallRequest, WebGateConfig,
 };
+use crate::personal_preferences::PersonalPreferencesStore;
 use crate::profiles::{ProfileEmbedder, ProfileManager};
 use crate::ratelimit::RateLimiter;
 use crate::repo_manager;
@@ -249,6 +250,7 @@ pub struct AppState {
     pub delegation_metrics: Arc<crate::metrics::DelegationMetrics>,
     pub memory: Option<MemoryState>,
     pub conversations: Option<ConversationState>,
+    pub personal_preferences: Option<PersonalPreferencesState>,
     pub profile_state: Option<ProfileState>,
     pub features: crate::config::FeatureFlagsConfig,
     pub default_agent_id: Option<String>,
@@ -366,6 +368,12 @@ pub struct ProfileState {
     pub embedder: Option<ProfileEmbedder>,
 }
 
+#[derive(Clone)]
+pub struct PersonalPreferencesState {
+    pub store: PersonalPreferencesStore,
+    pub config: crate::config::MemoryPersonalPreferencesConfig,
+}
+
 pub fn router(state: AppState) -> Router {
     let mut router = Router::new()
         .route("/healthz", get(healthz))
@@ -401,6 +409,60 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/profile/import",
             post(crate::api::v1::profile::profile_import_handler),
+        )
+        .route(
+            "/v1/personal-preferences/status",
+            get(crate::api::v1::personal_preferences::personal_preferences_status_handler),
+        )
+        .route(
+            "/v1/personal-preferences/categories",
+            get(crate::api::v1::personal_preferences::personal_preferences_categories_handler),
+        )
+        .route(
+            "/v1/personal-preferences/captures",
+            get(crate::api::v1::personal_preferences::personal_preferences_list_captures_handler),
+        )
+        .route(
+            "/v1/personal-preferences/captures/:capture_id",
+            get(crate::api::v1::personal_preferences::personal_preferences_read_capture_handler)
+                .delete(crate::api::v1::personal_preferences::personal_preferences_delete_handler),
+        )
+        .route(
+            "/v1/personal-preferences/captures/:capture_id/redact",
+            post(crate::api::v1::personal_preferences::personal_preferences_redact_handler),
+        )
+        .route(
+            "/v1/personal-preferences/search",
+            get(crate::api::v1::personal_preferences::personal_preferences_search_handler),
+        )
+        .route(
+            "/v1/personal-preferences/reviews",
+            get(crate::api::v1::personal_preferences::personal_preferences_reviews_handler),
+        )
+        .route(
+            "/v1/personal-preferences/reviews/:record_id",
+            get(crate::api::v1::personal_preferences::personal_preferences_review_log_handler)
+                .post(crate::api::v1::personal_preferences::personal_preferences_review_handler),
+        )
+        .route(
+            "/v1/personal-preferences/process",
+            post(crate::api::v1::personal_preferences::personal_preferences_process_handler),
+        )
+        .route(
+            "/v1/personal-preferences/scan",
+            post(crate::api::v1::personal_preferences::personal_preferences_scan_handler),
+        )
+        .route(
+            "/v1/personal-preferences/prune",
+            post(crate::api::v1::personal_preferences::personal_preferences_prune_handler),
+        )
+        .route(
+            "/v1/personal-preferences/export",
+            post(crate::api::v1::personal_preferences::personal_preferences_export_handler),
+        )
+        .route(
+            "/v1/personal-preferences/purge",
+            post(crate::api::v1::personal_preferences::personal_preferences_purge_handler),
         )
         .route(
             "/v1/delegate",
@@ -1149,6 +1211,7 @@ mod repo_context_tests {
             delegation_metrics: default_delegation_metrics,
             memory: None,
             conversations: None,
+            personal_preferences: None,
             profile_state: None,
             features: crate::config::FeatureFlagsConfig::default(),
             default_agent_id: None,

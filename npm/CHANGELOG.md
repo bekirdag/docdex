@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.61
+- Add the optional personal-preferences memory subsystem with local capture, background digestion, and packaged HTTP/CLI/MCP controls for status, search, processing, export, redaction, deletion, and purge flows.
+- Align the packaged personal-preferences surface with the top-level `[personal_preferences]` config, richer lineage/materialization, review and retention controls, bounded chat-context injection, and supported-client transcript scanning.
+- Harden installer-managed client config rewrites so whitespace-padded Docdex keys and section names are normalized instead of duplicated on reinstall.
+
 ## 0.2.60
 - Deduplicate installer-managed Docdex client config on reinstall: JSON client configs now collapse stale `docdex` entries, Codex TOML converges to one canonical Docdex entry, and packaged Docdex instruction blocks replace older Codex/Gemini/Claude prompt blocks instead of duplicating them.
 - Update the packaged daemon dependency set to remove the vulnerable `rustls-webpki` chain that caused the nightly security audit failure.

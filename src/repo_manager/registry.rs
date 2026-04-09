@@ -743,6 +743,11 @@ fn derive_state_paths_debug(
         cache_libs_dir: cache_dir.join("libs").display().to_string(),
         profiles_dir: profiles_dir.display().to_string(),
         profiles_sync_dir: profiles_dir.join("sync").display().to_string(),
+        personal_preferences_dir: crate::state_layout::personal_preferences_root_for_base(
+            &base_dir,
+        )
+        .display()
+        .to_string(),
         browser_profiles_dir: browser_profiles_dir.display().to_string(),
         locks_dir: base_dir.join("locks").display().to_string(),
         logs_dir: base_dir.join("logs").display().to_string(),

@@ -10,7 +10,7 @@ use axum::{http::StatusCode, Json};
 use axum::{response::IntoResponse, response::Response};
 use futures::stream;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::convert::Infallible;
 use std::path::Path;
 use std::time::Duration;
@@ -165,6 +165,8 @@ struct BehavioralTruth {
     style: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     workflow: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    personal: Vec<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -422,6 +424,33 @@ pub(crate) async fn chat_completions_handler(
                 payload.model.as_deref(),
                 payload.agent.as_deref(),
             );
+            let personal_preferences_context = state
+                .personal_preferences
+                .as_ref()
+                .filter(|personal_preferences| {
+                    personal_preferences.config.context_injection_enabled
+                })
+                .map(|personal_preferences| {
+                    personal_preferences.store.build_context(
+                        &query,
+                        crate::personal_preferences::PersonalPreferencesContextOptions {
+                            max_records: personal_preferences.config.max_context_records,
+                            budget_tokens: personal_preferences.config.max_context_tokens,
+                            allow_sensitive: personal_preferences.config.allow_sensitive_context,
+                            current_repo_root: Some(repo.indexer.repo_root().display().to_string()),
+                        },
+                    )
+                })
+                .transpose()
+                .unwrap_or_else(|err| {
+                    warn!(
+                        target: "docdexd",
+                        request_id = %request_id,
+                        error = ?err,
+                        "failed to assemble personal preferences context"
+                    );
+                    None
+                });
             let project_map = if compress_results || !state.features.project_map {
                 None
             } else {
@@ -462,6 +491,7 @@ pub(crate) async fn chat_completions_handler(
                 }
             };
             let reasoning_trace = build_reasoning_trace(
+                personal_preferences_context.as_ref(),
                 result.profile_context.as_ref(),
                 result.memory_context.as_ref(),
                 &result.search_response.hits,
@@ -474,6 +504,7 @@ pub(crate) async fn chat_completions_handler(
                     "ReasoningTrace",
                     json!({
                         "behavioral_truth": {
+                            "personal": trace.behavioral_truth.personal.clone(),
                             "style": trace.behavioral_truth.style.clone(),
                             "workflow": trace.behavioral_truth.workflow.clone(),
                         },
@@ -550,7 +581,7 @@ pub(crate) async fn chat_completions_handler(
                         id,
                         object: "chat.completion.chunk",
                         created,
-                        model,
+                        model: model.clone(),
                         choices: vec![ChatChunkChoice {
                             index: 0,
                             delta: ChatChunkDelta {
@@ -560,9 +591,29 @@ pub(crate) async fn chat_completions_handler(
                             finish_reason: Some("stop"),
                         }],
                     };
+                    maybe_capture_personal_preferences_chat(
+                        &state,
+                        repo.indexer.repo_root(),
+                        &repo.repo_id,
+                        profile_agent_id.as_deref(),
+                        &payload.messages,
+                        &content,
+                        model.as_str(),
+                        true,
+                    );
                     return stream_response(content_iter.chain(std::iter::once(final_chunk)));
                 }
 
+                maybe_capture_personal_preferences_chat(
+                    &state,
+                    repo.indexer.repo_root(),
+                    &repo.repo_id,
+                    profile_agent_id.as_deref(),
+                    &payload.messages,
+                    &content,
+                    model.as_str(),
+                    true,
+                );
                 ChatCompletionResponse {
                     id: format!("chatcmpl-{}", request_id),
                     object: "chat.completion",
@@ -657,6 +708,7 @@ pub(crate) async fn chat_completions_handler(
                     &query,
                     wakeup_text.as_deref(),
                     wakeup_trace,
+                    personal_preferences_context.as_ref(),
                     &result.search_response.hits,
                     result.search_response.symbols_context.as_ref(),
                     web_context.as_deref(),
@@ -772,7 +824,7 @@ pub(crate) async fn chat_completions_handler(
                         id,
                         object: "chat.completion.chunk",
                         created,
-                        model,
+                        model: model.clone(),
                         choices: vec![ChatChunkChoice {
                             index: 0,
                             delta: ChatChunkDelta {
@@ -782,9 +834,29 @@ pub(crate) async fn chat_completions_handler(
                             finish_reason: Some("stop"),
                         }],
                     };
+                    maybe_capture_personal_preferences_chat(
+                        &state,
+                        repo.indexer.repo_root(),
+                        &repo.repo_id,
+                        profile_agent_id.as_deref(),
+                        &payload.messages,
+                        &completion.output,
+                        model.as_str(),
+                        false,
+                    );
                     return stream_response(content_iter.chain(std::iter::once(final_chunk)));
                 }
 
+                maybe_capture_personal_preferences_chat(
+                    &state,
+                    repo.indexer.repo_root(),
+                    &repo.repo_id,
+                    profile_agent_id.as_deref(),
+                    &payload.messages,
+                    &completion.output,
+                    model.as_str(),
+                    false,
+                );
                 ChatCompletionResponse {
                     id: format!("chatcmpl-{}", request_id),
                     object: "chat.completion",
@@ -983,6 +1055,7 @@ struct WebContextTrace {
 
 struct ChatContextTrace {
     wakeup: WakeupContextTrace,
+    personal_preferences: crate::personal_preferences::PersonalPreferencesContextTrace,
     profile: ProfileSnippetTrace,
     map: MapSnippetTrace,
     memory: MemorySnippetTrace,
@@ -1268,6 +1341,9 @@ fn build_context_summary(
     query: &str,
     wakeup_context: Option<&str>,
     wakeup_trace: WakeupContextTrace,
+    personal_preferences_context: Option<
+        &crate::personal_preferences::PersonalPreferencesContextAssembly,
+    >,
     hits: &[crate::index::Hit],
     symbols_context: Option<&SymbolContextAssembly>,
     web_context: Option<&[crate::orchestrator::web::WebFetchResult]>,
@@ -1286,6 +1362,23 @@ fn build_context_summary(
         .filter(|value| !value.is_empty())
     {
         lines.push(wakeup_context.to_string());
+    }
+
+    let personal_preferences_trace = personal_preferences_context
+        .map(|context| context.trace.clone())
+        .unwrap_or_default();
+    if let Some(personal_preferences_context) = personal_preferences_context {
+        if !personal_preferences_context.items.is_empty() {
+            lines.push("Personal profile context (advisory):".to_string());
+            let mut last_section = String::new();
+            for item in &personal_preferences_context.items {
+                if item.section != last_section {
+                    lines.push(format!("{}:", item.section.replace('_', " ")));
+                    last_section = item.section.clone();
+                }
+                lines.push(format!("- {}", item.content));
+            }
+        }
     }
 
     let style_categories = [crate::profiles::PreferenceCategory::Style];
@@ -1469,6 +1562,7 @@ fn build_context_summary(
         lines.join("\n"),
         ChatContextTrace {
             wakeup: wakeup_trace,
+            personal_preferences: personal_preferences_trace,
             profile: profile_trace,
             map: map_trace,
             memory: memory_trace,
@@ -1487,11 +1581,20 @@ fn build_context_summary(
 }
 
 fn build_reasoning_trace(
+    personal_preferences_context: Option<
+        &crate::personal_preferences::PersonalPreferencesContextAssembly,
+    >,
     profile_context: Option<&crate::orchestrator::ProfileContextAssembly>,
     memory_context: Option<&crate::orchestrator::MemoryContextAssembly>,
     hits: &[crate::index::Hit],
     web_context: Option<&[crate::orchestrator::web::WebFetchResult]>,
 ) -> Option<ReasoningTrace> {
+    let mut personal = Vec::new();
+    if let Some(context) = personal_preferences_context {
+        for item in &context.items {
+            personal.push(truncate_compressed_text(&item.content));
+        }
+    }
     let mut style = Vec::new();
     let mut workflow = Vec::new();
     if let Some(context) = profile_context {
@@ -1530,6 +1633,7 @@ fn build_reasoning_trace(
 
     if style.is_empty()
         && workflow.is_empty()
+        && personal.is_empty()
         && memory.is_empty()
         && repo.is_empty()
         && web.is_empty()
@@ -1537,7 +1641,11 @@ fn build_reasoning_trace(
         None
     } else {
         Some(ReasoningTrace {
-            behavioral_truth: BehavioralTruth { style, workflow },
+            behavioral_truth: BehavioralTruth {
+                style,
+                workflow,
+                personal,
+            },
             technical_truth: TechnicalTruth { memory, repo, web },
         })
     }
@@ -1580,6 +1688,11 @@ fn build_prompt(
 fn log_budget_drops(request_id: &str, repo_root: &Path, trace: &ChatContextTrace) {
     let wakeup_dropped = trace.wakeup.available.saturating_sub(trace.wakeup.selected);
     let wakeup_truncated = trace.wakeup.truncated;
+    let personal_dropped = trace
+        .personal_preferences
+        .available
+        .saturating_sub(trace.personal_preferences.selected);
+    let personal_truncated = trace.personal_preferences.truncated;
     let profile_dropped = trace
         .profile
         .available
@@ -1619,6 +1732,8 @@ fn log_budget_drops(request_id: &str, repo_root: &Path, trace: &ChatContextTrace
 
     if wakeup_dropped > 0
         || wakeup_truncated > 0
+        || personal_dropped > 0
+        || personal_truncated > 0
         || profile_dropped > 0
         || profile_truncated > 0
         || map_dropped > 0
@@ -1637,6 +1752,9 @@ fn log_budget_drops(request_id: &str, repo_root: &Path, trace: &ChatContextTrace
             wakeup_dropped,
             wakeup_truncated,
             wakeup_budget_tokens = trace.wakeup.budget_tokens,
+            personal_dropped,
+            personal_truncated,
+            personal_budget_tokens = trace.personal_preferences.budget_tokens,
             profile_dropped,
             profile_truncated,
             profile_budget_tokens = trace.profile.budget_tokens,
@@ -2048,6 +2166,107 @@ fn now_epoch_seconds() -> u64 {
         .unwrap_or(0)
 }
 
+fn maybe_capture_personal_preferences_chat(
+    state: &AppState,
+    repo_root: &std::path::Path,
+    repo_id: &str,
+    agent_id: Option<&str>,
+    messages: &[ChatMessage],
+    assistant_output: &str,
+    model: &str,
+    compressed_results: bool,
+) {
+    let Some(personal_preferences) = state.personal_preferences.as_ref() else {
+        return;
+    };
+    if !personal_preferences.config.capture_enabled
+        || !personal_preferences.config.capture_docdex_conversations
+        || !personal_preferences.config.allows_source("chat_completion")
+    {
+        return;
+    }
+    let request = build_personal_preferences_chat_capture_request(
+        repo_root,
+        repo_id,
+        agent_id,
+        messages,
+        assistant_output,
+        model,
+        compressed_results,
+    );
+    if let Err(err) = personal_preferences.store.capture_conversation(
+        request,
+        personal_preferences.config.digest_enabled,
+        personal_preferences.config.archive_raw_conversations,
+    ) {
+        warn!(
+            target: "docdexd",
+            error = ?err,
+            "personal preferences capture failed for chat completion"
+        );
+    }
+}
+
+fn build_personal_preferences_chat_capture_request(
+    repo_root: &std::path::Path,
+    repo_id: &str,
+    agent_id: Option<&str>,
+    messages: &[ChatMessage],
+    assistant_output: &str,
+    model: &str,
+    compressed_results: bool,
+) -> crate::personal_preferences::PersonalPreferencesCaptureRequest {
+    let mut captured_messages = messages
+        .iter()
+        .filter_map(chat_message_to_personal_preferences_message)
+        .collect::<Vec<_>>();
+    if !assistant_output.trim().is_empty() {
+        captured_messages.push(crate::personal_preferences::PersonalPreferencesMessage {
+            role: "assistant".to_string(),
+            content: assistant_output.trim().to_string(),
+            created_at_ms: None,
+            metadata: Value::Null,
+        });
+    }
+    crate::personal_preferences::PersonalPreferencesCaptureRequest {
+        source: "chat_completion".to_string(),
+        source_session_id: None,
+        capture_kind: Some("chat_completion".to_string()),
+        title: None,
+        agent_id: agent_id.map(ToOwned::to_owned),
+        transport: Some("http".to_string()),
+        repo_id: Some(repo_id.to_string()),
+        repo_root: Some(repo_root.display().to_string()),
+        scope_id: Some(repo_id.to_string()),
+        scope_label: Some(repo_root.display().to_string()),
+        started_at_ms: None,
+        ended_at_ms: None,
+        messages: captured_messages,
+        transcript_text: None,
+        summary_text: None,
+        metadata: serde_json::json!({
+            "model": model,
+            "compressed_results": compressed_results,
+        }),
+    }
+}
+
+fn chat_message_to_personal_preferences_message(
+    message: &ChatMessage,
+) -> Option<crate::personal_preferences::PersonalPreferencesMessage> {
+    let content = extract_message_text(&message.content)?;
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(crate::personal_preferences::PersonalPreferencesMessage {
+        role: message.role.trim().to_ascii_lowercase(),
+        content: trimmed.to_string(),
+        created_at_ms: None,
+        metadata: Value::Null,
+    })
+}
+
 fn error_response(
     status: StatusCode,
     error_type: &'static str,
@@ -2225,6 +2444,7 @@ mod tests {
                 truncated: 0,
                 budget_tokens: 0,
             },
+            None,
             &hits,
             None,
             None,
@@ -2337,6 +2557,7 @@ mod tests {
                 truncated: 0,
                 budget_tokens: 0,
             },
+            None,
             &hits,
             None,
             None,
@@ -2357,6 +2578,131 @@ mod tests {
         assert!(memory_pos < repo_pos);
         assert_eq!(trace.profile.available, 1);
         assert_eq!(trace.profile.selected, 1);
+    }
+
+    #[test]
+    fn personal_preferences_context_precedes_profile_and_memory() {
+        let hits = vec![Hit {
+            doc_id: "doc-1".to_string(),
+            rel_path: "docs/readme.md".to_string(),
+            path: "docs/readme.md".to_string(),
+            kind: DocumentKind::Doc,
+            doc_type: None,
+            score: 1.0,
+            summary: "Repo summary text".to_string(),
+            snippet: String::new(),
+            token_estimate: 12,
+            snippet_origin: None,
+            snippet_truncated: None,
+            line_start: None,
+            line_end: None,
+            score_breakdown: None,
+            provenance: None,
+            retrieval_explanation: None,
+        }];
+
+        let personal_preferences_context =
+            crate::personal_preferences::PersonalPreferencesContextAssembly {
+                items: vec![
+                    crate::personal_preferences::PersonalPreferencesContextItem {
+                        section: "stable_preferences".to_string(),
+                        content: "[coding_preference] user prefers Rust".to_string(),
+                        category: "coding_preference".to_string(),
+                        record_type: "preference".to_string(),
+                        confidence: 0.95,
+                        source_repo_root: None,
+                        token_estimate: 5,
+                    },
+                ],
+                trace: crate::personal_preferences::PersonalPreferencesContextTrace {
+                    available: 1,
+                    selected: 1,
+                    truncated: 0,
+                    budget_tokens: 12,
+                },
+            };
+
+        let profile_context = ProfileContextAssembly {
+            items: vec![ProfileContextItem {
+                id: "pref-1".to_string(),
+                agent_id: "agent-1".to_string(),
+                category: PreferenceCategory::Style,
+                last_updated: 0,
+                score: 0.9,
+                token_estimate: 3,
+                truncated: false,
+                content: "Keep responses concise".to_string(),
+            }],
+            prune_trace: ProfileContextPruneTrace {
+                budget_tokens: 3,
+                max_items: 5,
+                candidates: 1,
+                kept: 1,
+                dropped: Vec::new(),
+            },
+        };
+
+        let memory_context = MemoryContextAssembly {
+            items: vec![MemoryContextItem {
+                id: "mem-1".to_string(),
+                created_at_ms: 0,
+                score: 0.9,
+                token_estimate: 3,
+                truncated: false,
+                content: "remember alpha".to_string(),
+                metadata: json!({ "source": "test" }),
+            }],
+            prune_trace: MemoryContextPruneTrace {
+                budget_tokens: 10,
+                max_items: 5,
+                candidates: 1,
+                kept: 1,
+                dropped: Vec::new(),
+            },
+        };
+
+        let budgets = ChatContextBudgets {
+            system_tokens: 0,
+            wakeup_tokens: 0,
+            profile_tokens: 3,
+            map_tokens: 0,
+            memory_tokens: 10,
+            diff_tokens: 0,
+            repo_tokens: 20,
+            history_tokens: 0,
+        };
+
+        let (context, trace) = build_context_summary(
+            "hello",
+            None,
+            WakeupContextTrace {
+                available: 0,
+                selected: 0,
+                truncated: 0,
+                budget_tokens: 0,
+            },
+            Some(&personal_preferences_context),
+            &hits,
+            None,
+            None,
+            Some(&profile_context),
+            None,
+            false,
+            Some(&memory_context),
+            None,
+            &budgets,
+        );
+
+        let personal_pos = context
+            .find("Personal profile context (advisory):")
+            .expect("personal context");
+        let profile_pos = context
+            .find("Style preferences (advisory):")
+            .expect("profile context");
+        let memory_pos = context.find("Memory context:").expect("memory context");
+        assert!(personal_pos < profile_pos);
+        assert!(profile_pos < memory_pos);
+        assert_eq!(trace.personal_preferences.selected, 1);
     }
 
     #[test]
@@ -2381,6 +2727,7 @@ mod tests {
                 truncated: 0,
                 budget_tokens: 0,
             },
+            None,
             &[],
             None,
             None,

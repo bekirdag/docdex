@@ -156,6 +156,148 @@ fn apply_defaults_sets_conversation_memory_defaults() -> Result<(), Box<dyn std:
 }
 
 #[test]
+fn apply_defaults_sets_personal_preferences_defaults() -> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let _env = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
+
+    let mut config = AppConfig::default();
+    config.memory.personal_preferences.max_context_records = 0;
+    config.memory.personal_preferences.max_context_tokens = 0;
+    config.memory.personal_preferences.max_parallel_digest_jobs = 0;
+    config.memory.personal_preferences.digest_interval_seconds = 0;
+    config.memory.personal_preferences.source_allowlist =
+        vec!["".to_string(), "chat_completion".to_string()];
+    config.memory.personal_preferences.source_denylist = vec!["".to_string(), "manual".to_string()];
+    config.memory.personal_preferences.client_transcript_roots =
+        vec!["".to_string(), "~/sessions".to_string()];
+    config
+        .memory
+        .personal_preferences
+        .content_encryption_key_env = Some("  DOCDEX_PP_KEY  ".to_string());
+    config.apply_defaults()?;
+
+    assert!(!config.memory.personal_preferences.enabled);
+    assert_eq!(
+        config.memory.personal_preferences.storage_root,
+        "~/.docdex/personal_preferences"
+    );
+    assert!(config.memory.personal_preferences.capture_enabled);
+    assert!(
+        config
+            .memory
+            .personal_preferences
+            .capture_docdex_conversations
+    );
+    assert!(
+        config
+            .memory
+            .personal_preferences
+            .capture_conversation_hooks
+    );
+    assert!(
+        config
+            .memory
+            .personal_preferences
+            .capture_imported_conversations
+    );
+    assert!(
+        !config
+            .memory
+            .personal_preferences
+            .capture_supported_client_transcripts
+    );
+    assert!(config.memory.personal_preferences.archive_raw_conversations);
+    assert!(config.memory.personal_preferences.export_enabled);
+    assert!(config.memory.personal_preferences.purge_enabled);
+    assert!(config.memory.personal_preferences.digest_enabled);
+    assert!(config.memory.personal_preferences.process_in_background);
+    assert!(
+        config
+            .memory
+            .personal_preferences
+            .digest_with_local_mcoda_only
+    );
+    assert!(config.memory.personal_preferences.context_injection_enabled);
+    assert!(!config.memory.personal_preferences.allow_sensitive_context);
+    assert!(
+        config
+            .memory
+            .personal_preferences
+            .auto_project_safe_preferences_to_profile
+    );
+    assert!(
+        config
+            .memory
+            .personal_preferences
+            .review_required_for_sensitive
+    );
+    assert!(
+        config
+            .memory
+            .personal_preferences
+            .transcript_secret_scrubber_enabled
+    );
+    assert_eq!(
+        config.memory.personal_preferences.max_context_records,
+        DEFAULT_PERSONAL_PREFERENCES_CONTEXT_RECORD_LIMIT
+    );
+    assert_eq!(
+        config.memory.personal_preferences.max_context_tokens,
+        DEFAULT_PERSONAL_PREFERENCES_CONTEXT_TOKEN_BUDGET
+    );
+    assert_eq!(
+        config.memory.personal_preferences.max_parallel_digest_jobs,
+        DEFAULT_PERSONAL_PREFERENCES_MAX_PARALLEL_DIGEST_JOBS
+    );
+    assert_eq!(
+        config.memory.personal_preferences.digest_interval_seconds,
+        DEFAULT_PERSONAL_PREFERENCES_DIGEST_INTERVAL_SECONDS
+    );
+    assert_eq!(
+        config.memory.personal_preferences.source_allowlist,
+        vec!["chat_completion".to_string()]
+    );
+    assert_eq!(
+        config.memory.personal_preferences.source_denylist,
+        vec!["manual".to_string()]
+    );
+    assert_eq!(
+        config.memory.personal_preferences.client_transcript_roots,
+        vec!["~/sessions".to_string()]
+    );
+    assert_eq!(
+        config
+            .memory
+            .personal_preferences
+            .content_encryption_key_env
+            .as_deref(),
+        Some("DOCDEX_PP_KEY")
+    );
+    Ok(())
+}
+
+#[test]
+fn personal_preferences_resolves_storage_root_and_source_policy(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let _env = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
+
+    let mut config = MemoryPersonalPreferencesConfig::default();
+    config.source_allowlist = vec!["chat_completion".to_string(), "codex".to_string()];
+    config.source_denylist = vec!["manual".to_string()];
+
+    let resolved = config.resolved_storage_root(None)?;
+    assert_eq!(
+        resolved,
+        temp.path().join(".docdex").join("personal_preferences")
+    );
+    assert!(config.allows_source("chat_completion"));
+    assert!(!config.allows_source("manual"));
+    assert!(!config.allows_source("hook"));
+    Ok(())
+}
+
+#[test]
 fn apply_defaults_sanitizes_conversation_graph_extensions() -> Result<(), Box<dyn std::error::Error>>
 {
     let temp = TempDir::new()?;
@@ -381,6 +523,67 @@ primary_agent_id = "qwen-3.5-35b"
         config.llm.delegation.general.primary_agent_id,
         "qwen-3.5-35b"
     );
+    Ok(())
+}
+
+#[test]
+fn load_config_accepts_top_level_personal_preferences_section(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let _env = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
+    let config_path = temp.path().join("docdex.toml");
+    std::fs::write(
+        &config_path,
+        r#"
+[core]
+global_state_dir = "~/state"
+
+[memory.personal_preferences]
+enabled = false
+capture_supported_client_transcripts = false
+
+[personal_preferences]
+enabled = true
+capture_supported_client_transcripts = true
+source_allowlist = ["codex"]
+"#,
+    )?;
+
+    let config = load_config_from_path(&config_path)?;
+    assert!(config.memory.personal_preferences.enabled);
+    assert!(
+        config
+            .memory
+            .personal_preferences
+            .capture_supported_client_transcripts
+    );
+    assert_eq!(
+        config.memory.personal_preferences.source_allowlist,
+        vec!["codex".to_string()]
+    );
+    Ok(())
+}
+
+#[test]
+fn write_config_serializes_canonical_top_level_personal_preferences_section(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let config_path = temp.path().join("config.toml");
+    let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
+    let mut config = AppConfig::default();
+    config.memory.personal_preferences.enabled = true;
+    config
+        .memory
+        .personal_preferences
+        .capture_supported_client_transcripts = true;
+    config.memory.personal_preferences.max_context_tokens = 600;
+
+    write_config(&config_path, &config)?;
+
+    let written = std::fs::read_to_string(&config_path)?;
+    assert!(written.contains("[personal_preferences]"));
+    assert!(!written.contains("[memory.personal_preferences]"));
+    assert!(written.contains("capture_supported_client_transcripts = true"));
     Ok(())
 }
 

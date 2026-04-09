@@ -309,6 +309,7 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
         mcp_ipc_config,
         config.features.clone(),
         config.memory.conversations.clone(),
+        config.memory.personal_preferences.clone(),
         default_agent_id,
         config.core.global_state_dir.clone(),
         daemon_mode,

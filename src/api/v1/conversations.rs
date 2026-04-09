@@ -224,6 +224,26 @@ pub(crate) async fn conversation_import_handler(
             "conversation source is blocked by memory.conversations source policy",
         );
     }
+    let personal_preferences_capture = state
+        .personal_preferences
+        .as_ref()
+        .filter(|personal_preferences| {
+            crate::personal_preferences::should_capture_external_source(
+                &personal_preferences.config,
+                &payload.source,
+                personal_preferences.config.capture_imported_conversations,
+            )
+        })
+        .map(|personal_preferences| {
+            (
+                personal_preferences.clone(),
+                build_personal_preferences_import_capture_request(
+                    scope.scope_id(),
+                    scope.scope_label(),
+                    &payload,
+                ),
+            )
+        });
     let route_targets = build_conversation_route_targets(
         scope.repo_memory_target(),
         state.profile_state.as_ref().map(|profile| {
@@ -251,6 +271,20 @@ pub(crate) async fn conversation_import_handler(
         .await
     {
         Ok(imported) => {
+            if let Some((personal_preferences, capture_request)) = personal_preferences_capture {
+                if let Err(err) = personal_preferences.store.capture_conversation(
+                    capture_request,
+                    personal_preferences.config.digest_enabled,
+                    personal_preferences.config.archive_raw_conversations,
+                ) {
+                    warn!(
+                        target: "docdexd",
+                        request_id = %request_id.0,
+                        error = ?err,
+                        "personal preferences capture failed for imported conversation"
+                    );
+                }
+            }
             update_conversation_archive_metric(&state, &conversations);
             info!(
                 target: "docdexd",
@@ -1116,6 +1150,43 @@ pub(crate) fn map_import_messages(
             })
             .collect::<Vec<_>>()
     })
+}
+
+fn build_personal_preferences_import_capture_request(
+    scope_id: String,
+    scope_label: String,
+    payload: &crate::conversations::ConversationImport,
+) -> crate::personal_preferences::PersonalPreferencesCaptureRequest {
+    crate::personal_preferences::PersonalPreferencesCaptureRequest {
+        source: payload.source.clone(),
+        source_session_id: payload.source_session_id.clone(),
+        capture_kind: Some("conversation_import".to_string()),
+        title: payload.title.clone(),
+        agent_id: payload.agent_id.clone(),
+        transport: payload.transport.clone(),
+        repo_id: Some(scope_id.clone()),
+        repo_root: Some(scope_label.clone()),
+        scope_id: Some(scope_id),
+        scope_label: Some(scope_label),
+        started_at_ms: payload.started_at_ms,
+        ended_at_ms: payload.ended_at_ms,
+        messages: payload
+            .messages
+            .clone()
+            .into_iter()
+            .map(
+                |message| crate::personal_preferences::PersonalPreferencesMessage {
+                    role: message.role.as_str().to_string(),
+                    content: message.content,
+                    created_at_ms: message.created_at_ms,
+                    metadata: message.metadata,
+                },
+            )
+            .collect(),
+        transcript_text: None,
+        summary_text: None,
+        metadata: payload.metadata.clone(),
+    }
 }
 
 fn log_conversation_audit(

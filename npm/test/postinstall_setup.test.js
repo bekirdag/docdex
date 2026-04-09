@@ -113,6 +113,41 @@ test("upsertMcpServerJson collapses duplicate docdex entries across sections", (
   assert.equal(parsed.mcp_servers.another.url, "http://another");
 });
 
+test("upsertMcpServerJson collapses whitespace-padded docdex entries across sections", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-json-spaced-dedupe-"));
+  const file = path.join(dir, "config.json");
+  fs.writeFileSync(
+    file,
+    JSON.stringify(
+      {
+        mcpServers: [
+          { name: " docdex ", url: "http://old1" },
+          { name: "other", url: "http://other" },
+          { name: "DOCDEX", url: "http://old2" }
+        ],
+        mcp_servers: {
+          " docdex ": { url: "http://stale" },
+          another: { url: "http://another" }
+        }
+      },
+      null,
+      2
+    )
+  );
+  const url = configUrlForPort(3000);
+  const changed = upsertMcpServerJson(file, url);
+  assert.equal(changed, true);
+  const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.deepEqual(
+    parsed.mcpServers
+      .filter((entry) => typeof entry.name === "string" && entry.name.trim().toLowerCase() === "docdex")
+      .map((entry) => entry.url),
+    [url]
+  );
+  assert.equal(parsed.mcp_servers[" docdex "], undefined);
+  assert.equal(parsed.mcp_servers.another.url, "http://another");
+});
+
 test("upsertMcpServerJson respects mcp_servers map", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-json-snake-"));
   const file = path.join(dir, "config.json");
@@ -166,6 +201,31 @@ test("upsertZedConfig sets experimental_mcp_servers", () => {
   assert.equal(changed, true);
   const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
   assert.equal(parsed.experimental_mcp_servers.docdex.url, url);
+});
+
+test("upsertZedConfig normalizes whitespace-padded docdex keys", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-zed-spaced-"));
+  const file = path.join(dir, "settings.json");
+  fs.writeFileSync(
+    file,
+    JSON.stringify(
+      {
+        experimental_mcp_servers: {
+          " docdex ": { url: "http://old" },
+          other: { url: "http://other" }
+        }
+      },
+      null,
+      2
+    )
+  );
+  const url = configUrlForPort(3000);
+  const changed = upsertZedConfig(file, url);
+  assert.equal(changed, true);
+  const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.equal(parsed.experimental_mcp_servers[" docdex "], undefined);
+  assert.equal(parsed.experimental_mcp_servers.docdex.url, url);
+  assert.equal(parsed.experimental_mcp_servers.other.url, "http://other");
 });
 
 test("upsertCodexConfig appends docdex server", () => {
@@ -248,6 +308,40 @@ test("upsertCodexConfig removes stale inline docdex entry when nested tables exi
   assert.equal(changed, true);
   const contents = fs.readFileSync(file, "utf8");
   assert.ok(!contents.includes('docdex = { url = "http://old/v1/mcp" }'));
+  assert.equal((contents.match(/\[mcp_servers\.docdex\]/g) || []).length, 1);
+  assert.ok(contents.includes("[mcp_servers.other]"));
+  assert.ok(contents.includes(`url = "${url}"`));
+  assert.ok(contents.includes("tool_timeout_sec = 300"));
+  assert.ok(contents.includes("startup_timeout_sec = 300"));
+});
+
+test("upsertCodexConfig normalizes whitespace-padded nested docdex sections", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-codex-spaced-dedupe-"));
+  const file = path.join(dir, "config.toml");
+  fs.writeFileSync(
+    file,
+    [
+      "[mcp_servers]",
+      'docdex = { url = "http://old-root/v1/mcp" }',
+      "",
+      "[mcp_servers.docdex ]",
+      'url = "http://old-nested-1/v1/mcp"',
+      "",
+      "[mcp_servers. docdex]",
+      "startup_timeout_sec = 120",
+      "",
+      "[mcp_servers.other]",
+      'url = "http://other/v1/mcp"',
+      ""
+    ].join("\n")
+  );
+  const url = configStreamableUrlForPort(3000);
+  const changed = upsertCodexConfig(file, url);
+  assert.equal(changed, true);
+  const contents = fs.readFileSync(file, "utf8");
+  assert.ok(!contents.includes('docdex = { url = "http://old-root/v1/mcp" }'));
+  assert.ok(!contents.includes("[mcp_servers.docdex ]"));
+  assert.ok(!contents.includes("[mcp_servers. docdex]"));
   assert.equal((contents.match(/\[mcp_servers\.docdex\]/g) || []).length, 1);
   assert.ok(contents.includes("[mcp_servers.other]"));
   assert.ok(contents.includes(`url = "${url}"`));

@@ -51,6 +51,7 @@ pub struct StatePathsDebug {
     pub cache_libs_dir: String,
     pub profiles_dir: String,
     pub profiles_sync_dir: String,
+    pub personal_preferences_dir: String,
     pub browser_profiles_dir: String,
     pub locks_dir: String,
     pub logs_dir: String,
@@ -145,6 +146,10 @@ impl StateLayout {
         self.profiles_dir().join("sync")
     }
 
+    pub fn personal_preferences_dir(&self) -> PathBuf {
+        personal_preferences_root_for_base(&self.base_dir)
+    }
+
     pub fn browser_profiles_dir(&self) -> PathBuf {
         self.base_dir.join("browser_profiles")
     }
@@ -158,6 +163,7 @@ impl StateLayout {
         ensure_state_dir_secure(&self.cache_libs_dir())?;
         ensure_state_dir_secure(&self.profiles_dir())?;
         ensure_state_dir_secure(&self.profiles_sync_dir())?;
+        ensure_state_dir_secure(&self.personal_preferences_dir())?;
         ensure_state_dir_secure(&self.browser_profiles_dir())?;
         ensure_state_dir_secure(&self.locks_dir())?;
         ensure_state_dir_secure(&self.logs_dir())?;
@@ -171,6 +177,16 @@ impl StateLayout {
         ensure_state_dir_secure(&self.mswarm_packages_failed_dir())?;
         ensure_state_dir_secure(&self.mswarm_packages_sent_dir())?;
         Ok(())
+    }
+}
+
+pub fn personal_preferences_root_for_base(base_dir: &Path) -> PathBuf {
+    match base_dir.file_name().and_then(|value| value.to_str()) {
+        Some("state") => base_dir
+            .parent()
+            .map(|parent| parent.join("personal_preferences"))
+            .unwrap_or_else(|| base_dir.join("personal_preferences")),
+        _ => base_dir.join("personal_preferences"),
     }
 }
 
@@ -298,6 +314,7 @@ impl StatePaths {
             cache_libs_dir: self.layout.cache_libs_dir().display().to_string(),
             profiles_dir: self.layout.profiles_dir().display().to_string(),
             profiles_sync_dir: self.layout.profiles_sync_dir().display().to_string(),
+            personal_preferences_dir: self.layout.personal_preferences_dir().display().to_string(),
             browser_profiles_dir: self.layout.browser_profiles_dir().display().to_string(),
             locks_dir: self.layout.locks_dir().display().to_string(),
             logs_dir: self.layout.logs_dir().display().to_string(),
@@ -669,6 +686,7 @@ mod tests {
         assert!(paths.layout().base_dir().exists());
         assert!(paths.layout().cache_web_dir().exists());
         assert!(paths.layout().cache_libs_dir().exists());
+        assert!(paths.layout().personal_preferences_dir().exists());
         assert!(paths.layout().browser_profiles_dir().exists());
         assert!(paths.layout().locks_dir().exists());
         assert!(paths.layout().logs_dir().exists());
@@ -678,6 +696,16 @@ mod tests {
             "index dir should not be created during state root initialization"
         );
         Ok(())
+    }
+
+    #[test]
+    fn personal_preferences_dir_uses_docdex_root_when_base_is_state() {
+        let base = PathBuf::from("/tmp/docdex/state");
+        let layout = StateLayout::new(base);
+        assert_eq!(
+            layout.personal_preferences_dir(),
+            PathBuf::from("/tmp/docdex/personal_preferences")
+        );
     }
 
     #[test]

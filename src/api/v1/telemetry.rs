@@ -369,6 +369,7 @@ mod tests {
             delegation_metrics: default_delegation_metrics,
             memory: None,
             conversations: None,
+            personal_preferences: None,
             profile_state: None,
             features: crate::config::FeatureFlagsConfig::default(),
             default_agent_id: None,

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.64
+- Add packaged automatic six-layer memory routing across HTTP, CLI, MCP, and `/v1/chat/completions`, including a compact `Automatic memory route` context and a unified `Core memory` block so agents are not relying only on prompt guidance to pick a memory lane.
+- Move packaged memory routing earlier in the waterfall, reuse the same route for retrieval and prompt assembly, and gate repo/profile/wake-up recall plus chat-side archive and personal-preferences capture on meaningful read and write lane signals.
+- Improve packaged durable-memory extraction for natural-language repo facts, decisions, and tooling/style preferences, and add regression coverage for route helpers, memory-route surfaces, and chat-side capture behavior.
+
 ## 0.2.63
 - Add the packaged six-layer memory map over HTTP, CLI, and MCP so agents can inspect repo, profile, conversation, diary, temporal-KG, and personal-preferences lanes before selecting a memory surface.
 - Extend packaged wake-up context assembly with optional recent-diary startup episodes, expose diary trace counters, and cover the new memory-layers and wake-up flows with HTTP, CLI, chat, and MCP regression tests.

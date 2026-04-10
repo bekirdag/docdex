@@ -9,6 +9,8 @@ use crate::knowledge::{
 use serde_json::json;
 use std::collections::HashSet;
 
+const MAX_DURABLE_MEMORY_CANDIDATES: usize = 12;
+
 #[derive(Debug, Clone)]
 struct OpenLoopCandidate {
     text: String,
@@ -405,6 +407,20 @@ fn normalize_open_loop_line(raw: &str) -> String {
     collapse_whitespace(trimmed)
 }
 
+fn contains_path_hint(value: &str) -> bool {
+    let lowercase = value.to_ascii_lowercase();
+    lowercase.contains('/')
+        || lowercase.contains(".rs")
+        || lowercase.contains(".ts")
+        || lowercase.contains(".tsx")
+        || lowercase.contains(".js")
+        || lowercase.contains(".jsx")
+        || lowercase.contains(".py")
+        || lowercase.contains(".md")
+        || lowercase.contains("cargo.toml")
+        || lowercase.contains("package.json")
+}
+
 fn summarize_content(content: &str) -> Option<String> {
     let compact = collapse_whitespace(content);
     if compact.is_empty() {
@@ -434,7 +450,7 @@ fn extract_durable_memory_candidates(
             if seen.insert(dedupe_key) {
                 items.push(candidate);
             }
-            if items.len() >= 6 {
+            if items.len() >= MAX_DURABLE_MEMORY_CANDIDATES {
                 return items;
             }
         }
@@ -448,7 +464,7 @@ fn classify_repo_memory_candidate(
     raw_line: &str,
 ) -> Option<ConversationDurableMemoryCandidate> {
     let normalized = normalize_open_loop_line(raw_line);
-    if normalized.is_empty() {
+    if normalized.is_empty() || normalized.ends_with('?') {
         return None;
     }
     let lowercase = normalized.to_ascii_lowercase();
@@ -464,21 +480,25 @@ fn classify_repo_memory_candidate(
         ("file:", ConversationDurableMemoryCategory::RepoFact),
         ("path:", ConversationDurableMemoryCategory::RepoFact),
     ];
-    let (prefix, category) = prefixes
+    if let Some((prefix, category)) = prefixes
         .iter()
-        .find(|(prefix, _)| lowercase.starts_with(*prefix))?;
-    let content = capitalize_leading_ascii(&normalize_open_loop_line(&normalized[prefix.len()..]));
-    if content.is_empty() {
-        return None;
+        .find(|(prefix, _)| lowercase.starts_with(*prefix))
+    {
+        let content =
+            capitalize_leading_ascii(&normalize_open_loop_line(&normalized[prefix.len()..]));
+        if content.is_empty() {
+            return None;
+        }
+        return Some(ConversationDurableMemoryCandidate {
+            target: ConversationDurableMemoryTarget::RepoMemory,
+            category: category.clone(),
+            content: canonical_sentence(&content),
+            source_role: message.role.as_str().to_string(),
+            source_ordinal: ordinal,
+            confidence: "heuristic_explicit_v1".to_string(),
+        });
     }
-    Some(ConversationDurableMemoryCandidate {
-        target: ConversationDurableMemoryTarget::RepoMemory,
-        category: category.clone(),
-        content: canonical_sentence(&content),
-        source_role: message.role.as_str().to_string(),
-        source_ordinal: ordinal,
-        confidence: "heuristic_explicit_v1".to_string(),
-    })
+    infer_repo_memory_candidate(message, ordinal, &normalized, &lowercase)
 }
 
 fn classify_profile_memory_candidate(
@@ -510,6 +530,18 @@ fn classify_profile_memory_candidate(
         ],
     ) {
         Some(ConversationDurableMemoryCategory::Constraint)
+    } else if contains_any(
+        &lowercase,
+        &[
+            "keep responses",
+            "keep it concise",
+            "be concise",
+            "be brief",
+            "short answers",
+            "write concise",
+        ],
+    ) {
+        Some(ConversationDurableMemoryCategory::Style)
     } else if lowercase.starts_with("when ")
         || lowercase.starts_with("after ")
         || lowercase.starts_with("before ")
@@ -537,6 +569,9 @@ fn classify_profile_memory_candidate(
         || lowercase.starts_with("we use ")
         || lowercase.starts_with("we prefer ")
         || lowercase.starts_with("must use ")
+        || lowercase.starts_with("always use ")
+        || lowercase.starts_with("stick with ")
+        || lowercase.starts_with("standardize on ")
     {
         Some(ConversationDurableMemoryCategory::Tooling)
     } else {
@@ -548,7 +583,88 @@ fn classify_profile_memory_candidate(
         content: canonical_sentence(&normalized),
         source_role: message.role.as_str().to_string(),
         source_ordinal: ordinal,
-        confidence: "heuristic_directive_v1".to_string(),
+        confidence: "heuristic_directive_v2".to_string(),
+    })
+}
+
+fn infer_repo_memory_candidate(
+    message: &ConversationMessage,
+    ordinal: usize,
+    normalized: &str,
+    lowercase: &str,
+) -> Option<ConversationDurableMemoryCandidate> {
+    let technical_hint = contains_any(
+        lowercase,
+        &[
+            "repo", "project", "module", "handler", "endpoint", "config", "routing", "memory",
+            "graph", "renderer", "api", "mcp", "cli", "http", "src/", "tests/", ".rs", ".ts",
+            ".tsx", ".js", ".jsx", ".py", ".md",
+        ],
+    );
+    let path_hint = contains_path_hint(normalized);
+    let (category, confidence) = if path_hint
+        && contains_any(
+            lowercase,
+            &[
+                " is in ",
+                " lives in ",
+                " located in ",
+                " is located in ",
+                " stored in ",
+                " lives under ",
+                " entry point is ",
+                " canonical place for ",
+            ],
+        ) {
+        (
+            ConversationDurableMemoryCategory::RepoFact,
+            "heuristic_repo_location_v1",
+        )
+    } else if technical_hint
+        && contains_any(
+            lowercase,
+            &[
+                "we decided to ",
+                "decision is ",
+                "the decision is ",
+                "should stay in ",
+                "stays in ",
+                "keep ",
+            ],
+        )
+    {
+        (
+            ConversationDurableMemoryCategory::Decision,
+            "heuristic_repo_decision_v2",
+        )
+    } else if technical_hint
+        && contains_any(
+            lowercase,
+            &[
+                " uses ",
+                " backed by ",
+                " driven by ",
+                " wired through ",
+                " reads from ",
+                " writes to ",
+            ],
+        )
+    {
+        (
+            ConversationDurableMemoryCategory::RepoFact,
+            "heuristic_repo_fact_v2",
+        )
+    } else {
+        return None;
+    };
+
+    Some(ConversationDurableMemoryCandidate {
+        target: ConversationDurableMemoryTarget::RepoMemory,
+        category,
+        content: canonical_sentence(&capitalize_leading_ascii(normalized)),
+        source_role: message.role.as_str().to_string(),
+        source_ordinal: ordinal,
+        confidence: confidence.to_string(),
     })
 }
 
@@ -706,5 +822,56 @@ mod tests {
             extracted.durable_memories[3].category,
             ConversationDurableMemoryCategory::Workflow
         );
+    }
+
+    #[test]
+    fn extracts_natural_language_durable_memory_candidates() {
+        let messages = vec![
+            message(
+                ConversationRole::Assistant,
+                "The wake-up route is located in src/api/v1/wakeup.rs and the chat handler lives in src/api/v1/chat.rs.",
+            ),
+            message(
+                ConversationRole::Developer,
+                "We decided to keep chat-side memory capture in src/api/v1/chat.rs so the runtime path owns it.",
+            ),
+            message(
+                ConversationRole::User,
+                "Prefer using date-fns for date handling.",
+            ),
+            message(
+                ConversationRole::User,
+                "Keep responses concise.",
+            ),
+        ];
+
+        let extracted = extract_session_artifacts(
+            "session-4",
+            Some("Natural-language routing"),
+            Some("codex"),
+            &messages,
+            200,
+        );
+
+        assert!(extracted.durable_memories.iter().any(|item| {
+            item.target == ConversationDurableMemoryTarget::RepoMemory
+                && item.category == ConversationDurableMemoryCategory::RepoFact
+                && item.content.contains("src/api/v1/wakeup.rs")
+        }));
+        assert!(extracted.durable_memories.iter().any(|item| {
+            item.target == ConversationDurableMemoryTarget::RepoMemory
+                && item.category == ConversationDurableMemoryCategory::Decision
+                && item.content.contains("keep chat-side memory capture")
+        }));
+        assert!(extracted.durable_memories.iter().any(|item| {
+            item.target == ConversationDurableMemoryTarget::ProfileMemory
+                && item.category == ConversationDurableMemoryCategory::Tooling
+                && item.content.contains("date-fns")
+        }));
+        assert!(extracted.durable_memories.iter().any(|item| {
+            item.target == ConversationDurableMemoryTarget::ProfileMemory
+                && item.category == ConversationDurableMemoryCategory::Style
+                && item.content.contains("Keep responses concise")
+        }));
     }
 }

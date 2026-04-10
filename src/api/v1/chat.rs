@@ -26,7 +26,7 @@ use crate::orchestrator::{
     WaterfallPlan, WaterfallRequest, WebGateConfig,
 };
 use crate::project_map;
-use crate::search::{resolve_repo_context, status_for_app_error, AppState};
+use crate::search::{resolve_repo_context, status_for_app_error, AppState, RepoContext};
 use crate::tier2::Tier2Config;
 use tracing::{info, warn};
 
@@ -388,6 +388,22 @@ pub(crate) async fn chat_completions_handler(
     } else {
         format!("{}\n\nUser:\n{}", extracted.context, query)
     };
+    let memory_route = build_chat_memory_route(&state, &repo, profile_agent_id.as_deref(), &query);
+    if let Some(route) = memory_route.as_ref() {
+        queue_dag_log(
+            repo_state_root.clone(),
+            dag_session_id.clone(),
+            "Observation",
+            json!({
+                "tool": "memory_route",
+                "intent": route.intent.clone(),
+                "intent_source": route.intent_source.clone(),
+                "core_memory": route.core_memory.iter().map(|item| item.layer_id.clone()).collect::<Vec<_>>(),
+                "retrievable_memory": route.retrievable_memory.iter().map(|item| item.layer_id.clone()).collect::<Vec<_>>(),
+                "recommended_order": route.recommended_order.clone(),
+            }),
+        );
+    }
     let response = match run_waterfall(WaterfallRequest {
         request_id: &request_id,
         dag_session_id: Some(dag_session_id.as_str()),
@@ -409,6 +425,7 @@ pub(crate) async fn chat_completions_handler(
         memory: repo.memory.as_ref(),
         profile_state: state.profile_state.as_ref(),
         profile_agent_id: profile_agent_id.as_deref(),
+        memory_route: memory_route.as_ref(),
         ranking_surface: crate::search::RankingSurface::Chat,
         async_web: false,
     })
@@ -416,6 +433,7 @@ pub(crate) async fn chat_completions_handler(
     {
         Ok(result) => {
             let result = result;
+            let memory_route = result.memory_route.as_ref().or(memory_route.as_ref());
             let budgets = chat_context_budgets(state.max_answer_tokens);
             let web_context = web_context_from_status(&result.tier2.status);
             let created = now_epoch_seconds();
@@ -591,29 +609,29 @@ pub(crate) async fn chat_completions_handler(
                             finish_reason: Some("stop"),
                         }],
                     };
-                    maybe_capture_personal_preferences_chat(
+                    capture_chat_memories(
                         &state,
-                        repo.indexer.repo_root(),
-                        &repo.repo_id,
+                        &repo,
                         profile_agent_id.as_deref(),
                         &payload.messages,
                         &content,
                         model.as_str(),
                         true,
-                    );
+                    )
+                    .await;
                     return stream_response(content_iter.chain(std::iter::once(final_chunk)));
                 }
 
-                maybe_capture_personal_preferences_chat(
+                capture_chat_memories(
                     &state,
-                    repo.indexer.repo_root(),
-                    &repo.repo_id,
+                    &repo,
                     profile_agent_id.as_deref(),
                     &payload.messages,
                     &content,
                     model.as_str(),
                     true,
-                );
+                )
+                .await;
                 ChatCompletionResponse {
                     id: format!("chatcmpl-{}", request_id),
                     object: "chat.completion",
@@ -631,7 +649,26 @@ pub(crate) async fn chat_completions_handler(
                     reasoning_trace: reasoning_trace.clone(),
                 }
             } else {
-                let (wakeup_text, wakeup_trace) =
+                let include_wakeup_context = memory_route_recommends_any(
+                    memory_route,
+                    &[
+                        "conversation_memory",
+                        "diary_memory",
+                        "temporal_knowledge_graph",
+                    ],
+                );
+                if !include_wakeup_context {
+                    queue_dag_log(
+                        repo_state_root.clone(),
+                        dag_session_id.clone(),
+                        "Observation",
+                        json!({
+                            "tool": "wakeup",
+                            "status": "skipped_by_memory_route",
+                        }),
+                    );
+                }
+                let (wakeup_text, wakeup_trace) = if include_wakeup_context {
                     if let Some(conversations) = repo.conversations.as_ref() {
                         match tokio::task::spawn_blocking({
                             let conversations = conversations.clone();
@@ -703,9 +740,21 @@ pub(crate) async fn chat_completions_handler(
                                 budget_tokens: budgets.wakeup_tokens,
                             },
                         )
-                    };
+                    }
+                } else {
+                    (
+                        None,
+                        WakeupContextTrace {
+                            available: 0,
+                            selected: 0,
+                            truncated: 0,
+                            budget_tokens: budgets.wakeup_tokens,
+                        },
+                    )
+                };
                 let (context, context_trace) = build_context_summary(
                     &query,
+                    memory_route,
                     wakeup_text.as_deref(),
                     wakeup_trace,
                     personal_preferences_context.as_ref(),
@@ -834,29 +883,29 @@ pub(crate) async fn chat_completions_handler(
                             finish_reason: Some("stop"),
                         }],
                     };
-                    maybe_capture_personal_preferences_chat(
+                    capture_chat_memories(
                         &state,
-                        repo.indexer.repo_root(),
-                        &repo.repo_id,
+                        &repo,
                         profile_agent_id.as_deref(),
                         &payload.messages,
                         &completion.output,
                         model.as_str(),
                         false,
-                    );
+                    )
+                    .await;
                     return stream_response(content_iter.chain(std::iter::once(final_chunk)));
                 }
 
-                maybe_capture_personal_preferences_chat(
+                capture_chat_memories(
                     &state,
-                    repo.indexer.repo_root(),
-                    &repo.repo_id,
+                    &repo,
                     profile_agent_id.as_deref(),
                     &payload.messages,
                     &completion.output,
                     model.as_str(),
                     false,
-                );
+                )
+                .await;
                 ChatCompletionResponse {
                     id: format!("chatcmpl-{}", request_id),
                     object: "chat.completion",
@@ -1108,6 +1157,162 @@ fn chat_context_budgets(max_answer_tokens: u32) -> ChatContextBudgets {
     }
 }
 
+fn build_chat_memory_route(
+    state: &AppState,
+    repo: &RepoContext,
+    agent_id: Option<&str>,
+    query: &str,
+) -> Option<crate::memory_layers::MemoryRouteResponse> {
+    build_chat_memory_route_for_intent(state, repo, agent_id, query, "read")
+}
+
+fn build_chat_memory_route_for_intent(
+    state: &AppState,
+    repo: &RepoContext,
+    agent_id: Option<&str>,
+    source_text: &str,
+    intent: &str,
+) -> Option<crate::memory_layers::MemoryRouteResponse> {
+    let trimmed = source_text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let conversations = repo.conversations.as_ref();
+    let personal_preferences = state.personal_preferences.as_ref();
+    Some(crate::memory_layers::build_memory_route(
+        crate::memory_layers::MemoryLayersInput {
+            scope: crate::memory_layers::MemoryLayerScopeInput::Repo {
+                repo_id: repo.repo_id.as_str(),
+                repo_root: repo.indexer.repo_root(),
+            },
+            default_agent_id: agent_id.or(state.default_agent_id.as_deref()),
+            repo_memory: repo.memory.as_ref().map(|memory| &memory.store),
+            profile: state.profile_state.as_ref().map(|profile| &profile.manager),
+            conversations: conversations.map(|value| &value.store),
+            knowledge: conversations.map(|value| &value.knowledge),
+            conversation_config: conversations.map(|value| &value.config),
+            personal_preferences: personal_preferences.map(|value| &value.store),
+            personal_preferences_config: personal_preferences.map(|value| &value.config),
+        },
+        trimmed,
+        Some(intent),
+    ))
+}
+
+fn build_chat_write_memory_route(
+    state: &AppState,
+    repo: &RepoContext,
+    agent_id: Option<&str>,
+    messages: &[ChatMessage],
+    assistant_output: &str,
+) -> Option<crate::memory_layers::MemoryRouteResponse> {
+    let route_query = build_chat_capture_route_query(messages, assistant_output);
+    if route_query.is_empty() {
+        return None;
+    }
+    build_chat_memory_route_for_intent(state, repo, agent_id, &route_query, "write")
+}
+
+fn build_chat_capture_route_query(messages: &[ChatMessage], assistant_output: &str) -> String {
+    const MAX_ROUTE_QUERY_CHARS: usize = 4096;
+
+    let mut segments = messages
+        .iter()
+        .filter_map(chat_message_to_memory_route_segment)
+        .collect::<Vec<_>>();
+    let trimmed_output = assistant_output.trim();
+    if segments.is_empty() && !trimmed_output.is_empty() {
+        segments.push(format!("assistant: {trimmed_output}"));
+    }
+    if segments.is_empty() {
+        return String::new();
+    }
+    let combined = segments.join("\n");
+    let (truncated, _) =
+        crate::max_size::truncate_utf8_chars(combined.trim(), MAX_ROUTE_QUERY_CHARS);
+    truncated
+}
+
+fn chat_message_to_memory_route_segment(message: &ChatMessage) -> Option<String> {
+    let content = extract_message_text(&message.content)?;
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{}: {}",
+        message.role.trim().to_ascii_lowercase(),
+        trimmed
+    ))
+}
+
+fn memory_route_recommends_any(
+    route: Option<&crate::memory_layers::MemoryRouteResponse>,
+    layer_ids: &[&str],
+) -> bool {
+    crate::memory_layers::memory_route_recommends_any(route, layer_ids)
+}
+
+fn capture_route_allows_conversation_import(
+    route: Option<&crate::memory_layers::MemoryRouteResponse>,
+) -> bool {
+    crate::memory_layers::memory_route_recommends_any_beyond_default(
+        route,
+        &[
+            "repo_memory",
+            "profile_memory",
+            "conversation_memory",
+            "diary_memory",
+            "temporal_knowledge_graph",
+        ],
+    )
+}
+
+fn capture_route_allows_personal_preferences(
+    route: Option<&crate::memory_layers::MemoryRouteResponse>,
+) -> bool {
+    crate::memory_layers::memory_route_recommends_any_beyond_default(
+        route,
+        &["personal_preferences"],
+    )
+}
+
+fn render_chat_memory_route(
+    route: Option<&crate::memory_layers::MemoryRouteResponse>,
+) -> Vec<String> {
+    let Some(route) = route else {
+        return Vec::new();
+    };
+    let mut lines = Vec::new();
+    if !route.core_memory.is_empty() {
+        let core = route
+            .core_memory
+            .iter()
+            .take(3)
+            .map(|item| item.title.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        if !core.is_empty() {
+            lines.push(format!("- Start with core lanes: {core}."));
+        }
+    }
+    if !route.retrievable_memory.is_empty() {
+        let retrievable = route
+            .retrievable_memory
+            .iter()
+            .take(3)
+            .map(|item| item.title.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        if !retrievable.is_empty() {
+            lines.push(format!(
+                "- Escalate to retrievable lanes only if needed: {retrievable}."
+            ));
+        }
+    }
+    lines
+}
+
 fn select_memory_snippets(
     memory_context: Option<&crate::orchestrator::MemoryContextAssembly>,
     budget_tokens: usize,
@@ -1339,6 +1544,7 @@ fn format_diff_context_with_budget(
 
 fn build_context_summary(
     query: &str,
+    memory_route: Option<&crate::memory_layers::MemoryRouteResponse>,
     wakeup_context: Option<&str>,
     wakeup_trace: WakeupContextTrace,
     personal_preferences_context: Option<
@@ -1357,6 +1563,12 @@ fn build_context_summary(
     let mut lines = Vec::new();
     let trimmed = query.trim();
 
+    let route_lines = render_chat_memory_route(memory_route);
+    if !route_lines.is_empty() {
+        lines.push("Automatic memory route:".to_string());
+        lines.extend(route_lines);
+    }
+
     if let Some(wakeup_context) = wakeup_context
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -1367,16 +1579,17 @@ fn build_context_summary(
     let personal_preferences_trace = personal_preferences_context
         .map(|context| context.trace.clone())
         .unwrap_or_default();
+    let mut core_memory_lines = Vec::new();
     if let Some(personal_preferences_context) = personal_preferences_context {
         if !personal_preferences_context.items.is_empty() {
-            lines.push("Personal profile context (advisory):".to_string());
+            core_memory_lines.push("Personal preferences:".to_string());
             let mut last_section = String::new();
             for item in &personal_preferences_context.items {
                 if item.section != last_section {
-                    lines.push(format!("{}:", item.section.replace('_', " ")));
+                    core_memory_lines.push(format!("{}:", item.section.replace('_', " ")));
                     last_section = item.section.clone();
                 }
-                lines.push(format!("- {}", item.content));
+                core_memory_lines.push(format!("- {}", item.content));
             }
         }
     }
@@ -1388,9 +1601,9 @@ fn build_context_summary(
         Some(&style_categories),
     );
     if !profile_snippets.is_empty() {
-        lines.push("Style preferences (advisory):".to_string());
+        core_memory_lines.push("Style preferences:".to_string());
         for snippet in profile_snippets {
-            lines.push(format!("- {}", snippet.content));
+            core_memory_lines.push(format!("- {}", snippet.content));
         }
     }
 
@@ -1402,11 +1615,16 @@ fn build_context_summary(
         let (workflow_snippets, _workflow_trace) =
             select_profile_snippets(profile_context, workflow_budget, Some(&workflow_categories));
         if !workflow_snippets.is_empty() {
-            lines.push("Workflow guidance (advisory):".to_string());
+            core_memory_lines.push("Workflow guidance:".to_string());
             for snippet in workflow_snippets {
-                lines.push(format!("- {}", snippet.content));
+                core_memory_lines.push(format!("- {}", snippet.content));
             }
         }
+    }
+
+    if !core_memory_lines.is_empty() {
+        lines.push("Core memory (always-visible, advisory):".to_string());
+        lines.extend(core_memory_lines);
     }
 
     let (map_snippet, map_trace) = select_project_map_snippet(project_map, budgets.map_tokens);
@@ -2166,6 +2384,135 @@ fn now_epoch_seconds() -> u64 {
         .unwrap_or(0)
 }
 
+async fn capture_chat_memories(
+    state: &AppState,
+    repo: &RepoContext,
+    agent_id: Option<&str>,
+    messages: &[ChatMessage],
+    assistant_output: &str,
+    model: &str,
+    compressed_results: bool,
+) {
+    let write_memory_route =
+        build_chat_write_memory_route(state, repo, agent_id, messages, assistant_output);
+    maybe_capture_personal_preferences_chat(
+        state,
+        repo.indexer.repo_root(),
+        &repo.repo_id,
+        agent_id,
+        messages,
+        assistant_output,
+        model,
+        compressed_results,
+        write_memory_route.as_ref(),
+    );
+    maybe_capture_conversation_chat(
+        state,
+        repo,
+        agent_id,
+        messages,
+        assistant_output,
+        model,
+        compressed_results,
+        write_memory_route.as_ref(),
+    )
+    .await;
+}
+
+async fn maybe_capture_conversation_chat(
+    state: &AppState,
+    repo: &RepoContext,
+    agent_id: Option<&str>,
+    messages: &[ChatMessage],
+    assistant_output: &str,
+    model: &str,
+    compressed_results: bool,
+    write_memory_route: Option<&crate::memory_layers::MemoryRouteResponse>,
+) {
+    let Some(conversations) = repo.conversations.as_ref() else {
+        return;
+    };
+    if !conversations.config.auto_capture || !conversations.config.allows_source("chat_completion")
+    {
+        return;
+    }
+    if !capture_route_allows_conversation_import(write_memory_route) {
+        return;
+    }
+    let mut captured_messages = messages
+        .iter()
+        .filter_map(chat_message_to_conversation_message)
+        .collect::<Vec<_>>();
+    if !assistant_output.trim().is_empty() {
+        captured_messages.push(crate::conversations::ConversationMessage {
+            role: crate::conversations::ConversationRole::Assistant,
+            content: assistant_output.trim().to_string(),
+            author: None,
+            created_at_ms: None,
+            metadata: json!({}),
+        });
+    }
+    if captured_messages.is_empty() {
+        return;
+    }
+
+    let route_targets = crate::conversations::build_conversation_route_targets(
+        repo.memory.as_ref().map(
+            |memory| crate::conversations::ConversationRepoMemoryTarget {
+                repo_id: repo.repo_id.clone(),
+                store: memory.store.clone(),
+                embedder: memory.embedder.clone(),
+                fallback_dim: 0,
+            },
+        ),
+        state.profile_state.as_ref().map(|profile| {
+            crate::conversations::build_conversation_profile_target(
+                profile.manager.clone(),
+                profile.embedder.clone(),
+                "chat_completion",
+            )
+        }),
+        conversations.knowledge.clone(),
+        conversations.config.graph.clone(),
+        state.default_agent_id.clone(),
+    );
+    let import_options = crate::conversations::ConversationImportOptions {
+        capture_kind: crate::conversations::ConversationCaptureKind::Auto,
+        store_raw_messages: conversations.config.archive_raw_transcripts,
+    };
+    let payload = crate::conversations::ConversationImport {
+        source: "chat_completion".to_string(),
+        source_session_id: None,
+        title: None,
+        agent_id: agent_id.map(ToOwned::to_owned),
+        transport: Some("http".to_string()),
+        started_at_ms: None,
+        ended_at_ms: None,
+        messages: captured_messages,
+        metadata: json!({
+            "model": model,
+            "compressed_results": compressed_results,
+            "repo_id": repo.repo_id.clone(),
+            "repo_root": repo.indexer.repo_root().display().to_string(),
+        }),
+    };
+
+    if let Err(err) = crate::conversations::import_conversation_with_routing_options(
+        conversations.store.clone(),
+        payload,
+        import_options,
+        route_targets,
+    )
+    .await
+    {
+        warn!(
+            target: "docdexd",
+            error = ?err,
+            "conversation auto-capture failed for chat completion"
+        );
+    }
+}
+
 fn maybe_capture_personal_preferences_chat(
     state: &AppState,
     repo_root: &std::path::Path,
@@ -2175,6 +2522,7 @@ fn maybe_capture_personal_preferences_chat(
     assistant_output: &str,
     model: &str,
     compressed_results: bool,
+    write_memory_route: Option<&crate::memory_layers::MemoryRouteResponse>,
 ) {
     let Some(personal_preferences) = state.personal_preferences.as_ref() else {
         return;
@@ -2183,6 +2531,9 @@ fn maybe_capture_personal_preferences_chat(
         || !personal_preferences.config.capture_docdex_conversations
         || !personal_preferences.config.allows_source("chat_completion")
     {
+        return;
+    }
+    if !capture_route_allows_personal_preferences(write_memory_route) {
         return;
     }
     let request = build_personal_preferences_chat_capture_request(
@@ -2264,6 +2615,23 @@ fn chat_message_to_personal_preferences_message(
         content: trimmed.to_string(),
         created_at_ms: None,
         metadata: Value::Null,
+    })
+}
+
+fn chat_message_to_conversation_message(
+    message: &ChatMessage,
+) -> Option<crate::conversations::ConversationMessage> {
+    let content = extract_message_text(&message.content)?;
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(crate::conversations::ConversationMessage {
+        role: crate::conversations::ConversationRole::from_str(&message.role),
+        content: trimmed.to_string(),
+        author: None,
+        created_at_ms: None,
+        metadata: json!({}),
     })
 }
 
@@ -2438,6 +2806,7 @@ mod tests {
         let (context, trace) = build_context_summary(
             "hello",
             None,
+            None,
             WakeupContextTrace {
                 available: 0,
                 selected: 0,
@@ -2551,6 +2920,7 @@ mod tests {
         let (context, trace) = build_context_summary(
             "hello",
             None,
+            None,
             WakeupContextTrace {
                 available: 0,
                 selected: 0,
@@ -2569,9 +2939,7 @@ mod tests {
             &budgets,
         );
 
-        let profile_pos = context
-            .find("Style preferences (advisory):")
-            .expect("profile context");
+        let profile_pos = context.find("Style preferences:").expect("profile context");
         let memory_pos = context.find("Memory context:").expect("memory context");
         let repo_pos = context.find("Top local matches").expect("repo context");
         assert!(profile_pos < memory_pos);
@@ -2678,6 +3046,7 @@ mod tests {
         let (context, trace) = build_context_summary(
             "hello",
             None,
+            None,
             WakeupContextTrace {
                 available: 0,
                 selected: 0,
@@ -2696,14 +3065,12 @@ mod tests {
             &budgets,
         );
 
-        let personal_pos = context
-            .find("Personal profile context (advisory):")
-            .expect("personal context");
-        let profile_pos = context
-            .find("Style preferences (advisory):")
-            .expect("profile context");
+        let core_pos = context
+            .find("Core memory (always-visible, advisory):")
+            .expect("core memory");
+        let profile_pos = context.find("Style preferences:").expect("profile context");
         let memory_pos = context.find("Memory context:").expect("memory context");
-        assert!(personal_pos < profile_pos);
+        assert!(core_pos < profile_pos);
         assert!(profile_pos < memory_pos);
         assert_eq!(trace.personal_preferences.selected, 1);
     }
@@ -2723,6 +3090,7 @@ mod tests {
 
         let (context, trace) = build_context_summary(
             "hello",
+            None,
             None,
             WakeupContextTrace {
                 available: 0,
@@ -2751,6 +3119,213 @@ mod tests {
 
         assert!(prompt.contains("Conversation history:"));
         assert!(prompt.contains("one"));
+    }
+
+    #[test]
+    fn automatic_memory_route_precedes_core_memory_sections() {
+        let hits = vec![Hit {
+            doc_id: "doc-1".to_string(),
+            rel_path: "docs/readme.md".to_string(),
+            path: "docs/readme.md".to_string(),
+            kind: DocumentKind::Doc,
+            doc_type: None,
+            score: 1.0,
+            summary: "Repo summary text".to_string(),
+            snippet: String::new(),
+            token_estimate: 12,
+            snippet_origin: None,
+            snippet_truncated: None,
+            line_start: None,
+            line_end: None,
+            score_breakdown: None,
+            provenance: None,
+            retrieval_explanation: None,
+        }];
+        let memory_route = crate::memory_layers::MemoryRouteResponse {
+            scope: crate::memory_layers::MemoryLayersScopeView {
+                kind: "repo".to_string(),
+                scope_id: "repo-1".to_string(),
+                scope_label: "/tmp/repo".to_string(),
+                repo_root: Some("/tmp/repo".to_string()),
+            },
+            default_agent_id: Some("codex".to_string()),
+            query: "where is the auth middleware".to_string(),
+            intent: "read".to_string(),
+            intent_source: "explicit".to_string(),
+            should_start_with_core: true,
+            core_memory: vec![
+                crate::memory_layers::MemoryRouteRecommendation {
+                    layer_id: "repo_memory".to_string(),
+                    title: "Repo memory".to_string(),
+                    score: 7,
+                    reason: "Repo truth first".to_string(),
+                    manual_tools: vec![],
+                    automatic_read_surfaces: vec![],
+                    automatic_write_surfaces: vec![],
+                },
+                crate::memory_layers::MemoryRouteRecommendation {
+                    layer_id: "profile_memory".to_string(),
+                    title: "Profile memory".to_string(),
+                    score: 2,
+                    reason: "Style defaults".to_string(),
+                    manual_tools: vec![],
+                    automatic_read_surfaces: vec![],
+                    automatic_write_surfaces: vec![],
+                },
+            ],
+            retrievable_memory: vec![crate::memory_layers::MemoryRouteRecommendation {
+                layer_id: "conversation_memory".to_string(),
+                title: "Conversation memory".to_string(),
+                score: 6,
+                reason: "Continuity follow-up".to_string(),
+                manual_tools: vec![],
+                automatic_read_surfaces: vec![],
+                automatic_write_surfaces: vec![],
+            }],
+            recommended_order: vec![
+                "repo_memory".to_string(),
+                "profile_memory".to_string(),
+                "conversation_memory".to_string(),
+            ],
+            notes: vec![],
+        };
+        let profile_context = ProfileContextAssembly {
+            items: vec![ProfileContextItem {
+                id: "pref-1".to_string(),
+                agent_id: "agent-1".to_string(),
+                category: PreferenceCategory::Style,
+                last_updated: 0,
+                score: 0.9,
+                token_estimate: 3,
+                truncated: false,
+                content: "Keep responses concise".to_string(),
+            }],
+            prune_trace: ProfileContextPruneTrace {
+                budget_tokens: 3,
+                max_items: 5,
+                candidates: 1,
+                kept: 1,
+                dropped: Vec::new(),
+            },
+        };
+        let memory_context = MemoryContextAssembly {
+            items: vec![MemoryContextItem {
+                id: "mem-1".to_string(),
+                created_at_ms: 0,
+                score: 0.9,
+                token_estimate: 3,
+                truncated: false,
+                content: "remember alpha".to_string(),
+                metadata: json!({ "source": "test" }),
+            }],
+            prune_trace: MemoryContextPruneTrace {
+                budget_tokens: 10,
+                max_items: 5,
+                candidates: 1,
+                kept: 1,
+                dropped: Vec::new(),
+            },
+        };
+        let budgets = ChatContextBudgets {
+            system_tokens: 0,
+            wakeup_tokens: 0,
+            profile_tokens: 3,
+            map_tokens: 0,
+            memory_tokens: 10,
+            diff_tokens: 0,
+            repo_tokens: 20,
+            history_tokens: 0,
+        };
+
+        let (context, _) = build_context_summary(
+            "hello",
+            Some(&memory_route),
+            None,
+            WakeupContextTrace {
+                available: 0,
+                selected: 0,
+                truncated: 0,
+                budget_tokens: 0,
+            },
+            None,
+            &hits,
+            None,
+            None,
+            Some(&profile_context),
+            None,
+            false,
+            Some(&memory_context),
+            None,
+            &budgets,
+        );
+
+        let route_pos = context
+            .find("Automatic memory route:")
+            .expect("automatic memory route");
+        let core_pos = context
+            .find("Core memory (always-visible, advisory):")
+            .expect("core memory");
+        let memory_pos = context.find("Memory context:").expect("memory context");
+        assert!(route_pos < core_pos);
+        assert!(core_pos < memory_pos);
+        assert!(context.contains("Start with core lanes: Repo memory, Profile memory."));
+        assert!(
+            context.contains("Escalate to retrievable lanes only if needed: Conversation memory.")
+        );
+    }
+
+    #[test]
+    fn wakeup_loading_requires_conversation_or_timeline_lanes() {
+        let technical_route = crate::memory_layers::MemoryRouteResponse {
+            scope: crate::memory_layers::MemoryLayersScopeView {
+                kind: "repo".to_string(),
+                scope_id: "repo-1".to_string(),
+                scope_label: "/tmp/repo".to_string(),
+                repo_root: Some("/tmp/repo".to_string()),
+            },
+            default_agent_id: None,
+            query: "where is auth middleware".to_string(),
+            intent: "read".to_string(),
+            intent_source: "explicit".to_string(),
+            should_start_with_core: true,
+            core_memory: vec![],
+            retrievable_memory: vec![],
+            recommended_order: vec!["repo_memory".to_string(), "profile_memory".to_string()],
+            notes: vec![],
+        };
+        let continuity_route = crate::memory_layers::MemoryRouteResponse {
+            recommended_order: vec![
+                "repo_memory".to_string(),
+                "conversation_memory".to_string(),
+                "temporal_knowledge_graph".to_string(),
+            ],
+            ..technical_route.clone()
+        };
+
+        assert!(!memory_route_recommends_any(
+            Some(&technical_route),
+            &[
+                "conversation_memory",
+                "diary_memory",
+                "temporal_knowledge_graph",
+            ],
+        ));
+        assert!(memory_route_recommends_any(
+            Some(&continuity_route),
+            &[
+                "conversation_memory",
+                "diary_memory",
+                "temporal_knowledge_graph",
+            ],
+        ));
+        assert!(memory_route_recommends_any(
+            None,
+            &[
+                "conversation_memory",
+                "diary_memory",
+                "temporal_knowledge_graph",
+            ],
+        ));
     }
 
     #[test]

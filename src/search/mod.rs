@@ -605,6 +605,10 @@ pub fn router(state: AppState) -> Router {
             get(crate::api::v1::memory_layers::memory_layers_handler),
         )
         .route(
+            "/v1/memory/route",
+            post(crate::api::v1::memory_layers::memory_route_handler),
+        )
+        .route(
             "/v1/diary/write",
             post(crate::api::v1::diary::diary_write_handler),
         )
@@ -4192,6 +4196,7 @@ async fn search_handler(
         memory: repo.memory.as_ref(),
         profile_state: state.profile_state.as_ref(),
         profile_agent_id: None,
+        memory_route: None,
         ranking_surface: RankingSurface::Search,
         async_web,
     })

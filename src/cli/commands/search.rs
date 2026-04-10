@@ -144,6 +144,7 @@ async fn run_local(
         memory: memory_state.as_ref(),
         profile_state: None,
         profile_agent_id: None,
+        memory_route: None,
         ranking_surface: crate::search::RankingSurface::Search,
         async_web,
     };

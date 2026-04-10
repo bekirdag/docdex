@@ -118,3 +118,68 @@ fn mcp_memory_layers_reports_agent_usage_map() -> Result<(), Box<dyn Error>> {
     server.shutdown();
     Ok(())
 }
+
+#[test]
+fn mcp_memory_route_returns_ranked_lane_guidance() -> Result<(), Box<dyn Error>> {
+    let repo = TempDir::new()?;
+    let state_root = TempDir::new()?;
+    let home_dir = TempDir::new()?;
+    write_repo(repo.path())?;
+    let global_state_dir = home_dir.path().join(".docdex").join("state");
+    write_config(home_dir.path(), &global_state_dir)?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut server = TestServerHarness::spawn_with_env(
+        state_root.path(),
+        home_dir.path(),
+        repo.path(),
+        host,
+        port,
+        true,
+        &[("DOCDEX_ENABLE_MEMORY", "1")],
+    )?;
+    wait_for_health(host, port)?;
+
+    let client = Client::builder().timeout(Duration::from_secs(5)).build()?;
+    let response: Value = client
+        .post(format!("http://{host}:{port}/v1/mcp"))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_memory_route",
+                "arguments": {
+                    "project_root": repo.path().display().to_string(),
+                    "query": "Store that we prefer date-fns and keep handoff notes for the renderer work.",
+                    "intent": "write"
+                }
+            }
+        }))
+        .send()?
+        .error_for_status()?
+        .json()?;
+    let value = parse_tool_result(&response)?;
+
+    assert_eq!(value.get("intent").and_then(Value::as_str), Some("write"));
+    let core = value
+        .get("core_memory")
+        .and_then(Value::as_array)
+        .ok_or("missing core memory")?;
+    assert!(core
+        .iter()
+        .any(|item| { item.get("layer_id").and_then(Value::as_str) == Some("profile_memory") }));
+    let retrievable = value
+        .get("retrievable_memory")
+        .and_then(Value::as_array)
+        .ok_or("missing retrievable memory")?;
+    assert!(retrievable
+        .iter()
+        .any(|item| { item.get("layer_id").and_then(Value::as_str) == Some("diary_memory") }));
+
+    server.shutdown();
+    Ok(())
+}

@@ -121,6 +121,23 @@ fn ensure_daemon_for_index_and_hint() {
 }
 
 #[test]
+fn ensure_daemon_for_memory_route_and_hint() {
+    let temp = TempDir::new().expect("temp dir");
+    let repo = repo_args(temp.path().to_path_buf());
+    let cmd = Command::MemoryRoute {
+        scope: super::ConversationScopeArgs {
+            repo: Some(repo.repo_root()),
+            conversation_namespace: None,
+        },
+        intent: Some("read".to_string()),
+        query: "What did we decide last session?".to_string(),
+    };
+    assert!(should_ensure_daemon(&cmd));
+    let hint = repo_hint_for_command(&cmd).expect("repo hint");
+    assert_eq!(hint, repo.repo_root());
+}
+
+#[test]
 fn ensure_daemon_skips_serve() {
     let temp = TempDir::new().expect("temp dir");
     let repo = repo_args(temp.path().to_path_buf());

@@ -54,6 +54,32 @@ pub struct MemoryLayerStatusView {
     pub rationale: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryRouteResponse {
+    pub scope: MemoryLayersScopeView,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_agent_id: Option<String>,
+    pub query: String,
+    pub intent: String,
+    pub intent_source: String,
+    pub should_start_with_core: bool,
+    pub core_memory: Vec<MemoryRouteRecommendation>,
+    pub retrievable_memory: Vec<MemoryRouteRecommendation>,
+    pub recommended_order: Vec<String>,
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryRouteRecommendation {
+    pub layer_id: String,
+    pub title: String,
+    pub score: u8,
+    pub reason: String,
+    pub manual_tools: Vec<String>,
+    pub automatic_read_surfaces: Vec<String>,
+    pub automatic_write_surfaces: Vec<String>,
+}
+
 pub enum MemoryLayerScopeInput<'a> {
     Repo {
         repo_id: &'a str,
@@ -74,6 +100,40 @@ pub struct MemoryLayersInput<'a> {
     pub conversation_config: Option<&'a MemoryConversationConfig>,
     pub personal_preferences: Option<&'a PersonalPreferencesStore>,
     pub personal_preferences_config: Option<&'a MemoryPersonalPreferencesConfig>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemoryRouteIntent {
+    Read,
+    Write,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemoryRouteIntentSource {
+    Explicit,
+    Inferred,
+    Default,
+}
+
+#[derive(Debug, Default)]
+struct MemoryRouteSignals {
+    behavioral: bool,
+    personal: bool,
+    technical: bool,
+    continuity: bool,
+    handoff: bool,
+    graph: bool,
+    write: bool,
+    archive: bool,
+    repo_write: bool,
+}
+
+#[derive(Debug)]
+struct ScoredMemoryLayer<'a> {
+    layer: &'a MemoryLayerView,
+    score: u8,
+    reason: String,
+    is_core: bool,
 }
 
 pub fn build_memory_layers_map(input: MemoryLayersInput<'_>) -> MemoryLayersMap {
@@ -110,6 +170,199 @@ pub fn build_memory_layers_map(input: MemoryLayersInput<'_>) -> MemoryLayersMap 
     }
 }
 
+pub fn build_memory_route(
+    input: MemoryLayersInput<'_>,
+    query: &str,
+    intent: Option<&str>,
+) -> MemoryRouteResponse {
+    let map = build_memory_layers_map(input);
+    build_memory_route_from_map(map, query, intent)
+}
+
+pub fn memory_route_recommends_layer(route: &MemoryRouteResponse, layer_id: &str) -> bool {
+    route
+        .recommended_order
+        .iter()
+        .any(|candidate| candidate == layer_id)
+}
+
+pub fn memory_route_recommends_any(
+    route: Option<&MemoryRouteResponse>,
+    layer_ids: &[&str],
+) -> bool {
+    match route {
+        None => true,
+        Some(value) => layer_ids
+            .iter()
+            .any(|candidate| memory_route_recommends_layer(value, candidate)),
+    }
+}
+
+pub fn memory_route_recommends_layer_beyond_default(
+    route: &MemoryRouteResponse,
+    layer_id: &str,
+) -> bool {
+    memory_route_recommendation(route, layer_id)
+        .map(|candidate| {
+            candidate.score > memory_route_default_score(&route.scope.kind, &candidate.layer_id)
+        })
+        .unwrap_or(false)
+}
+
+pub fn memory_route_recommends_any_beyond_default(
+    route: Option<&MemoryRouteResponse>,
+    layer_ids: &[&str],
+) -> bool {
+    match route {
+        None => true,
+        Some(value) => layer_ids
+            .iter()
+            .any(|candidate| memory_route_recommends_layer_beyond_default(value, candidate)),
+    }
+}
+
+fn memory_route_recommendation<'a>(
+    route: &'a MemoryRouteResponse,
+    layer_id: &str,
+) -> Option<&'a MemoryRouteRecommendation> {
+    route
+        .core_memory
+        .iter()
+        .chain(route.retrievable_memory.iter())
+        .find(|candidate| candidate.layer_id == layer_id)
+}
+
+fn memory_route_default_score(scope_kind: &str, layer_id: &str) -> u8 {
+    match layer_id {
+        "repo_memory" => {
+            if scope_kind == "repo" {
+                2
+            } else {
+                0
+            }
+        }
+        "profile_memory" => 2,
+        "personal_preferences" => 1,
+        _ => 0,
+    }
+}
+
+fn build_memory_route_from_map(
+    map: MemoryLayersMap,
+    query: &str,
+    intent: Option<&str>,
+) -> MemoryRouteResponse {
+    let normalized_query = collapse_whitespace(query.trim());
+    let (intent, intent_source) = resolve_memory_route_intent(&normalized_query, intent);
+    let signals = classify_memory_route_signals(&normalized_query);
+    let mut scored = map
+        .layers
+        .iter()
+        .filter_map(|layer| score_memory_layer(layer, &map.scope.kind, intent, &signals))
+        .collect::<Vec<_>>();
+    scored.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.layer.title.cmp(&right.layer.title))
+    });
+
+    let mut core_memory = scored
+        .iter()
+        .filter(|item| item.is_core)
+        .map(|item| recommendation_view(item))
+        .collect::<Vec<_>>();
+    let retrievable_memory = scored
+        .iter()
+        .filter(|item| !item.is_core)
+        .map(|item| recommendation_view(item))
+        .collect::<Vec<_>>();
+
+    if core_memory.is_empty() {
+        if let Some(profile) = map
+            .layers
+            .iter()
+            .find(|layer| layer.id == "profile_memory" && layer.enabled)
+        {
+            core_memory.push(MemoryRouteRecommendation {
+                layer_id: profile.id.clone(),
+                title: profile.title.clone(),
+                score: 1,
+                reason: "Default to profile memory first when no stronger lane-specific signal is present."
+                    .to_string(),
+                manual_tools: profile.manual_tools.clone(),
+                automatic_read_surfaces: profile.automatic_read_surfaces.clone(),
+                automatic_write_surfaces: profile.automatic_write_surfaces.clone(),
+            });
+        }
+    }
+
+    let mut recommended_order = core_memory
+        .iter()
+        .map(|item| item.layer_id.clone())
+        .collect::<Vec<_>>();
+    recommended_order.extend(retrievable_memory.iter().map(|item| item.layer_id.clone()));
+
+    let mut notes = Vec::new();
+    match intent_source {
+        MemoryRouteIntentSource::Explicit => {
+            notes.push(format!(
+                "Using explicit {} intent supplied by the caller.",
+                intent.as_str()
+            ));
+        }
+        MemoryRouteIntentSource::Inferred => {
+            notes.push(format!(
+                "Inferred {} intent from the query language.",
+                intent.as_str()
+            ));
+        }
+        MemoryRouteIntentSource::Default => {
+            notes.push(
+                "No write-specific signal was detected, so the route defaults to read mode."
+                    .to_string(),
+            );
+        }
+    }
+    if signals.behavioral || signals.personal {
+        notes.push(
+            "Behavioral or user-specific language was detected, so profile-style lanes are prioritized early."
+                .to_string(),
+        );
+    }
+    if signals.continuity || signals.handoff {
+        notes.push(
+            "Session-continuity language was detected, so conversation and diary lanes are ranked as retrievable memory."
+                .to_string(),
+        );
+    }
+    if signals.graph {
+        notes.push(
+            "Timeline or provenance language was detected, so the temporal knowledge graph is preferred over raw transcript replay."
+                .to_string(),
+        );
+    }
+    if notes.is_empty() {
+        notes.push(
+            "Start with core memory, then move to retrievable lanes if the answer is not already grounded."
+                .to_string(),
+        );
+    }
+
+    MemoryRouteResponse {
+        scope: map.scope,
+        default_agent_id: map.default_agent_id,
+        query: normalized_query,
+        intent: intent.as_str().to_string(),
+        intent_source: intent_source.as_str().to_string(),
+        should_start_with_core: !core_memory.is_empty(),
+        core_memory,
+        retrievable_memory,
+        recommended_order,
+        notes,
+    }
+}
+
 fn scope_view(scope: &MemoryLayerScopeInput<'_>) -> MemoryLayersScopeView {
     match scope {
         MemoryLayerScopeInput::Repo { repo_id, repo_root } => MemoryLayersScopeView {
@@ -124,6 +377,317 @@ fn scope_view(scope: &MemoryLayerScopeInput<'_>) -> MemoryLayersScopeView {
             scope_label: format!("conversation_namespace:{namespace}"),
             repo_root: None,
         },
+    }
+}
+
+fn resolve_memory_route_intent(
+    query: &str,
+    requested_intent: Option<&str>,
+) -> (MemoryRouteIntent, MemoryRouteIntentSource) {
+    if let Some(intent) = requested_intent
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+    {
+        return match intent.as_str() {
+            "write" => (MemoryRouteIntent::Write, MemoryRouteIntentSource::Explicit),
+            "read" => (MemoryRouteIntent::Read, MemoryRouteIntentSource::Explicit),
+            _ => (MemoryRouteIntent::Read, MemoryRouteIntentSource::Default),
+        };
+    }
+
+    let lowercase = query.to_ascii_lowercase();
+    if contains_any(
+        &lowercase,
+        &[
+            "save ",
+            "store ",
+            "persist ",
+            "capture ",
+            "record ",
+            "write down",
+            "archive ",
+            "log ",
+            "journal ",
+            "remember this",
+            "import ",
+        ],
+    ) {
+        (MemoryRouteIntent::Write, MemoryRouteIntentSource::Inferred)
+    } else {
+        (MemoryRouteIntent::Read, MemoryRouteIntentSource::Default)
+    }
+}
+
+fn classify_memory_route_signals(query: &str) -> MemoryRouteSignals {
+    let lowercase = query.to_ascii_lowercase();
+    MemoryRouteSignals {
+        behavioral: contains_any(
+            &lowercase,
+            &[
+                "style",
+                "workflow",
+                "constraint",
+                "preference",
+                "prefer ",
+                "local-first",
+                "local first",
+                "test-heavy",
+                "test heavy",
+                "test-first",
+                "test first",
+                "should i use",
+                "coding standard",
+                "tooling",
+            ],
+        ),
+        personal: contains_any(
+            &lowercase,
+            &[
+                "personal",
+                "user prefers",
+                "user like",
+                "user-specific",
+                "likes ",
+                "dislikes ",
+                "claim",
+                "review",
+                "clone",
+            ],
+        ),
+        technical: contains_any(
+            &lowercase,
+            &[
+                "repo",
+                "project",
+                "code",
+                "file",
+                "path",
+                "module",
+                "function",
+                "class",
+                "endpoint",
+                "schema",
+                "config",
+                "architecture",
+                "implementation",
+                "bug",
+                "fix",
+                "change",
+            ],
+        ),
+        continuity: contains_any(
+            &lowercase,
+            &[
+                "previous",
+                "earlier",
+                "last session",
+                "last time",
+                "history",
+                "conversation",
+                "transcript",
+                "archive",
+                "resume",
+                "what did we decide",
+                "before touching",
+            ],
+        ),
+        handoff: contains_any(
+            &lowercase,
+            &[
+                "handoff",
+                "checkpoint",
+                "note",
+                "notes",
+                "remember",
+                "reminder",
+                "what should i remember",
+                "next step",
+            ],
+        ),
+        graph: contains_any(
+            &lowercase,
+            &[
+                "timeline",
+                "when ",
+                "when did",
+                "provenance",
+                "relationship",
+                "related to",
+                "who decided",
+                "decision history",
+                "entity",
+            ],
+        ),
+        write: contains_any(
+            &lowercase,
+            &[
+                "save ",
+                "store ",
+                "persist ",
+                "capture ",
+                "record ",
+                "write down",
+                "archive ",
+                "journal ",
+                "remember this",
+                "import ",
+            ],
+        ),
+        archive: contains_any(
+            &lowercase,
+            &[
+                "archive",
+                "transcript",
+                "session",
+                "conversation",
+                "hook",
+                "import",
+            ],
+        ),
+        repo_write: contains_any(
+            &lowercase,
+            &[
+                "decision",
+                "repo fact",
+                "project fact",
+                "architecture",
+                "implementation note",
+                "file location",
+                "path",
+            ],
+        ) || contains_repo_like_path(&lowercase),
+    }
+}
+
+fn score_memory_layer<'a>(
+    layer: &'a MemoryLayerView,
+    scope_kind: &str,
+    intent: MemoryRouteIntent,
+    signals: &MemoryRouteSignals,
+) -> Option<ScoredMemoryLayer<'a>> {
+    if !layer.enabled {
+        return None;
+    }
+
+    let (score, reason, is_core) = match layer.id.as_str() {
+        "repo_memory" => {
+            let mut score = if scope_kind == "repo" { 2 } else { 0 };
+            if signals.technical {
+                score += 5;
+            }
+            if intent == MemoryRouteIntent::Write && signals.repo_write {
+                score += 2;
+            }
+            let reason = if signals.repo_write && intent == MemoryRouteIntent::Write {
+                "Repo-specific decisions and durable technical facts belong in repo memory."
+            } else if signals.technical {
+                "Technical repo truth is best grounded through repo memory before broader retrieval."
+            } else {
+                "Repo memory is the default local technical-truth lane for this repository."
+            };
+            (score, reason.to_string(), true)
+        }
+        "profile_memory" => {
+            let mut score = 2;
+            if signals.behavioral {
+                score += 5;
+            }
+            if intent == MemoryRouteIntent::Write && (signals.behavioral || signals.write) {
+                score += 1;
+            }
+            (
+                score,
+                "Profile memory holds durable cross-repo preferences, constraints, and workflow defaults."
+                    .to_string(),
+                true,
+            )
+        }
+        "personal_preferences" => {
+            let mut score = 1;
+            if signals.personal || signals.behavioral {
+                score += 6;
+            }
+            if intent == MemoryRouteIntent::Write && signals.personal {
+                score += 1;
+            }
+            (
+                score,
+                "Personal preferences is the richer user-specific lane for claims, reviewable preferences, and clone-context use."
+                    .to_string(),
+                true,
+            )
+        }
+        "conversation_memory" => {
+            let mut score = 0;
+            if signals.continuity {
+                score += 6;
+            }
+            if signals.archive {
+                score += 2;
+            }
+            if intent == MemoryRouteIntent::Write && signals.write && signals.archive {
+                score += 1;
+            }
+            (
+                score,
+                "Conversation memory is the archive and wake-up lane for prior-session continuity."
+                    .to_string(),
+                false,
+            )
+        }
+        "diary_memory" => {
+            let mut score = 0;
+            if signals.handoff {
+                score += 6;
+            }
+            if intent == MemoryRouteIntent::Write && signals.handoff {
+                score += 1;
+            }
+            (
+                score,
+                "Diary memory is best for handoffs, checkpoints, reminders, and short episodic notes."
+                    .to_string(),
+                false,
+            )
+        }
+        "temporal_knowledge_graph" => {
+            let mut score = 0;
+            if signals.graph {
+                score += 6;
+            }
+            if signals.continuity
+                && contains_any(&layer.guidance.to_ascii_lowercase(), &["timeline"])
+            {
+                score += 1;
+            }
+            (
+                score,
+                "The temporal knowledge graph is the structured lane for timelines, provenance, and relationships."
+                    .to_string(),
+                false,
+            )
+        }
+        _ => (0, String::new(), false),
+    };
+
+    (score > 0).then_some(ScoredMemoryLayer {
+        layer,
+        score,
+        reason,
+        is_core,
+    })
+}
+
+fn recommendation_view(item: &ScoredMemoryLayer<'_>) -> MemoryRouteRecommendation {
+    MemoryRouteRecommendation {
+        layer_id: item.layer.id.clone(),
+        title: item.layer.title.clone(),
+        score: item.score,
+        reason: item.reason.clone(),
+        manual_tools: item.layer.manual_tools.clone(),
+        automatic_read_surfaces: item.layer.automatic_read_surfaces.clone(),
+        automatic_write_surfaces: item.layer.automatic_write_surfaces.clone(),
     }
 }
 
@@ -522,6 +1086,50 @@ fn normalize_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
+}
+
+fn contains_repo_like_path(text: &str) -> bool {
+    text.split_whitespace().any(|token| {
+        let trimmed = token.trim_matches(|ch: char| {
+            matches!(
+                ch,
+                ',' | '.' | ':' | ';' | '(' | ')' | '[' | ']' | '{' | '}' | '"' | '\''
+            )
+        });
+        trimmed.contains('/')
+            && !trimmed.contains("://")
+            && trimmed
+                .rsplit('/')
+                .next()
+                .is_some_and(|segment| segment.contains('.'))
+    })
+}
+
+fn collapse_whitespace(input: &str) -> String {
+    input.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+impl MemoryRouteIntent {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+        }
+    }
+}
+
+impl MemoryRouteIntentSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Explicit => "explicit",
+            Self::Inferred => "inferred",
+            Self::Default => "default",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -597,5 +1205,208 @@ mod tests {
             .find(|layer| layer.id == "conversation_memory")
             .expect("conversation layer");
         assert!(conversation.enabled);
+    }
+
+    #[test]
+    fn memory_route_prefers_repo_and_profile_for_repo_truth_queries() {
+        let temp = TempDir::new().expect("tempdir");
+        let state_dir = temp.path().join("state");
+        let memory_store = MemoryStore::new(&state_dir);
+        let conversation_store = ConversationStore::new(&state_dir);
+        let knowledge_store = KnowledgeStore::new(&state_dir);
+        let config = MemoryConversationConfig::default();
+        let route = build_memory_route(
+            MemoryLayersInput {
+                scope: MemoryLayerScopeInput::Repo {
+                    repo_id: "repo-1",
+                    repo_root: temp.path(),
+                },
+                default_agent_id: Some("codex"),
+                repo_memory: Some(&memory_store),
+                profile: None,
+                conversations: Some(&conversation_store),
+                knowledge: Some(&knowledge_store),
+                conversation_config: Some(&config),
+                personal_preferences: None,
+                personal_preferences_config: None,
+            },
+            "Where is the auth middleware implemented in this repo?",
+            None,
+        );
+
+        assert_eq!(route.intent, "read");
+        assert_eq!(
+            route.core_memory.first().map(|item| item.layer_id.as_str()),
+            Some("repo_memory")
+        );
+        assert!(route.recommended_order.contains(&"repo_memory".to_string()));
+    }
+
+    #[test]
+    fn memory_route_prefers_conversation_diary_and_graph_for_handoff_queries() {
+        let temp = TempDir::new().expect("tempdir");
+        let state_dir = temp.path().join("state");
+        let memory_store = MemoryStore::new(&state_dir);
+        let conversation_store = ConversationStore::new(&state_dir);
+        let knowledge_store = KnowledgeStore::new(&state_dir);
+        let config = MemoryConversationConfig::default();
+        let route = build_memory_route(
+            MemoryLayersInput {
+                scope: MemoryLayerScopeInput::Repo {
+                    repo_id: "repo-1",
+                    repo_root: temp.path(),
+                },
+                default_agent_id: Some("codex"),
+                repo_memory: Some(&memory_store),
+                profile: None,
+                conversations: Some(&conversation_store),
+                knowledge: Some(&knowledge_store),
+                conversation_config: Some(&config),
+                personal_preferences: None,
+                personal_preferences_config: None,
+            },
+            "What did we decide last session, what is the handoff note, and when did that decision happen?",
+            None,
+        );
+
+        assert!(route
+            .retrievable_memory
+            .iter()
+            .any(|item| item.layer_id == "conversation_memory"));
+        assert!(route
+            .retrievable_memory
+            .iter()
+            .any(|item| item.layer_id == "diary_memory"));
+        assert!(route
+            .retrievable_memory
+            .iter()
+            .any(|item| item.layer_id == "temporal_knowledge_graph"));
+    }
+
+    #[test]
+    fn memory_route_helpers_follow_recommended_order() {
+        let route = MemoryRouteResponse {
+            scope: MemoryLayersScopeView {
+                kind: "repo".to_string(),
+                scope_id: "repo-1".to_string(),
+                scope_label: "/tmp/repo".to_string(),
+                repo_root: Some("/tmp/repo".to_string()),
+            },
+            default_agent_id: Some("codex".to_string()),
+            query: "what did we decide earlier".to_string(),
+            intent: "read".to_string(),
+            intent_source: "default".to_string(),
+            should_start_with_core: true,
+            core_memory: Vec::new(),
+            retrievable_memory: Vec::new(),
+            recommended_order: vec![
+                "profile_memory".to_string(),
+                "conversation_memory".to_string(),
+            ],
+            notes: Vec::new(),
+        };
+
+        assert!(memory_route_recommends_layer(&route, "profile_memory"));
+        assert!(!memory_route_recommends_layer(&route, "repo_memory"));
+        assert!(memory_route_recommends_any(
+            Some(&route),
+            &["repo_memory", "conversation_memory"]
+        ));
+        assert!(!memory_route_recommends_any(
+            Some(&route),
+            &["repo_memory", "diary_memory"]
+        ));
+        assert!(memory_route_recommends_any(None, &["repo_memory"]));
+    }
+
+    #[test]
+    fn memory_route_helpers_ignore_default_only_core_scores() {
+        let route = MemoryRouteResponse {
+            scope: MemoryLayersScopeView {
+                kind: "repo".to_string(),
+                scope_id: "repo-1".to_string(),
+                scope_label: "/tmp/repo".to_string(),
+                repo_root: Some("/tmp/repo".to_string()),
+            },
+            default_agent_id: Some("codex".to_string()),
+            query: "hello there".to_string(),
+            intent: "write".to_string(),
+            intent_source: "explicit".to_string(),
+            should_start_with_core: true,
+            core_memory: vec![MemoryRouteRecommendation {
+                layer_id: "profile_memory".to_string(),
+                title: "Profile Memory".to_string(),
+                score: 2,
+                reason: "Default profile lane".to_string(),
+                manual_tools: vec![],
+                automatic_read_surfaces: vec![],
+                automatic_write_surfaces: vec![],
+            }],
+            retrievable_memory: vec![MemoryRouteRecommendation {
+                layer_id: "conversation_memory".to_string(),
+                title: "Conversation Memory".to_string(),
+                score: 1,
+                reason: "Archive continuity".to_string(),
+                manual_tools: vec![],
+                automatic_read_surfaces: vec![],
+                automatic_write_surfaces: vec![],
+            }],
+            recommended_order: vec![
+                "profile_memory".to_string(),
+                "conversation_memory".to_string(),
+            ],
+            notes: Vec::new(),
+        };
+
+        assert!(!memory_route_recommends_layer_beyond_default(
+            &route,
+            "profile_memory"
+        ));
+        assert!(memory_route_recommends_layer_beyond_default(
+            &route,
+            "conversation_memory"
+        ));
+        assert!(memory_route_recommends_any_beyond_default(
+            Some(&route),
+            &["conversation_memory"]
+        ));
+        assert!(!memory_route_recommends_any_beyond_default(
+            Some(&route),
+            &["profile_memory"]
+        ));
+        assert!(memory_route_recommends_any_beyond_default(
+            None,
+            &["profile_memory"]
+        ));
+    }
+
+    #[test]
+    fn memory_route_detects_repo_like_paths_as_repo_write_signals() {
+        let temp = TempDir::new().expect("tempdir");
+        let state_dir = temp.path().join("state");
+        let memory_store = MemoryStore::new(&state_dir);
+        let route = build_memory_route(
+            MemoryLayersInput {
+                scope: MemoryLayerScopeInput::Repo {
+                    repo_id: "repo-1",
+                    repo_root: temp.path(),
+                },
+                default_agent_id: Some("codex"),
+                repo_memory: Some(&memory_store),
+                profile: None,
+                conversations: None,
+                knowledge: None,
+                conversation_config: None,
+                personal_preferences: None,
+                personal_preferences_config: None,
+            },
+            "Please remember that the wake-up route lives in src/api/v1/wakeup.rs.",
+            Some("write"),
+        );
+
+        assert!(memory_route_recommends_layer_beyond_default(
+            &route,
+            "repo_memory"
+        ));
     }
 }

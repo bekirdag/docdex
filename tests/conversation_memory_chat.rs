@@ -216,3 +216,129 @@ fn chat_prompt_includes_startup_diary_context_when_enabled() -> Result<(), Box<d
     server.shutdown();
     Ok(())
 }
+
+#[test]
+fn chat_auto_capture_stores_sessions_when_enabled() -> Result<(), Box<dyn Error>> {
+    let repo = TempDir::new()?;
+    let state_root = TempDir::new()?;
+    let home_dir = TempDir::new()?;
+    write_repo(repo.path())?;
+    let Some(mock) = MockOllama::spawn()? else {
+        return Ok(());
+    };
+    let global_state_dir = home_dir.path().join(".docdex").join("state");
+    write_config(
+        home_dir.path(),
+        &global_state_dir,
+        &mock.base_url,
+        "auto_capture = true\narchive_raw_transcripts = true\n",
+    )?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut server =
+        ServerHarness::spawn(state_root.path(), home_dir.path(), repo.path(), host, port)?;
+
+    let client = Client::builder().timeout(Duration::from_secs(5)).build()?;
+    let chat_url = format!("http://{host}:{port}/v1/chat/completions");
+    client
+        .post(&chat_url)
+        .json(&json!({
+            "model": "fake-model",
+            "messages": [{
+                "role": "user",
+                "content": "Please remember that the wake-up route lives in src/api/v1/wakeup.rs."
+            }],
+            "docdex": {
+                "agent_id": "codex",
+                "compress_results": false,
+                "skip_local_search": true,
+                "limit": 1
+            }
+        }))
+        .send()?
+        .error_for_status()?;
+
+    let search_url = format!("http://{host}:{port}/v1/conversations/search");
+    let result: Value = client
+        .get(&search_url)
+        .query(&[
+            ("q", "src/api/v1/wakeup.rs"),
+            ("agent_id", "codex"),
+            ("limit", "5"),
+        ])
+        .send()?
+        .error_for_status()?
+        .json()?;
+
+    assert!(result.get("total").and_then(Value::as_u64).unwrap_or(0) >= 1);
+    assert!(
+        result.get("hits").and_then(Value::as_array).map(|hits| {
+            hits.iter()
+                .any(|hit| hit.get("source").and_then(Value::as_str) == Some("chat_completion"))
+        }) == Some(true)
+    );
+
+    server.shutdown();
+    Ok(())
+}
+
+#[test]
+fn chat_write_route_skips_archive_when_no_write_lane_is_signaled() -> Result<(), Box<dyn Error>> {
+    let repo = TempDir::new()?;
+    let state_root = TempDir::new()?;
+    let home_dir = TempDir::new()?;
+    write_repo(repo.path())?;
+    let Some(mock) = MockOllama::spawn()? else {
+        return Ok(());
+    };
+    let global_state_dir = home_dir.path().join(".docdex").join("state");
+    write_config(
+        home_dir.path(),
+        &global_state_dir,
+        &mock.base_url,
+        "auto_capture = true\narchive_raw_transcripts = true\n",
+    )?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut server =
+        ServerHarness::spawn(state_root.path(), home_dir.path(), repo.path(), host, port)?;
+
+    let client = Client::builder().timeout(Duration::from_secs(5)).build()?;
+    let chat_url = format!("http://{host}:{port}/v1/chat/completions");
+    client
+        .post(&chat_url)
+        .json(&json!({
+            "model": "fake-model",
+            "messages": [{
+                "role": "user",
+                "content": "Hello there."
+            }],
+            "docdex": {
+                "agent_id": "codex",
+                "compress_results": false,
+                "skip_local_search": true,
+                "limit": 1
+            }
+        }))
+        .send()?
+        .error_for_status()?;
+
+    let search_url = format!("http://{host}:{port}/v1/conversations/search");
+    let result: Value = client
+        .get(&search_url)
+        .query(&[("q", "Hello there."), ("agent_id", "codex"), ("limit", "5")])
+        .send()?
+        .error_for_status()?
+        .json()?;
+
+    assert_eq!(result.get("total").and_then(Value::as_u64), Some(0));
+
+    server.shutdown();
+    Ok(())
+}

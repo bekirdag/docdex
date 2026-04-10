@@ -198,6 +198,7 @@ pub async fn run_eval(options: EvalOptions) -> Result<()> {
                 memory: None,
                 profile_state: None,
                 profile_agent_id: None,
+                memory_route: None,
                 ranking_surface: crate::search::RankingSurface::Chat,
                 async_web: false,
             };

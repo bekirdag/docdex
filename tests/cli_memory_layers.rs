@@ -84,3 +84,56 @@ fn cli_memory_layers_supports_conversation_namespace_scope() -> Result<(), Box<d
     server.shutdown();
     Ok(())
 }
+
+#[test]
+fn cli_memory_route_returns_ranked_lane_guidance() -> Result<(), Box<dyn Error>> {
+    let repo = TempDir::new()?;
+    let state_root = TempDir::new()?;
+    let home_dir = TempDir::new()?;
+    write_repo(repo.path())?;
+    let global_state_dir = home_dir.path().join(".docdex").join("state");
+    write_config(home_dir.path(), &global_state_dir)?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let base_url = format!("http://{host}:{port}");
+    let mut server = TestServerHarness::spawn_with_env(
+        state_root.path(),
+        home_dir.path(),
+        repo.path(),
+        host,
+        port,
+        false,
+        &[("DOCDEX_ENABLE_MEMORY", "1")],
+    )?;
+    wait_for_health(host, port)?;
+
+    let args = vec![
+        "memory-route".to_string(),
+        "--repo".to_string(),
+        repo.path().display().to_string(),
+        "What did we decide last session, what is the handoff note, and when did that happen?"
+            .to_string(),
+    ];
+    let value = run_docdex_json(home_dir.path(), &base_url, args)?;
+
+    assert_eq!(value.get("intent").and_then(Value::as_str), Some("read"));
+    let retrievable = value
+        .get("retrievable_memory")
+        .and_then(Value::as_array)
+        .ok_or("missing retrievable_memory")?;
+    assert!(retrievable.iter().any(|item| {
+        item.get("layer_id").and_then(Value::as_str) == Some("conversation_memory")
+    }));
+    assert!(retrievable
+        .iter()
+        .any(|item| { item.get("layer_id").and_then(Value::as_str) == Some("diary_memory") }));
+    assert!(retrievable.iter().any(|item| {
+        item.get("layer_id").and_then(Value::as_str) == Some("temporal_knowledge_graph")
+    }));
+
+    server.shutdown();
+    Ok(())
+}

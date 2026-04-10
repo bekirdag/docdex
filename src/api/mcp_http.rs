@@ -635,8 +635,13 @@ mod tests {
             "params": {}
         });
         let init_response = mcp_request_handler(State(state.clone()), Json(init_payload)).await;
-        assert!(init_response.status().is_success());
+        let init_status = init_response.status();
         let init_body = init_response.into_body().collect().await?.to_bytes();
+        assert!(
+            init_status.is_success(),
+            "expected initialize success, got {init_status}: {}",
+            String::from_utf8_lossy(&init_body)
+        );
         let init_value: serde_json::Value = serde_json::from_slice(&init_body)?;
         assert!(init_value.get("result").is_some());
 

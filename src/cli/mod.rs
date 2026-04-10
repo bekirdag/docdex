@@ -786,6 +786,19 @@ pub(crate) enum Command {
         #[command(flatten)]
         scope: ConversationScopeArgs,
     },
+    /// Recommend which Docdex memory lanes to consult or write for a specific task.
+    MemoryRoute {
+        #[command(flatten)]
+        scope: ConversationScopeArgs,
+        #[arg(
+            long,
+            value_parser = ["read", "write", "auto"],
+            help = "Force read/write routing; defaults to auto inference."
+        )]
+        intent: Option<String>,
+        #[arg(value_name = "QUERY", value_parser = config::non_empty_string)]
+        query: String,
+    },
     /// Manage repo-scoped conversation memory sessions.
     Conversations {
         #[command(subcommand)]
@@ -2016,6 +2029,7 @@ fn repo_hint_for_command(command: &Command) -> Option<PathBuf> {
         Command::Mswarm { .. } => None,
         Command::MemoryCompact { repo, .. } => Some(repo.repo_root()),
         Command::MemoryLayers { scope } => scope.repo_root(),
+        Command::MemoryRoute { scope, .. } => scope.repo_root(),
         Command::Conversations { command } => match command {
             ConversationCommand::Import { scope, .. } => scope.repo_root(),
             ConversationCommand::Search { scope, .. } => scope.repo_root(),

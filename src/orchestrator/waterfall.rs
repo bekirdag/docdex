@@ -25,6 +25,7 @@ use crate::memory::{
     prune_and_truncate_memory_context, repo_state_root_from_state_dir, MemoryContextItem,
     MemoryContextPruneTrace,
 };
+use crate::memory_layers::{memory_route_recommends_layer, MemoryRouteResponse};
 use crate::metrics;
 use crate::orchestrator::web::{
     build_gate_meta, detect_query_intent, evaluate_gate_status, filter_local_hits_with_llm,
@@ -62,6 +63,7 @@ pub struct WaterfallRequest<'a> {
     pub memory: Option<&'a MemoryState>,
     pub profile_state: Option<&'a ProfileState>,
     pub profile_agent_id: Option<&'a str>,
+    pub memory_route: Option<&'a MemoryRouteResponse>,
     pub ranking_surface: RankingSurface,
     pub async_web: bool,
 }
@@ -73,6 +75,7 @@ pub struct WaterfallResult {
     pub impact_context: Option<ImpactContextAssembly>,
     pub memory_context: Option<MemoryContextAssembly>,
     pub profile_context: Option<ProfileContextAssembly>,
+    pub memory_route: Option<MemoryRouteResponse>,
 }
 
 /// Tier-2 outcome: optional Tier-2 response plus discovery status and guardrail details.
@@ -291,6 +294,7 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
                 memory: None,
                 profile_state: None,
                 profile_agent_id: None,
+                memory_route: None,
                 ranking_surface,
                 async_web: false,
             };
@@ -349,165 +353,203 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
         }
     };
 
-    let profile_context = if let (Some(profile_state), Some(agent_id)) =
-        (request.profile_state, request.profile_agent_id)
-    {
+    let should_collect_profile_context = request
+        .memory_route
+        .map(|route| memory_route_recommends_layer(route, "profile_memory"))
+        .unwrap_or(true);
+    if !should_collect_profile_context {
         queue_dag_log(
             &repo_state_root,
             dag_session_id,
-            "ToolCall",
+            "Observation",
             json!({
                 "tool": "profile_recall",
-                "agent_id": agent_id,
-                "recall_candidates": request.plan.profile_budget.recall_candidates,
-                "max_items": request.plan.profile_budget.max_items,
-                "budget_tokens": request.plan.profile_budget.token_budget,
+                "status": "skipped_by_memory_route",
             }),
         );
-        let started = Instant::now();
-        let context = collect_profile_context(
-            profile_state,
-            agent_id,
-            request.query,
-            &request.plan.profile_budget,
-        )
-        .await?;
-        if let Some(ctx) = &context {
-            let latency_ms = started.elapsed().as_millis();
-            metrics::global().record_profile_recall(
-                ctx.prune_trace.candidates,
-                ctx.prune_trace.kept,
-                ctx.prune_trace.dropped.len(),
-                latency_ms,
+    }
+    let profile_context = if should_collect_profile_context {
+        if let (Some(profile_state), Some(agent_id)) =
+            (request.profile_state, request.profile_agent_id)
+        {
+            queue_dag_log(
+                &repo_state_root,
+                dag_session_id,
+                "ToolCall",
+                json!({
+                    "tool": "profile_recall",
+                    "agent_id": agent_id,
+                    "recall_candidates": request.plan.profile_budget.recall_candidates,
+                    "max_items": request.plan.profile_budget.max_items,
+                    "budget_tokens": request.plan.profile_budget.token_budget,
+                }),
             );
-            info!(
-                target: "docdexd",
-                request_id = %request.request_id,
-                repo_root = %request.indexer.repo_root().display(),
-                agent_id = %agent_id,
-                candidates = ctx.prune_trace.candidates,
-                kept = ctx.prune_trace.kept,
-                dropped = ctx.prune_trace.dropped.len(),
-                latency_ms,
-                "profile_recall waterfall"
-            );
-            let truncated = ctx.items.iter().filter(|item| item.truncated).count();
-            let dropped_total = ctx.prune_trace.dropped.len();
-            if dropped_total > 0 || truncated > 0 {
-                if dropped_total > 0 {
-                    metrics::global().inc_profile_budget_drop(dropped_total);
-                }
-                let mut dropped_max_items = 0usize;
-                let mut dropped_budget = 0usize;
-                for dropped in &ctx.prune_trace.dropped {
-                    match dropped.reason {
-                        "max_items" => dropped_max_items += 1,
-                        "budget_exhausted" => dropped_budget += 1,
-                        _ => {}
-                    }
-                }
+            let started = Instant::now();
+            let context = collect_profile_context(
+                profile_state,
+                agent_id,
+                request.query,
+                &request.plan.profile_budget,
+            )
+            .await?;
+            if let Some(ctx) = &context {
+                let latency_ms = started.elapsed().as_millis();
+                metrics::global().record_profile_recall(
+                    ctx.prune_trace.candidates,
+                    ctx.prune_trace.kept,
+                    ctx.prune_trace.dropped.len(),
+                    latency_ms,
+                );
                 info!(
                     target: "docdexd",
                     request_id = %request.request_id,
                     repo_root = %request.indexer.repo_root().display(),
                     agent_id = %agent_id,
-                    budget_tokens = ctx.prune_trace.budget_tokens,
-                    max_items = ctx.prune_trace.max_items,
-                    dropped_total,
-                    dropped_max_items,
-                    dropped_budget,
-                    truncated,
-                    "profile_context pruned to fit token budget"
+                    candidates = ctx.prune_trace.candidates,
+                    kept = ctx.prune_trace.kept,
+                    dropped = ctx.prune_trace.dropped.len(),
+                    latency_ms,
+                    "profile_recall waterfall"
+                );
+                let truncated = ctx.items.iter().filter(|item| item.truncated).count();
+                let dropped_total = ctx.prune_trace.dropped.len();
+                if dropped_total > 0 || truncated > 0 {
+                    if dropped_total > 0 {
+                        metrics::global().inc_profile_budget_drop(dropped_total);
+                    }
+                    let mut dropped_max_items = 0usize;
+                    let mut dropped_budget = 0usize;
+                    for dropped in &ctx.prune_trace.dropped {
+                        match dropped.reason {
+                            "max_items" => dropped_max_items += 1,
+                            "budget_exhausted" => dropped_budget += 1,
+                            _ => {}
+                        }
+                    }
+                    info!(
+                        target: "docdexd",
+                        request_id = %request.request_id,
+                        repo_root = %request.indexer.repo_root().display(),
+                        agent_id = %agent_id,
+                        budget_tokens = ctx.prune_trace.budget_tokens,
+                        max_items = ctx.prune_trace.max_items,
+                        dropped_total,
+                        dropped_max_items,
+                        dropped_budget,
+                        truncated,
+                        "profile_context pruned to fit token budget"
+                    );
+                }
+                queue_dag_log(
+                    &repo_state_root,
+                    dag_session_id,
+                    "Observation",
+                    json!({
+                        "tool": "profile_recall",
+                        "agent_id": agent_id,
+                        "candidates": ctx.prune_trace.candidates,
+                        "kept": ctx.prune_trace.kept,
+                        "dropped": ctx.prune_trace.dropped.len(),
+                        "truncated": truncated,
+                        "latency_ms": latency_ms,
+                    }),
                 );
             }
-            queue_dag_log(
-                &repo_state_root,
-                dag_session_id,
-                "Observation",
-                json!({
-                    "tool": "profile_recall",
-                    "agent_id": agent_id,
-                    "candidates": ctx.prune_trace.candidates,
-                    "kept": ctx.prune_trace.kept,
-                    "dropped": ctx.prune_trace.dropped.len(),
-                    "truncated": truncated,
-                    "latency_ms": latency_ms,
-                }),
-            );
+            context
+        } else {
+            None
         }
-        context
     } else {
         None
     };
 
     search_response.profile_context = profile_context.clone();
 
-    let memory_context = if let Some(memory) = request.memory {
+    let should_collect_memory_context = request
+        .memory_route
+        .map(|route| memory_route_recommends_layer(route, "repo_memory"))
+        .unwrap_or(true);
+    if !should_collect_memory_context {
         queue_dag_log(
             &repo_state_root,
             dag_session_id,
-            "ToolCall",
+            "Observation",
             json!({
                 "tool": "memory_recall",
-                "recall_candidates": request.plan.memory_budget.recall_candidates,
-                "max_items": request.plan.memory_budget.max_items,
-                "budget_tokens": request.plan.memory_budget.token_budget,
+                "status": "skipped_by_memory_route",
             }),
         );
-        let started = Instant::now();
-        let context =
-            collect_memory_context(memory, request.query, &request.plan.memory_budget).await?;
-        if let Some(ctx) = &context {
-            info!(
-                target: "docdexd",
-                request_id = %request.request_id,
-                repo_root = %request.indexer.repo_root().display(),
-                candidates = ctx.prune_trace.candidates,
-                kept = ctx.prune_trace.kept,
-                dropped = ctx.prune_trace.dropped.len(),
-                latency_ms = started.elapsed().as_millis(),
-                "memory_recall waterfall"
+    }
+    let memory_context = if should_collect_memory_context {
+        if let Some(memory) = request.memory {
+            queue_dag_log(
+                &repo_state_root,
+                dag_session_id,
+                "ToolCall",
+                json!({
+                    "tool": "memory_recall",
+                    "recall_candidates": request.plan.memory_budget.recall_candidates,
+                    "max_items": request.plan.memory_budget.max_items,
+                    "budget_tokens": request.plan.memory_budget.token_budget,
+                }),
             );
-            let truncated = ctx.items.iter().filter(|item| item.truncated).count();
-            let dropped_total = ctx.prune_trace.dropped.len();
-            if dropped_total > 0 || truncated > 0 {
-                let mut dropped_max_items = 0usize;
-                let mut dropped_budget = 0usize;
-                for dropped in &ctx.prune_trace.dropped {
-                    match dropped.reason {
-                        "max_items" => dropped_max_items += 1,
-                        "budget_exhausted" => dropped_budget += 1,
-                        _ => {}
-                    }
-                }
+            let started = Instant::now();
+            let context =
+                collect_memory_context(memory, request.query, &request.plan.memory_budget).await?;
+            if let Some(ctx) = &context {
                 info!(
                     target: "docdexd",
                     request_id = %request.request_id,
                     repo_root = %request.indexer.repo_root().display(),
-                    budget_tokens = ctx.prune_trace.budget_tokens,
-                    max_items = ctx.prune_trace.max_items,
-                    dropped_total,
-                    dropped_max_items,
-                    dropped_budget,
-                    truncated,
-                    "memory_context pruned to fit token budget"
+                    candidates = ctx.prune_trace.candidates,
+                    kept = ctx.prune_trace.kept,
+                    dropped = ctx.prune_trace.dropped.len(),
+                    latency_ms = started.elapsed().as_millis(),
+                    "memory_recall waterfall"
+                );
+                let truncated = ctx.items.iter().filter(|item| item.truncated).count();
+                let dropped_total = ctx.prune_trace.dropped.len();
+                if dropped_total > 0 || truncated > 0 {
+                    let mut dropped_max_items = 0usize;
+                    let mut dropped_budget = 0usize;
+                    for dropped in &ctx.prune_trace.dropped {
+                        match dropped.reason {
+                            "max_items" => dropped_max_items += 1,
+                            "budget_exhausted" => dropped_budget += 1,
+                            _ => {}
+                        }
+                    }
+                    info!(
+                        target: "docdexd",
+                        request_id = %request.request_id,
+                        repo_root = %request.indexer.repo_root().display(),
+                        budget_tokens = ctx.prune_trace.budget_tokens,
+                        max_items = ctx.prune_trace.max_items,
+                        dropped_total,
+                        dropped_max_items,
+                        dropped_budget,
+                        truncated,
+                        "memory_context pruned to fit token budget"
+                    );
+                }
+                queue_dag_log(
+                    &repo_state_root,
+                    dag_session_id,
+                    "Observation",
+                    json!({
+                        "tool": "memory_recall",
+                        "candidates": ctx.prune_trace.candidates,
+                        "kept": ctx.prune_trace.kept,
+                        "dropped": ctx.prune_trace.dropped.len(),
+                        "truncated": truncated,
+                        "latency_ms": started.elapsed().as_millis(),
+                    }),
                 );
             }
-            queue_dag_log(
-                &repo_state_root,
-                dag_session_id,
-                "Observation",
-                json!({
-                    "tool": "memory_recall",
-                    "candidates": ctx.prune_trace.candidates,
-                    "kept": ctx.prune_trace.kept,
-                    "dropped": ctx.prune_trace.dropped.len(),
-                    "truncated": truncated,
-                    "latency_ms": started.elapsed().as_millis(),
-                }),
-            );
+            context
+        } else {
+            None
         }
-        context
     } else {
         None
     };
@@ -529,6 +571,7 @@ pub async fn run_waterfall(request: WaterfallRequest<'_>) -> Result<WaterfallRes
         impact_context,
         memory_context,
         profile_context,
+        memory_route: request.memory_route.cloned(),
     })
 }
 

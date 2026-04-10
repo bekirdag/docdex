@@ -1,4 +1,4 @@
----- START OF DOCDEX INFO V0.2.63 ----
+---- START OF DOCDEX INFO V0.2.64 ----
 Docdex URL: http://127.0.0.1:28491
 Use this base URL for Docdex HTTP endpoints.
 Health check endpoint: `GET /healthz` (not `/v1/health`).
@@ -92,9 +92,11 @@ Precision tools for structural analysis. Do not rely on text search for definiti
 | docdex_memory_recall | Retrieve technical facts about the current repo. |
 | docdex_save_preference | Store a global user preference (Style, Tooling, Constraint). |
 | docdex_get_profile | Retrieve global preferences. |
+| docdex_memory_route | Recommend which Docdex memory lanes to read from or write to for a specific task. |
 | docdex_memory_layers | Inspect the six memory layers, their scope/storage, and when each one should be used. |
 
-When unsure which memory lane fits the task, call `docdex_memory_layers` first.
+When unsure which memory lane fits the task, call `docdex_memory_route` first.
+- Use `docdex_memory_layers` when you need the full six-layer map and storage/scope details.
 - Repo memory and profile memory are the core/default lanes.
 - Conversation memory, diary memory, temporal knowledge graph, and personal-preferences memory are selective lanes for continuity, handoff notes, structured recall, and richer user-specific context.
 
@@ -359,6 +361,7 @@ Do not guess fields; use these canonical shapes.
 - `docdex_dag_export`: `{ project_root, session_id|dag_session_id, format?, max_nodes? }`
 - `docdex_memory_save`: `{ project_root, text }`
 - `docdex_memory_recall`: `{ project_root, query, top_k? }`
+- `docdex_memory_route`: `{ query, intent?, project_root?, repo_path?, conversation_namespace? }`
 - `docdex_memory_layers`: `{ project_root?, repo_path?, conversation_namespace? }`
 - `docdex_get_profile`: `{ agent_id }`
 - `docdex_save_preference`: `{ agent_id, category, content }`

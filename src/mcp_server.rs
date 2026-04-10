@@ -878,6 +878,19 @@ struct MemoryLayersArgs {
     conversation_namespace: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct MemoryRouteArgs {
+    query: String,
+    #[serde(default)]
+    intent: Option<String>,
+    #[serde(default)]
+    project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    repo_path: Option<PathBuf>,
+    #[serde(default, alias = "namespace")]
+    conversation_namespace: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct ConversationImportMessageArgs {
     role: String,
@@ -2025,7 +2038,7 @@ impl McpServer {
                 let protocol_version = init_params
                     .protocol_version
                     .unwrap_or_else(|| "2025-11-25".to_string());
-                let instructions = "Docdex is a local-first repo indexer: use docdex_search for repo docs/code before changing code.\nIf results are weak or the user asks for web context, use docdex_web_research (requires web enabled).\nUse docdex_open for file reads, docdex_files to list indexed docs, docdex_tree for folder structure, and docdex_index to refresh the index when stale.\nFor code intelligence, use docdex_symbols/docdex_ast, docdex_impact_diagnostics for unresolved imports, and docdex_impact_graph for dependency traversal.\nUse docdex_dag_export to export DAG sessions; pass the dag_session_id from docdex_search/docdex_web_research responses (or provide session_id directly).\nUse docdex_local_completion to offload small tasks to a local model or managed mcoda cloud agent. Code-oriented task types use the code lane; lightweight Q&A uses general_question. If mswarm is configured and cloud delegation is enabled, Docdex can discover `mswarm-cloud-*` candidates from `mcoda cloud agent list` and automatically skip usage-limited cloud agents.\nUse docdex_memory_layers when you need the current map of all six memory layers and when to use each one.\nThe six layers are: repo memory for repo-specific technical truth; profile memory for global agent/user preferences; conversation memory for archived sessions and wake-up recall; diary memory for per-agent episodic handoff notes; temporal knowledge graph for structured timeline/entity recall; and personal preferences for richer user-specific claims and clone-context flows.\nMemory tools (docdex_memory_store/recall) require memory to be enabled.\nConversation tools: use docdex_conversation_import for ingest, docdex_conversation_search/list/read/export/delete/redact for archive inspection, docdex_conversation_prune for retention cleanup, docdex_diary_write/read for per-agent journals, docdex_conversation_hook for append-only capture events, docdex_kg_* for structured conversation facts, and docdex_wakeup for bounded startup memory.\nProfile tools (docdex_save_preference/docdex_get_profile) use global profile memory and do not require project_root.\nPersonal preferences tools (docdex_personal_preferences_* and docdex_clone_*) are the richer global user-preference lane.\nPass project_root/repo_path to match the MCP server repo (or omit if initialize set a default).";
+                let instructions = "Docdex is a local-first repo indexer: use docdex_search for repo docs/code before changing code.\nIf results are weak or the user asks for web context, use docdex_web_research (requires web enabled).\nUse docdex_open for file reads, docdex_files to list indexed docs, docdex_tree for folder structure, and docdex_index to refresh the index when stale.\nFor code intelligence, use docdex_symbols/docdex_ast, docdex_impact_diagnostics for unresolved imports, and docdex_impact_graph for dependency traversal.\nUse docdex_dag_export to export DAG sessions; pass the dag_session_id from docdex_search/docdex_web_research responses (or provide session_id directly).\nUse docdex_local_completion to offload small tasks to a local model or managed mcoda cloud agent. Code-oriented task types use the code lane; lightweight Q&A uses general_question. If mswarm is configured and cloud delegation is enabled, Docdex can discover `mswarm-cloud-*` candidates from `mcoda cloud agent list` and automatically skip usage-limited cloud agents.\nUse docdex_memory_route when you need query-specific guidance about which memory lane to read from or write to. Use docdex_memory_layers when you need the current map of all six memory layers and their scope/storage details.\nThe six layers are: repo memory for repo-specific technical truth; profile memory for global agent/user preferences; conversation memory for archived sessions and wake-up recall; diary memory for per-agent episodic handoff notes; temporal knowledge graph for structured timeline/entity recall; and personal preferences for richer user-specific claims and clone-context flows.\nMemory tools (docdex_memory_store/recall) require memory to be enabled.\nConversation tools: use docdex_conversation_import for ingest, docdex_conversation_search/list/read/export/delete/redact for archive inspection, docdex_conversation_prune for retention cleanup, docdex_diary_write/read for per-agent journals, docdex_conversation_hook for append-only capture events, docdex_kg_* for structured conversation facts, and docdex_wakeup for bounded startup memory.\nProfile tools (docdex_save_preference/docdex_get_profile) use global profile memory and do not require project_root.\nPersonal preferences tools (docdex_personal_preferences_* and docdex_clone_*) are the richer global user-preference lane.\nPass project_root/repo_path to match the MCP server repo (or omit if initialize set a default).";
                 let mut caps = json!({
                     "tools": { "listChanged": false },
                     "resources": { "listChanged": false },
@@ -3818,6 +3831,41 @@ impl McpServer {
                                     id: id.clone(),
                                     result: None,
                                     error: Some(rpc_tool_error(&err, Some("docdex_memory_layers"))),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_memory_route" | "docdex.memory_route" => {
+                        let args_res: Result<MemoryRouteArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_memory_route"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_memory_route" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_memory_route(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(&err, Some("docdex_memory_route"))),
                                 }))
                             }
                         }
@@ -6225,6 +6273,23 @@ impl McpServer {
                 }),
             },
             ToolDefinition {
+                name: "docdex_memory_route",
+                title: "Route Memory Usage",
+                description: "Recommend which Docdex memory lanes to consult first or write to for a specific query, including core versus retrievable memory.",
+                annotations: Some(annotations_with_priority(0.6)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "minLength": 1, "description": "Task or question to route across Docdex memory lanes." },
+                        "intent": { "type": "string", "enum": ["read", "write", "auto"], "description": "Optional routing intent override." },
+                        "project_root": { "type": "string", "description": "Optional repo root for repo-scoped routing." },
+                        "repo_path": { "type": "string", "description": "Alias for project_root." },
+                        "conversation_namespace": { "type": "string", "minLength": 1, "description": "Optional explicit conversation namespace instead of repo scope." }
+                    },
+                    "required": ["query"]
+                }),
+            },
+            ToolDefinition {
                 name: "docdex_save_preference",
                 title: "Save Preference",
                 description: "Store a global profile preference for an agent (profile memory, async evolution).",
@@ -6572,6 +6637,7 @@ Produce a phased plan with risks and tests to run."
             memory: memory_state.as_ref(),
             profile_state: None,
             profile_agent_id: None,
+            memory_route: None,
             ranking_surface: search::RankingSurface::Search,
             async_web,
         })
@@ -7974,6 +8040,77 @@ Produce a phased plan with risks and tests to run."
                             .as_ref()
                             .map(|value| &value.config),
                     },
+                )
+            }
+        };
+        Ok(serde_json::to_value(value)?)
+    }
+
+    async fn handle_memory_route(&self, args: MemoryRouteArgs) -> Result<serde_json::Value> {
+        let namespace = args
+            .conversation_namespace
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        let scope =
+            self.resolve_conversation_scope(args.project_root, args.repo_path, namespace.clone())?;
+        let value = match scope {
+            McpConversationScope::Repo {
+                repo_id,
+                conversations,
+                memory,
+            } => crate::memory_layers::build_memory_route(
+                crate::memory_layers::MemoryLayersInput {
+                    scope: crate::memory_layers::MemoryLayerScopeInput::Repo {
+                        repo_id: &repo_id,
+                        repo_root: self.indexer.repo_root(),
+                    },
+                    default_agent_id: self.default_agent_id.as_deref(),
+                    repo_memory: memory.as_ref().map(|value| &value.store),
+                    profile: self.profile_state.as_ref().map(|value| &value.manager),
+                    conversations: Some(&conversations.store),
+                    knowledge: Some(&conversations.knowledge),
+                    conversation_config: Some(&conversations.config),
+                    personal_preferences: self
+                        .personal_preferences
+                        .as_ref()
+                        .map(|value| &value.store),
+                    personal_preferences_config: self
+                        .personal_preferences
+                        .as_ref()
+                        .map(|value| &value.config),
+                },
+                &args.query,
+                args.intent.as_deref(),
+            ),
+            McpConversationScope::Namespace { conversations } => {
+                let namespace = namespace.as_deref().ok_or_else(|| {
+                    AppError::new(
+                        ERR_INTERNAL_ERROR,
+                        "conversation namespace context is missing the namespace value",
+                    )
+                })?;
+                crate::memory_layers::build_memory_route(
+                    crate::memory_layers::MemoryLayersInput {
+                        scope: crate::memory_layers::MemoryLayerScopeInput::Namespace { namespace },
+                        default_agent_id: self.default_agent_id.as_deref(),
+                        repo_memory: None,
+                        profile: self.profile_state.as_ref().map(|value| &value.manager),
+                        conversations: Some(&conversations.store),
+                        knowledge: Some(&conversations.knowledge),
+                        conversation_config: Some(&conversations.config),
+                        personal_preferences: self
+                            .personal_preferences
+                            .as_ref()
+                            .map(|value| &value.store),
+                        personal_preferences_config: self
+                            .personal_preferences
+                            .as_ref()
+                            .map(|value| &value.config),
+                    },
+                    &args.query,
+                    args.intent.as_deref(),
                 )
             }
         };

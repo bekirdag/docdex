@@ -4,6 +4,8 @@ use common::{pick_free_port, write_basic_config, write_basic_repo, TestServerHar
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
 use std::error::Error;
+use std::fs;
+use std::path::Path;
 use std::time::Duration;
 use tempfile::TempDir;
 
@@ -17,6 +19,22 @@ fn parse_tool_result(body: &Value) -> Result<Value, Box<dyn Error>> {
         .and_then(|value| value.as_str())
         .ok_or("missing MCP tool response")?;
     Ok(serde_json::from_str(text)?)
+}
+
+fn write_startup_diary_config(
+    home_dir: &Path,
+    global_state_dir: &Path,
+) -> Result<(), Box<dyn Error>> {
+    let config_dir = home_dir.join(".docdex");
+    fs::create_dir_all(&config_dir)?;
+    fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            "[core]\nglobal_state_dir = \"{}\"\n\n[memory.conversations]\nwakeup_include_recent_diary_episodes = true\nmax_wakeup_diary_episodes = 1\n",
+            common::toml_path(global_state_dir)
+        ),
+    )?;
+    Ok(())
 }
 
 #[test]
@@ -100,6 +118,117 @@ fn mcp_conversation_import_and_wakeup_work_over_http_transport() -> Result<(), B
             .unwrap_or(0)
             > 0
     );
+
+    server.shutdown();
+    Ok(())
+}
+
+#[test]
+fn mcp_wakeup_includes_startup_diary_episodes_when_enabled() -> Result<(), Box<dyn Error>> {
+    let repo = TempDir::new()?;
+    let state_root = TempDir::new()?;
+    let home_dir = TempDir::new()?;
+    write_basic_repo(repo.path())?;
+    let global_state_dir = home_dir.path().join(".docdex").join("state");
+    write_startup_diary_config(home_dir.path(), &global_state_dir)?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut server = TestServerHarness::spawn_basic(
+        state_root.path(),
+        home_dir.path(),
+        repo.path(),
+        host,
+        port,
+        true,
+    )?;
+
+    let client = Client::builder().timeout(Duration::from_secs(5)).build()?;
+    for (id, entry_type, content, metadata) in [
+        (31, "note", "Plain note about the ongoing work.", json!({})),
+        (
+            32,
+            "handoff",
+            "Handoff: unblock the wake-up rollout before changing the renderer.",
+            json!({ "important": true }),
+        ),
+    ] {
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_diary_write",
+                "arguments": {
+                    "agent_id": "codex",
+                    "entry_type": entry_type,
+                    "content": content,
+                    "metadata": metadata
+                }
+            }
+        });
+        let response: Value = client
+            .post(format!("http://{host}:{port}/v1/mcp"))
+            .json(&payload)
+            .send()?
+            .json()?;
+        let written = parse_tool_result(&response)?;
+        assert_eq!(
+            written.get("entry_type").and_then(|value| value.as_str()),
+            Some(entry_type)
+        );
+    }
+
+    let wakeup_payload = json!({
+        "jsonrpc": "2.0",
+        "id": 33,
+        "method": "tools/call",
+        "params": {
+            "name": "docdex_wakeup",
+            "arguments": {
+                "agent_id": "codex",
+                "max_tokens": 128
+            }
+        }
+    });
+    let wakeup_response: Value = client
+        .post(format!("http://{host}:{port}/v1/mcp"))
+        .json(&wakeup_payload)
+        .send()?
+        .json()?;
+    let wakeup = parse_tool_result(&wakeup_response)?;
+    assert_eq!(
+        wakeup
+            .get("trace")
+            .and_then(|value| value.get("startup_diary_candidates"))
+            .and_then(|value| value.as_u64()),
+        Some(2)
+    );
+    assert_eq!(
+        wakeup
+            .get("trace")
+            .and_then(|value| value.get("startup_diary_selected"))
+            .and_then(|value| value.as_u64()),
+        Some(1)
+    );
+    let episodes = wakeup
+        .get("knowledge_episodes")
+        .and_then(|value| value.as_array())
+        .ok_or("missing knowledge_episodes")?;
+    assert_eq!(episodes.len(), 1);
+    assert_eq!(
+        episodes[0]
+            .get("source_type")
+            .and_then(|value| value.as_str()),
+        Some("diary_entry")
+    );
+    assert!(episodes[0]
+        .get("summary")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .contains("Handoff: unblock the wake-up rollout"));
 
     server.shutdown();
     Ok(())

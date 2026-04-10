@@ -26,6 +26,7 @@ const DEFAULT_PROFILE_EMBED_MODEL: &str = "nomic-embed-text-v1.5";
 const DEFAULT_PROFILE_EMBED_DIM: usize = 768;
 const DEFAULT_MEMORY_BACKEND: &str = "sqlite";
 const DEFAULT_CONVERSATION_WAKEUP_TOKENS: usize = 160;
+const DEFAULT_CONVERSATION_WAKEUP_DIARY_EPISODE_LIMIT: usize = 3;
 const DEFAULT_CONVERSATION_SUMMARY_LIMIT: usize = 3;
 const DEFAULT_CONVERSATION_KNOWLEDGE_LIMIT: usize = 3;
 const DEFAULT_CONVERSATION_SNIPPET_LIMIT: usize = 2;
@@ -211,6 +212,14 @@ impl AppConfig {
                 "memory.conversations.max_wakeup_tokens must be > 0; using default"
             );
             self.memory.conversations.max_wakeup_tokens = default_conversation_wakeup_tokens();
+        }
+        if self.memory.conversations.max_wakeup_diary_episodes == 0 {
+            warn!(
+                target: "docdexd",
+                "memory.conversations.max_wakeup_diary_episodes must be > 0; using default"
+            );
+            self.memory.conversations.max_wakeup_diary_episodes =
+                default_conversation_wakeup_diary_episode_limit();
         }
         if self.memory.conversations.max_episodic_summaries == 0 {
             warn!(
@@ -866,8 +875,12 @@ pub struct MemoryConversationConfig {
     pub auto_capture: bool,
     #[serde(default = "default_conversation_archive_raw_transcripts")]
     pub archive_raw_transcripts: bool,
+    #[serde(default = "default_conversation_wakeup_include_recent_diary_episodes")]
+    pub wakeup_include_recent_diary_episodes: bool,
     #[serde(default = "default_conversation_wakeup_tokens")]
     pub max_wakeup_tokens: usize,
+    #[serde(default = "default_conversation_wakeup_diary_episode_limit")]
+    pub max_wakeup_diary_episodes: usize,
     #[serde(default = "default_conversation_summary_limit")]
     pub max_episodic_summaries: usize,
     #[serde(default = "default_conversation_knowledge_limit")]
@@ -1041,7 +1054,10 @@ impl Default for MemoryConversationConfig {
             enabled: default_conversation_memory_enabled(),
             auto_capture: default_conversation_auto_capture(),
             archive_raw_transcripts: default_conversation_archive_raw_transcripts(),
+            wakeup_include_recent_diary_episodes:
+                default_conversation_wakeup_include_recent_diary_episodes(),
             max_wakeup_tokens: default_conversation_wakeup_tokens(),
+            max_wakeup_diary_episodes: default_conversation_wakeup_diary_episode_limit(),
             max_episodic_summaries: default_conversation_summary_limit(),
             max_knowledge_facts: default_conversation_knowledge_limit(),
             max_transcript_snippets: default_conversation_snippet_limit(),
@@ -1904,8 +1920,16 @@ fn default_conversation_archive_raw_transcripts() -> bool {
     true
 }
 
+fn default_conversation_wakeup_include_recent_diary_episodes() -> bool {
+    false
+}
+
 fn default_conversation_wakeup_tokens() -> usize {
     DEFAULT_CONVERSATION_WAKEUP_TOKENS
+}
+
+fn default_conversation_wakeup_diary_episode_limit() -> usize {
+    DEFAULT_CONVERSATION_WAKEUP_DIARY_EPISODE_LIMIT
 }
 
 fn default_conversation_summary_limit() -> usize {

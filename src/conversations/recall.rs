@@ -1,5 +1,5 @@
 use crate::conversations::db::ConversationStore;
-use crate::conversations::types::{WakeupBundle, WorkingMemoryRecord};
+use crate::conversations::types::{DiaryEntryRecord, WakeupBundle, WorkingMemoryRecord};
 use crate::knowledge::{
     KnowledgeEntityLinkRecord, KnowledgeEpisodeRecord, KnowledgeFactRecord,
     KnowledgeGraphEdgeRecord, KnowledgeStore,
@@ -9,6 +9,7 @@ use std::collections::HashSet;
 pub fn assemble_wakeup_bundle(
     store: &ConversationStore,
     knowledge: &KnowledgeStore,
+    conversation_config: &crate::config::MemoryConversationConfig,
     agent_id: Option<&str>,
     query: Option<&str>,
     summary_limit: usize,
@@ -16,6 +17,15 @@ pub fn assemble_wakeup_bundle(
     snippet_limit: usize,
 ) -> Result<WakeupBundle, anyhow::Error> {
     let mut bundle = store.build_wakeup_bundle(agent_id, query, summary_limit, snippet_limit)?;
+    if conversation_config.wakeup_include_recent_diary_episodes {
+        let startup_diary_limit = conversation_config.max_wakeup_diary_episodes.max(1);
+        let (startup_diary_episodes, startup_diary_candidates) =
+            load_startup_diary_episodes(store, knowledge, agent_id, startup_diary_limit)?;
+        bundle.trace.startup_diary_candidates = startup_diary_candidates;
+        bundle.trace.startup_diary_selected = startup_diary_episodes.len();
+        bundle.trace.kg_candidates = startup_diary_candidates;
+        bundle.knowledge_episodes = startup_diary_episodes;
+    }
     let graph_context = if let Some(query) = query.map(str::trim).filter(|value| !value.is_empty())
     {
         Some(load_graph_context(
@@ -32,16 +42,143 @@ pub fn assemble_wakeup_bundle(
         bundle.trace.graph_edge_candidates = knowledge_edges.len();
         bundle.trace.graph_episode_candidates = knowledge_episodes.len();
         bundle.trace.graph_link_candidates = knowledge_entity_links.len();
-        bundle.trace.kg_candidates = knowledge_edges.len()
+        bundle.trace.kg_candidates += knowledge_edges.len()
             + knowledge_episodes.len()
             + knowledge_entity_links.len()
             + knowledge_facts.len();
         bundle.knowledge_edges = knowledge_edges;
-        bundle.knowledge_episodes = knowledge_episodes;
+        merge_knowledge_episodes(
+            &mut bundle.knowledge_episodes,
+            knowledge_episodes,
+            conversation_config
+                .max_wakeup_diary_episodes
+                .max(1)
+                .saturating_add(knowledge_limit.max(1).min(8)),
+        );
         bundle.knowledge_entity_links = knowledge_entity_links;
         bundle.knowledge_facts = knowledge_facts;
     }
     Ok(bundle)
+}
+
+fn load_startup_diary_episodes(
+    store: &ConversationStore,
+    knowledge: &KnowledgeStore,
+    agent_id: Option<&str>,
+    limit: usize,
+) -> Result<(Vec<KnowledgeEpisodeRecord>, usize), anyhow::Error> {
+    let candidate_limit = limit.max(1).saturating_mul(4).min(64);
+    let mut entries = store
+        .read_diary_entries(agent_id, candidate_limit, 0)?
+        .entries;
+    let candidate_count = entries.len();
+    if entries.is_empty() {
+        return Ok((Vec::new(), 0));
+    }
+
+    entries.sort_by(|left, right| {
+        startup_diary_score(right)
+            .cmp(&startup_diary_score(left))
+            .then_with(|| right.created_at_ms.cmp(&left.created_at_ms))
+            .then_with(|| left.entry_id.cmp(&right.entry_id))
+    });
+
+    let source_ids = entries
+        .into_iter()
+        .map(|entry| entry.entry_id)
+        .collect::<Vec<_>>();
+    let episodes = knowledge.episode_records_for_sources("diary_entry", &source_ids, limit)?;
+    Ok((episodes, candidate_count))
+}
+
+fn startup_diary_score(entry: &DiaryEntryRecord) -> i64 {
+    let entry_type = entry.entry_type.trim().to_ascii_lowercase();
+    let mut score = match entry_type.as_str() {
+        "handoff" => 500,
+        "blocker" | "warning" | "urgent" => 460,
+        "decision" => 440,
+        "checkpoint" | "summary" | "status" => 360,
+        "next_step" | "todo" | "reminder" | "open_loop" => 340,
+        "note" => 220,
+        _ => 280,
+    };
+    if entry.source_session_id.is_some() {
+        score += 20;
+    }
+    if metadata_bool(
+        &entry.metadata,
+        &["pinned", "important", "high_signal", "urgent"],
+    ) {
+        score += 80;
+    }
+    if let Some(priority) = metadata_string(&entry.metadata, &["priority", "importance"]) {
+        score += match priority.as_str() {
+            "critical" => 70,
+            "high" | "urgent" => 55,
+            "medium" => 25,
+            _ => 0,
+        };
+    }
+    let content = entry.content.to_ascii_lowercase();
+    if [
+        "next step",
+        "open loop",
+        "blocker",
+        "decision",
+        "handoff",
+        "todo",
+        "reminder",
+    ]
+    .iter()
+    .any(|needle| content.contains(needle))
+    {
+        score += 30;
+    }
+    score
+}
+
+fn metadata_bool(metadata: &serde_json::Value, keys: &[&str]) -> bool {
+    keys.iter().any(|key| {
+        metadata
+            .get(*key)
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+    })
+}
+
+fn metadata_string(metadata: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        metadata
+            .get(*key)
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_ascii_lowercase())
+    })
+}
+
+fn merge_knowledge_episodes(
+    target: &mut Vec<KnowledgeEpisodeRecord>,
+    incoming: Vec<KnowledgeEpisodeRecord>,
+    limit: usize,
+) {
+    if limit == 0 {
+        target.clear();
+        return;
+    }
+    let mut seen = target
+        .iter()
+        .map(|item| item.episode_id.clone())
+        .collect::<HashSet<_>>();
+    for episode in incoming {
+        if seen.insert(episode.episode_id.clone()) {
+            target.push(episode);
+        }
+        if target.len() >= limit {
+            break;
+        }
+    }
+    target.truncate(limit);
 }
 
 #[derive(Debug, Clone, Default)]
@@ -557,9 +694,14 @@ fn estimate_tokens(text: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::MemoryConversationConfig;
     use crate::conversations::types::{
         SessionSummaryRecord, TranscriptSnippet, WakeupBundle, WorkingMemoryRecord,
     };
+    use crate::conversations::ConversationStore;
+    use crate::knowledge::KnowledgeStore;
+    use serde_json::json;
+    use tempfile::TempDir;
 
     #[test]
     fn renders_wakeup_sections_in_priority_order() {
@@ -629,5 +771,93 @@ mod tests {
 
         assert!(rendered.contains("Wake-up context:"));
         assert!(trace.truncated >= 1);
+    }
+
+    #[test]
+    fn startup_diary_episodes_are_opt_in_and_bounded() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = TempDir::new()?;
+        let store = ConversationStore::from_paths(
+            temp.path().join("conversation.db"),
+            temp.path().join("conversation.lock"),
+        );
+        let knowledge = KnowledgeStore::from_paths(
+            temp.path().join("knowledge.db"),
+            temp.path().join("knowledge.lock"),
+        );
+
+        let regular = store.write_diary_entry(
+            Some("codex"),
+            "note",
+            "Plain note about the ongoing work.",
+            None,
+            json!({}),
+        )?;
+        knowledge.record_episode_note(
+            "diary_entry",
+            &regular.entry_id,
+            regular.source_session_id.as_deref(),
+            &regular.content,
+            json!({
+                "source": "diary_write",
+                "entry_type": regular.entry_type,
+                "agent_id": regular.agent_id,
+                "diary_metadata": regular.metadata,
+            }),
+            regular.created_at_ms,
+        )?;
+
+        let handoff = store.write_diary_entry(
+            Some("codex"),
+            "handoff",
+            "Handoff: unblock the wake-up rollout before changing the renderer.",
+            Some("session-1"),
+            json!({"important": true}),
+        )?;
+        knowledge.record_episode_note(
+            "diary_entry",
+            &handoff.entry_id,
+            handoff.source_session_id.as_deref(),
+            &handoff.content,
+            json!({
+                "source": "diary_write",
+                "entry_type": handoff.entry_type,
+                "agent_id": handoff.agent_id,
+                "diary_metadata": handoff.metadata,
+            }),
+            handoff.created_at_ms,
+        )?;
+
+        let disabled = assemble_wakeup_bundle(
+            &store,
+            &knowledge,
+            &MemoryConversationConfig::default(),
+            Some("codex"),
+            None,
+            3,
+            3,
+            0,
+        )?;
+        assert!(disabled.knowledge_episodes.is_empty());
+        assert_eq!(disabled.trace.startup_diary_candidates, 0);
+
+        let mut enabled_config = MemoryConversationConfig::default();
+        enabled_config.wakeup_include_recent_diary_episodes = true;
+        enabled_config.max_wakeup_diary_episodes = 1;
+        let enabled = assemble_wakeup_bundle(
+            &store,
+            &knowledge,
+            &enabled_config,
+            Some("codex"),
+            None,
+            3,
+            3,
+            0,
+        )?;
+        assert_eq!(enabled.trace.startup_diary_candidates, 2);
+        assert_eq!(enabled.trace.startup_diary_selected, 1);
+        assert_eq!(enabled.knowledge_episodes.len(), 1);
+        assert_eq!(enabled.knowledge_episodes[0].source_type, "diary_entry");
+        assert_eq!(enabled.knowledge_episodes[0].source_id, handoff.entry_id);
+        Ok(())
     }
 }

@@ -118,6 +118,8 @@ pub struct WakeupTrace {
     pub graph_episode_candidates: usize,
     pub graph_link_candidates: usize,
     pub snippet_candidates: usize,
+    pub startup_diary_candidates: usize,
+    pub startup_diary_selected: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -454,6 +454,46 @@ impl KnowledgeStore {
         Ok(episodes)
     }
 
+    pub fn episode_records_for_sources(
+        &self,
+        source_type: &str,
+        source_ids: &[String],
+        limit: usize,
+    ) -> Result<Vec<KnowledgeEpisodeRecord>> {
+        let source_type = normalize_relation_name(source_type);
+        if source_type.is_empty() {
+            return Ok(Vec::new());
+        }
+        let limit = limit.max(1);
+        let mut ordered_ids = Vec::new();
+        let mut seen = HashSet::new();
+        for source_id in source_ids {
+            let trimmed = source_id.trim();
+            if trimmed.is_empty() || !seen.insert(trimmed.to_string()) {
+                continue;
+            }
+            ordered_ids.push(trimmed.to_string());
+            if ordered_ids.len() >= limit {
+                break;
+            }
+        }
+        if ordered_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let _guard = self.lock.lock();
+        let _file_lock = self.lock_shared()?;
+        let conn = self.open_connection()?;
+        let mut episodes = Vec::new();
+        for source_id in ordered_ids {
+            if let Some(episode) = load_episode_record_for_source(&conn, &source_type, &source_id)?
+            {
+                episodes.push(episode);
+            }
+        }
+        Ok(episodes)
+    }
+
     pub fn record_episode_note(
         &self,
         source_type: &str,
@@ -2362,6 +2402,24 @@ fn load_episode_record(
     )
     .optional()
     .context("load knowledge episode")
+}
+
+fn load_episode_record_for_source(
+    conn: &Connection,
+    source_type: &str,
+    source_id: &str,
+) -> Result<Option<KnowledgeEpisodeRecord>> {
+    conn.query_row(
+        "SELECT id, session_id, source_type, source_id, summary, happened_at_ms, metadata,
+                created_at_ms, updated_at_ms
+         FROM knowledge_episodes
+         WHERE source_type = ?1 AND source_id = ?2
+         LIMIT 1",
+        params![source_type, source_id],
+        map_episode_row,
+    )
+    .optional()
+    .context("load knowledge episode by source")
 }
 
 fn count_edges_for_episode(conn: &Connection, episode_id: &str) -> Result<usize> {

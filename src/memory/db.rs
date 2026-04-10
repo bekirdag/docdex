@@ -53,6 +53,10 @@ impl MemoryStore {
         }
     }
 
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     fn open_connection(&self, embedding_dim: Option<usize>) -> Result<(Connection, Option<usize>)> {
         ensure_vec_extension_loaded()?;
         let conn = Connection::open_with_flags(

@@ -25,6 +25,7 @@ pub mod mcp;
 pub mod mcp_proxy;
 pub mod mcp_server;
 pub mod memory;
+pub mod memory_layers;
 pub mod metrics;
 pub mod mswarm;
 pub mod mswarm_telemetry;

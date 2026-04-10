@@ -20,15 +20,22 @@ fn write_config(
     home_dir: &Path,
     global_state_dir: &Path,
     llm_base_url: &str,
+    conversation_overrides: &str,
 ) -> Result<(), Box<dyn Error>> {
     let config_dir = home_dir.join(".docdex");
     fs::create_dir_all(&config_dir)?;
+    let conversation_section = if conversation_overrides.trim().is_empty() {
+        String::new()
+    } else {
+        format!("\n[memory.conversations]\n{conversation_overrides}")
+    };
     fs::write(
         config_dir.join("config.toml"),
         format!(
-            "[core]\nglobal_state_dir = \"{}\"\n\n[llm]\nbase_url = \"{}\"\ndefault_model = \"fake-model\"\n",
+            "[core]\nglobal_state_dir = \"{}\"\n\n[llm]\nbase_url = \"{}\"\ndefault_model = \"fake-model\"\n{}",
             common::toml_path(global_state_dir),
-            llm_base_url
+            llm_base_url,
+            conversation_section
         ),
     )?;
     Ok(())
@@ -88,7 +95,7 @@ fn chat_prompt_includes_wakeup_context() -> Result<(), Box<dyn Error>> {
         return Ok(());
     };
     let global_state_dir = home_dir.path().join(".docdex").join("state");
-    write_config(home_dir.path(), &global_state_dir, &mock.base_url)?;
+    write_config(home_dir.path(), &global_state_dir, &mock.base_url, "")?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
@@ -137,6 +144,74 @@ fn chat_prompt_includes_wakeup_context() -> Result<(), Box<dyn Error>> {
     assert!(content.contains("Wake-up context:"));
     assert!(content.contains("Next step:"));
     assert!(content.contains("add the endpoint"));
+
+    server.shutdown();
+    Ok(())
+}
+
+#[test]
+fn chat_prompt_includes_startup_diary_context_when_enabled() -> Result<(), Box<dyn Error>> {
+    let repo = TempDir::new()?;
+    let state_root = TempDir::new()?;
+    let home_dir = TempDir::new()?;
+    write_repo(repo.path())?;
+    let Some(mock) = MockOllama::spawn()? else {
+        return Ok(());
+    };
+    let global_state_dir = home_dir.path().join(".docdex").join("state");
+    write_config(
+        home_dir.path(),
+        &global_state_dir,
+        &mock.base_url,
+        "wakeup_include_recent_diary_episodes = true\nmax_wakeup_diary_episodes = 1\n",
+    )?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut server =
+        ServerHarness::spawn(state_root.path(), home_dir.path(), repo.path(), host, port)?;
+
+    let client = Client::builder().timeout(Duration::from_secs(5)).build()?;
+    let diary_url = format!("http://{host}:{port}/v1/diary/write");
+    client
+        .post(&diary_url)
+        .json(&json!({
+            "agent_id": "codex",
+            "entry_type": "handoff",
+            "content": "Handoff: unblock the wake-up rollout before changing the renderer.",
+            "metadata": { "important": true }
+        }))
+        .send()?
+        .error_for_status()?;
+
+    let chat_url = format!("http://{host}:{port}/v1/chat/completions");
+    let response: Value = client
+        .post(chat_url)
+        .json(&json!({
+            "model": "fake-model",
+            "messages": [{ "role": "user", "content": "What should I remember before touching the renderer?" }],
+            "docdex": {
+                "agent_id": "codex",
+                "compress_results": false,
+                "skip_local_search": true,
+                "limit": 1
+            }
+        }))
+        .send()?
+        .json()?;
+
+    let content = response
+        .get("choices")
+        .and_then(|value| value.as_array())
+        .and_then(|value| value.first())
+        .and_then(|value| value.get("message"))
+        .and_then(|value| value.get("content"))
+        .and_then(|value| value.as_str())
+        .ok_or("missing chat completion content")?;
+    assert!(content.contains("Relevant knowledge episodes:"));
+    assert!(content.contains("Handoff: unblock the wake-up rollout"));
 
     server.shutdown();
     Ok(())

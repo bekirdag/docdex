@@ -53,6 +53,8 @@ pub struct WakeupApiTrace {
     pub graph_episode_candidates: usize,
     pub graph_link_candidates: usize,
     pub snippet_candidates: usize,
+    pub startup_diary_candidates: usize,
+    pub startup_diary_selected: usize,
     pub available_tokens: usize,
     pub selected_tokens: usize,
     pub saved_tokens: usize,
@@ -125,6 +127,7 @@ pub(crate) async fn wakeup_handler(
         assemble_wakeup_bundle(
             &store,
             &knowledge,
+            &conversations.config,
             agent_id.as_deref(),
             query.as_deref(),
             summary_limit,
@@ -194,6 +197,8 @@ pub(crate) async fn wakeup_handler(
             graph_episode_candidates: bundle.trace.graph_episode_candidates,
             graph_link_candidates: bundle.trace.graph_link_candidates,
             snippet_candidates: bundle.trace.snippet_candidates,
+            startup_diary_candidates: bundle.trace.startup_diary_candidates,
+            startup_diary_selected: bundle.trace.startup_diary_selected,
             available_tokens: render_trace.available_tokens,
             selected_tokens: render_trace.selected_tokens,
             saved_tokens: render_trace.saved_tokens,
@@ -229,6 +234,7 @@ pub fn load_wakeup_bundle_for_chat(
     let bundle = assemble_wakeup_bundle(
         &conversations.store,
         &conversations.knowledge,
+        &conversations.config,
         agent_id,
         query,
         conversations.max_episodic_summaries,

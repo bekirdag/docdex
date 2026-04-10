@@ -601,6 +601,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/memory/store", post(memory_store_handler))
         .route("/v1/memory/recall", post(memory_recall_handler))
         .route(
+            "/v1/memory/layers",
+            get(crate::api::v1::memory_layers::memory_layers_handler),
+        )
+        .route(
             "/v1/diary/write",
             post(crate::api::v1::diary::diary_write_handler),
         )

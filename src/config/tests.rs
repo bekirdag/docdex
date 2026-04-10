@@ -95,7 +95,12 @@ fn apply_defaults_sets_conversation_memory_defaults() -> Result<(), Box<dyn std:
 
     let mut config = AppConfig::default();
     config.memory.conversations.archive_raw_transcripts = false;
+    config
+        .memory
+        .conversations
+        .wakeup_include_recent_diary_episodes = true;
     config.memory.conversations.max_wakeup_tokens = 0;
+    config.memory.conversations.max_wakeup_diary_episodes = 0;
     config.memory.conversations.max_episodic_summaries = 0;
     config.memory.conversations.max_knowledge_facts = 0;
     config.memory.conversations.max_transcript_snippets = 0;
@@ -109,9 +114,19 @@ fn apply_defaults_sets_conversation_memory_defaults() -> Result<(), Box<dyn std:
     assert!(config.memory.conversations.enabled);
     assert!(!config.memory.conversations.auto_capture);
     assert!(!config.memory.conversations.archive_raw_transcripts);
+    assert!(
+        config
+            .memory
+            .conversations
+            .wakeup_include_recent_diary_episodes
+    );
     assert_eq!(
         config.memory.conversations.max_wakeup_tokens,
         DEFAULT_CONVERSATION_WAKEUP_TOKENS
+    );
+    assert_eq!(
+        config.memory.conversations.max_wakeup_diary_episodes,
+        DEFAULT_CONVERSATION_WAKEUP_DIARY_EPISODE_LIMIT
     );
     assert_eq!(
         config.memory.conversations.max_episodic_summaries,

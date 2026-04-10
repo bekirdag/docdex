@@ -272,6 +272,8 @@ impl ConversationStore {
                 graph_episode_candidates: 0,
                 graph_link_candidates: 0,
                 snippet_candidates: snippets.1,
+                startup_diary_candidates: 0,
+                startup_diary_selected: 0,
             },
         })
     }

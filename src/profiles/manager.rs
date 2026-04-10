@@ -20,6 +20,7 @@ pub struct ProfileManager {
     conn: Arc<parking_lot::Mutex<Connection>>,
     embedding_dim: usize,
     schema_version: u32,
+    db_path: PathBuf,
     lock_path: PathBuf,
 }
 
@@ -75,6 +76,7 @@ impl ProfileManager {
             conn: Arc::new(parking_lot::Mutex::new(conn)),
             embedding_dim: resolved,
             schema_version,
+            db_path,
             lock_path,
         })
     }
@@ -85,6 +87,10 @@ impl ProfileManager {
 
     pub fn schema_version(&self) -> u32 {
         self.schema_version
+    }
+
+    pub fn db_path(&self) -> &Path {
+        &self.db_path
     }
 
     pub fn check_access(&self) -> Result<()> {

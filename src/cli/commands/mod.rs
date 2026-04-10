@@ -14,6 +14,7 @@ pub mod llm;
 pub mod mcoda_eval;
 pub mod mcp_add;
 pub mod memory;
+pub mod memory_layers;
 pub mod mswarm;
 pub mod open;
 pub mod personal_preferences;
@@ -198,6 +199,7 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
             .await
         }
         super::Command::MemoryCompact { repo, apply } => memory::run_compact(repo, apply).await,
+        super::Command::MemoryLayers { scope } => memory_layers::run(scope).await,
         super::Command::Conversations { command } => conversations::run(command).await,
         super::Command::Diary { command } => diary::run(command).await,
         super::Command::Profile { command } => profile::run(command).await,

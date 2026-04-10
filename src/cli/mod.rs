@@ -781,6 +781,11 @@ pub(crate) enum Command {
         )]
         apply: bool,
     },
+    /// Show the current six memory layers, their storage, and recommended agent usage.
+    MemoryLayers {
+        #[command(flatten)]
+        scope: ConversationScopeArgs,
+    },
     /// Manage repo-scoped conversation memory sessions.
     Conversations {
         #[command(subcommand)]
@@ -2010,6 +2015,7 @@ fn repo_hint_for_command(command: &Command) -> Option<PathBuf> {
         Command::MemoryRecall { repo, .. } => Some(repo.repo_root()),
         Command::Mswarm { .. } => None,
         Command::MemoryCompact { repo, .. } => Some(repo.repo_root()),
+        Command::MemoryLayers { scope } => scope.repo_root(),
         Command::Conversations { command } => match command {
             ConversationCommand::Import { scope, .. } => scope.repo_root(),
             ConversationCommand::Search { scope, .. } => scope.repo_root(),

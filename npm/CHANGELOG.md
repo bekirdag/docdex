@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.63
+- Add the packaged six-layer memory map over HTTP, CLI, and MCP so agents can inspect repo, profile, conversation, diary, temporal-KG, and personal-preferences lanes before selecting a memory surface.
+- Extend packaged wake-up context assembly with optional recent-diary startup episodes, expose diary trace counters, and cover the new memory-layers and wake-up flows with HTTP, CLI, chat, and MCP regression tests.
+- Update the packaged agent guidance to call `docdex_memory_layers` first when memory scope is unclear and to document the six-lane memory model in the shipped prompt assets.
+
 ## 0.2.62
 - Expand the packaged personal-preferences surface with claim, snapshot, feedback, and mind-clone flows across HTTP, CLI, and MCP, including review/override/forget controls and clone regression coverage.
 - Harden the packaged installer's local-binary path selection by validating `docdexd --version` output before using explicit or fallback local binaries and by avoiding stale repo-local binaries during registry installs.

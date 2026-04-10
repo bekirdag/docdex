@@ -4,10 +4,28 @@ use common::{pick_free_port, write_basic_config, write_basic_repo, TestServerHar
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
 use std::error::Error;
+use std::fs;
+use std::path::Path;
 use std::time::Duration;
 use tempfile::TempDir;
 
 const CONVERSATION_NAMESPACE_HEADER: &str = "x-docdex-conversation-namespace";
+
+fn write_startup_diary_config(
+    home_dir: &Path,
+    global_state_dir: &Path,
+) -> Result<(), Box<dyn Error>> {
+    let config_dir = home_dir.join(".docdex");
+    fs::create_dir_all(&config_dir)?;
+    fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            "[core]\nglobal_state_dir = \"{}\"\n\n[memory.conversations]\nwakeup_include_recent_diary_episodes = true\nmax_wakeup_diary_episodes = 1\n",
+            common::toml_path(global_state_dir)
+        ),
+    )?;
+    Ok(())
+}
 
 #[test]
 fn conversation_import_and_wakeup_http_contracts() -> Result<(), Box<dyn Error>> {
@@ -115,6 +133,98 @@ fn conversation_import_and_wakeup_http_contracts() -> Result<(), Box<dyn Error>>
         .and_then(|value| value.as_array())
         .unwrap_or(&Vec::new())
         .is_empty());
+
+    server.shutdown();
+    Ok(())
+}
+
+#[test]
+fn wakeup_includes_recent_diary_episodes_when_enabled() -> Result<(), Box<dyn Error>> {
+    let repo = TempDir::new()?;
+    let state_root = TempDir::new()?;
+    let home_dir = TempDir::new()?;
+    write_basic_repo(repo.path())?;
+    let global_state_dir = home_dir.path().join(".docdex").join("state");
+    write_startup_diary_config(home_dir.path(), &global_state_dir)?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut server = TestServerHarness::spawn_basic(
+        state_root.path(),
+        home_dir.path(),
+        repo.path(),
+        host,
+        port,
+        false,
+    )?;
+
+    let client = Client::builder().timeout(Duration::from_secs(5)).build()?;
+    let diary_url = format!("http://{host}:{port}/v1/diary/write");
+    client
+        .post(&diary_url)
+        .json(&json!({
+            "agent_id": "codex",
+            "entry_type": "note",
+            "content": "Plain note about the ongoing work."
+        }))
+        .send()?
+        .error_for_status()?;
+    client
+        .post(&diary_url)
+        .json(&json!({
+            "agent_id": "codex",
+            "entry_type": "handoff",
+            "content": "Handoff: unblock the wake-up rollout before changing the renderer.",
+            "metadata": { "important": true }
+        }))
+        .send()?
+        .error_for_status()?;
+
+    let wakeup: Value = client
+        .post(format!("http://{host}:{port}/v1/wakeup"))
+        .json(&json!({
+            "agent_id": "codex",
+            "max_tokens": 128
+        }))
+        .send()?
+        .json()?;
+    assert_eq!(
+        wakeup
+            .get("trace")
+            .and_then(|value| value.get("startup_diary_candidates"))
+            .and_then(|value| value.as_u64()),
+        Some(2)
+    );
+    assert_eq!(
+        wakeup
+            .get("trace")
+            .and_then(|value| value.get("startup_diary_selected"))
+            .and_then(|value| value.as_u64()),
+        Some(1)
+    );
+    let episodes = wakeup
+        .get("knowledge_episodes")
+        .and_then(|value| value.as_array())
+        .ok_or("missing knowledge_episodes")?;
+    assert_eq!(episodes.len(), 1);
+    assert_eq!(
+        episodes[0]
+            .get("source_type")
+            .and_then(|value| value.as_str()),
+        Some("diary_entry")
+    );
+    assert!(episodes[0]
+        .get("summary")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .contains("Handoff: unblock the wake-up rollout"));
+    assert!(wakeup
+        .get("text")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .contains("Relevant knowledge episodes:"));
 
     server.shutdown();
     Ok(())

@@ -9,6 +9,7 @@ const path = require("node:path");
 
 const { runInstaller } = require("../lib/install");
 const { detectPlatformKey, targetTripleForPlatformKey } = require("../lib/platform");
+const { version: PACKAGE_VERSION } = require("../package.json");
 
 function noopLogger() {
   return { log: () => {}, warn: () => {}, error: () => {} };
@@ -43,7 +44,7 @@ test("installer falls back to local binary when integrity metadata is missing", 
     },
     spawnSyncFn: () => ({
       status: 0,
-      stdout: "docdexd 0.2.61\n",
+      stdout: `docdexd ${PACKAGE_VERSION}\n`,
       stderr: ""
     }),
     localRepoRoot: repoRoot
@@ -98,7 +99,7 @@ test("installer prefers local binary for explicit local npm install requests", a
     },
     spawnSyncFn: () => ({
       status: 0,
-      stdout: "docdexd 0.2.61\n",
+      stdout: `docdexd ${PACKAGE_VERSION}\n`,
       stderr: ""
     })
   });
@@ -204,7 +205,7 @@ test("installer rejects explicit local installs when the local binary version mi
       distBaseDir: path.join(tmp, "dist"),
       detectPlatformKeyFn: () => detectPlatformKey(),
       targetTripleForPlatformKeyFn: () => targetTripleForPlatformKey(detectPlatformKey()),
-      getVersionFn: () => "0.2.61",
+      getVersionFn: () => PACKAGE_VERSION,
       parseRepoSlugFn: () => {
         throw new Error("parseRepoSlug should not run");
       },
@@ -225,7 +226,10 @@ test("installer rejects explicit local installs when the local binary version mi
     }),
     (err) => {
       assert.equal(err.code, "DOCDEX_INSTALLER_CONFIG");
-      assert.match(err.message, /expected 0\.2\.61 but found 0\.2\.59/);
+      assert.equal(
+        err.message,
+        `local Docdex binary is stale or invalid: expected ${PACKAGE_VERSION} but found 0.2.59`
+      );
       return true;
     }
   );

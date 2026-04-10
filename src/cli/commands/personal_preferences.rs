@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use reqwest::Method;
 use serde_json::json;
 
@@ -50,6 +50,12 @@ pub(crate) async fn run(command: crate::cli::PersonalPreferencesCommand) -> Resu
         crate::cli::PersonalPreferencesCommand::Purge { include_exports } => {
             run_purge(include_exports).await
         }
+        crate::cli::PersonalPreferencesCommand::Claims { command } => run_claims(command).await,
+        crate::cli::PersonalPreferencesCommand::Feedback { command } => run_feedback(command).await,
+        crate::cli::PersonalPreferencesCommand::Snapshots { command } => {
+            run_snapshots(command).await
+        }
+        crate::cli::PersonalPreferencesCommand::Clone { command } => run_clone(command).await,
     }
 }
 
@@ -208,4 +214,312 @@ async fn run_purge(include_exports: bool) -> Result<()> {
         .send()
         .await?;
     emit_json_or_error(resp, "personal preferences purge").await
+}
+
+async fn run_claims(command: crate::cli::PersonalPreferencesClaimsCommand) -> Result<()> {
+    match command {
+        crate::cli::PersonalPreferencesClaimsCommand::List {
+            query,
+            truth_status,
+            claim_origin,
+            include_sensitive,
+            limit,
+            offset,
+        } => {
+            run_claims_list(
+                query,
+                truth_status,
+                claim_origin,
+                include_sensitive,
+                limit,
+                offset,
+            )
+            .await
+        }
+        crate::cli::PersonalPreferencesClaimsCommand::Read { claim_id } => {
+            run_claim_read(claim_id).await
+        }
+        crate::cli::PersonalPreferencesClaimsCommand::Review {
+            claim_id,
+            verdict,
+            notes,
+        } => run_claim_review(claim_id, verdict, notes).await,
+        crate::cli::PersonalPreferencesClaimsCommand::Override {
+            claim_id,
+            value,
+            notes,
+        } => run_claim_override(claim_id, value, notes).await,
+        crate::cli::PersonalPreferencesClaimsCommand::Forget { claim_id, notes } => {
+            run_claim_forget(claim_id, notes).await
+        }
+    }
+}
+
+async fn run_feedback(command: crate::cli::PersonalPreferencesFeedbackCommand) -> Result<()> {
+    match command {
+        crate::cli::PersonalPreferencesFeedbackCommand::Add {
+            event_type,
+            claim_id,
+            capture_id,
+            category,
+            attribute,
+            value,
+            notes,
+            metadata_json,
+        } => {
+            let metadata = match metadata_json {
+                Some(raw) => serde_json::from_str(&raw)
+                    .map_err(|err| anyhow!("invalid --metadata-json payload: {err}"))?,
+                None => serde_json::Value::Null,
+            };
+            run_feedback_add(
+                event_type, claim_id, capture_id, category, attribute, value, notes, metadata,
+            )
+            .await
+        }
+    }
+}
+
+async fn run_snapshots(command: crate::cli::PersonalPreferencesSnapshotsCommand) -> Result<()> {
+    match command {
+        crate::cli::PersonalPreferencesSnapshotsCommand::List { limit, offset } => {
+            run_snapshots_list(limit, offset).await
+        }
+        crate::cli::PersonalPreferencesSnapshotsCommand::Read { snapshot_id } => {
+            run_snapshot_read(snapshot_id).await
+        }
+        crate::cli::PersonalPreferencesSnapshotsCommand::Rebuild => run_snapshots_rebuild().await,
+    }
+}
+
+async fn run_clone(command: crate::cli::PersonalPreferencesCloneCommand) -> Result<()> {
+    match command {
+        crate::cli::PersonalPreferencesCloneCommand::Context {
+            query,
+            mode,
+            allow_sensitive,
+            current_repo_root,
+            max_records,
+            budget_tokens,
+        } => {
+            run_clone_request(
+                "/v1/personal-preferences/clone/context",
+                query,
+                mode,
+                allow_sensitive,
+                current_repo_root,
+                max_records,
+                budget_tokens,
+            )
+            .await
+        }
+        crate::cli::PersonalPreferencesCloneCommand::Explain {
+            query,
+            mode,
+            allow_sensitive,
+            current_repo_root,
+            max_records,
+            budget_tokens,
+        } => {
+            run_clone_request(
+                "/v1/personal-preferences/clone/explain",
+                query,
+                mode,
+                allow_sensitive,
+                current_repo_root,
+                max_records,
+                budget_tokens,
+            )
+            .await
+        }
+        crate::cli::PersonalPreferencesCloneCommand::Evaluate {
+            query,
+            mode,
+            allow_sensitive,
+            current_repo_root,
+            max_records,
+            budget_tokens,
+        } => {
+            run_clone_request(
+                "/v1/personal-preferences/clone/evaluate",
+                query,
+                mode,
+                allow_sensitive,
+                current_repo_root,
+                max_records,
+                budget_tokens,
+            )
+            .await
+        }
+    }
+}
+
+async fn run_claims_list(
+    query: Option<String>,
+    truth_status: Option<String>,
+    claim_origin: Option<String>,
+    include_sensitive: bool,
+    limit: usize,
+    offset: usize,
+) -> Result<()> {
+    let client = CliHttpClient::new()?;
+    let mut req = client.request(Method::GET, "/v1/personal-preferences/claims");
+    req = req.query(&[
+        ("limit", limit.max(1).to_string()),
+        ("offset", offset.to_string()),
+        ("include_sensitive", include_sensitive.to_string()),
+    ]);
+    if let Some(query) = query
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        req = req.query(&[("query", query)]);
+    }
+    if let Some(truth_status) = truth_status
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        req = req.query(&[("truth_status", truth_status)]);
+    }
+    if let Some(claim_origin) = claim_origin
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        req = req.query(&[("claim_origin", claim_origin)]);
+    }
+    let resp = req.send().await?;
+    emit_json_or_error(resp, "personal preferences claims").await
+}
+
+async fn run_claim_read(claim_id: String) -> Result<()> {
+    let client = CliHttpClient::new()?;
+    let path = format!("/v1/personal-preferences/claims/{claim_id}");
+    let resp = client.request(Method::GET, &path).send().await?;
+    emit_json_or_error(resp, "personal preferences claim").await
+}
+
+async fn run_claim_review(claim_id: String, verdict: String, notes: Option<String>) -> Result<()> {
+    let client = CliHttpClient::new()?;
+    let path = format!("/v1/personal-preferences/claims/{claim_id}/review");
+    let resp = client
+        .request(Method::POST, &path)
+        .json(&json!({
+            "verdict": verdict,
+            "notes": notes,
+        }))
+        .send()
+        .await?;
+    emit_json_or_error(resp, "personal preferences claim review").await
+}
+
+async fn run_claim_override(claim_id: String, value: String, notes: Option<String>) -> Result<()> {
+    let client = CliHttpClient::new()?;
+    let path = format!("/v1/personal-preferences/claims/{claim_id}/override");
+    let resp = client
+        .request(Method::POST, &path)
+        .json(&json!({
+            "value": value,
+            "notes": notes,
+        }))
+        .send()
+        .await?;
+    emit_json_or_error(resp, "personal preferences claim override").await
+}
+
+async fn run_claim_forget(claim_id: String, notes: Option<String>) -> Result<()> {
+    let client = CliHttpClient::new()?;
+    let path = format!("/v1/personal-preferences/claims/{claim_id}/forget");
+    let resp = client
+        .request(Method::POST, &path)
+        .json(&json!({
+            "notes": notes,
+        }))
+        .send()
+        .await?;
+    emit_json_or_error(resp, "personal preferences claim forget").await
+}
+
+async fn run_feedback_add(
+    event_type: String,
+    claim_id: Option<String>,
+    capture_id: Option<String>,
+    category: Option<String>,
+    attribute: Option<String>,
+    value: Option<String>,
+    notes: Option<String>,
+    metadata: serde_json::Value,
+) -> Result<()> {
+    let client = CliHttpClient::new()?;
+    let resp = client
+        .request(Method::POST, "/v1/personal-preferences/feedback")
+        .json(&json!({
+            "event_type": event_type,
+            "claim_id": claim_id,
+            "capture_id": capture_id,
+            "category": category,
+            "attribute": attribute,
+            "value": value,
+            "notes": notes,
+            "metadata": metadata,
+        }))
+        .send()
+        .await?;
+    emit_json_or_error(resp, "personal preferences feedback").await
+}
+
+async fn run_snapshots_list(limit: usize, offset: usize) -> Result<()> {
+    let client = CliHttpClient::new()?;
+    let resp = client
+        .request(Method::GET, "/v1/personal-preferences/snapshots")
+        .query(&[
+            ("limit", limit.max(1).to_string()),
+            ("offset", offset.to_string()),
+        ])
+        .send()
+        .await?;
+    emit_json_or_error(resp, "personal preferences snapshots").await
+}
+
+async fn run_snapshot_read(snapshot_id: String) -> Result<()> {
+    let client = CliHttpClient::new()?;
+    let path = format!("/v1/personal-preferences/snapshots/{snapshot_id}");
+    let resp = client.request(Method::GET, &path).send().await?;
+    emit_json_or_error(resp, "personal preferences snapshot").await
+}
+
+async fn run_snapshots_rebuild() -> Result<()> {
+    let client = CliHttpClient::new()?;
+    let resp = client
+        .request(Method::POST, "/v1/personal-preferences/snapshots/rebuild")
+        .send()
+        .await?;
+    emit_json_or_error(resp, "personal preferences snapshot rebuild").await
+}
+
+async fn run_clone_request(
+    path: &str,
+    query: String,
+    mode: Option<String>,
+    allow_sensitive: bool,
+    current_repo_root: Option<String>,
+    max_records: Option<usize>,
+    budget_tokens: Option<usize>,
+) -> Result<()> {
+    let client = CliHttpClient::new()?;
+    let resp = client
+        .request(Method::POST, path)
+        .json(&json!({
+            "query": query,
+            "mode": mode,
+            "allow_sensitive": allow_sensitive,
+            "current_repo_root": current_repo_root,
+            "max_records": max_records,
+            "budget_tokens": budget_tokens,
+        }))
+        .send()
+        .await?;
+    emit_json_or_error(resp, "personal preferences clone").await
 }

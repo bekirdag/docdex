@@ -436,6 +436,62 @@ pub fn router(state: AppState) -> Router {
             get(crate::api::v1::personal_preferences::personal_preferences_search_handler),
         )
         .route(
+            "/v1/personal-preferences/claims",
+            get(crate::api::v1::personal_preferences::personal_preferences_claims_handler),
+        )
+        .route(
+            "/v1/personal-preferences/claims/:claim_id",
+            get(crate::api::v1::personal_preferences::personal_preferences_claim_read_handler),
+        )
+        .route(
+            "/v1/personal-preferences/claims/:claim_id/review",
+            post(crate::api::v1::personal_preferences::personal_preferences_claim_review_handler),
+        )
+        .route(
+            "/v1/personal-preferences/claims/:claim_id/override",
+            post(crate::api::v1::personal_preferences::personal_preferences_claim_override_handler),
+        )
+        .route(
+            "/v1/personal-preferences/claims/:claim_id/forget",
+            post(crate::api::v1::personal_preferences::personal_preferences_claim_forget_handler),
+        )
+        .route(
+            "/v1/personal-preferences/feedback",
+            post(crate::api::v1::personal_preferences::personal_preferences_feedback_handler),
+        )
+        .route(
+            "/v1/personal-preferences/snapshots",
+            get(crate::api::v1::personal_preferences::personal_preferences_snapshots_handler),
+        )
+        .route(
+            "/v1/personal-preferences/snapshots/:snapshot_id",
+            get(crate::api::v1::personal_preferences::personal_preferences_snapshot_read_handler),
+        )
+        .route(
+            "/v1/personal-preferences/snapshots/rebuild",
+            post(
+                crate::api::v1::personal_preferences::personal_preferences_snapshots_rebuild_handler,
+            ),
+        )
+        .route(
+            "/v1/personal-preferences/clone/context",
+            post(
+                crate::api::v1::personal_preferences::personal_preferences_clone_context_handler,
+            ),
+        )
+        .route(
+            "/v1/personal-preferences/clone/explain",
+            post(
+                crate::api::v1::personal_preferences::personal_preferences_clone_explain_handler,
+            ),
+        )
+        .route(
+            "/v1/personal-preferences/clone/evaluate",
+            post(
+                crate::api::v1::personal_preferences::personal_preferences_clone_evaluate_handler,
+            ),
+        )
+        .route(
             "/v1/personal-preferences/reviews",
             get(crate::api::v1::personal_preferences::personal_preferences_reviews_handler),
         )

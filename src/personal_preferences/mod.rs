@@ -37,7 +37,7 @@ use crate::profiles::{PreferenceCategory, ProfileEmbedder, ProfileManager};
 use crate::state_layout::ensure_state_dir_secure;
 
 const DB_FILE: &str = "personal_preferences.db";
-const SCHEMA_VERSION: u32 = 4;
+const SCHEMA_VERSION: u32 = 6;
 const DIGEST_STATUS_PENDING: &str = "pending";
 const DIGEST_STATUS_PROCESSING: &str = "processing";
 const DIGEST_STATUS_COMPLETED: &str = "completed";
@@ -56,6 +56,40 @@ const SNAPSHOT_SUMMARY_LIMIT: usize = 8;
 const REVIEW_STATUS_APPROVED: &str = "approved";
 const REVIEW_STATUS_PENDING: &str = "pending_review";
 const REVIEW_STATUS_REJECTED: &str = "rejected";
+
+const CLAIM_ORIGIN_EXPLICIT_USER_STATEMENT: &str = "explicit_user_statement";
+const CLAIM_ORIGIN_EXPLICIT_USER_CORRECTION: &str = "explicit_user_correction";
+const CLAIM_ORIGIN_OBSERVED_BEHAVIOR: &str = "observed_behavior";
+const CLAIM_ORIGIN_ENVIRONMENTAL_INFERENCE: &str = "environmental_inference";
+const CLAIM_ORIGIN_CROSS_SESSION_INFERENCE: &str = "cross_session_inference";
+const CLAIM_ORIGIN_MANUAL_REVIEW_ENTRY: &str = "manual_review_entry";
+
+const TRUTH_STATUS_CANDIDATE: &str = "candidate";
+const TRUTH_STATUS_INFERRED: &str = "inferred";
+const TRUTH_STATUS_CONFIRMED: &str = "confirmed";
+const TRUTH_STATUS_REJECTED: &str = "rejected";
+const TRUTH_STATUS_SUPERSEDED: &str = "superseded";
+const TRUTH_STATUS_EXPIRED: &str = "expired";
+
+const STABILITY_CLASS_EPHEMERAL: &str = "ephemeral";
+const STABILITY_CLASS_SESSIONAL: &str = "sessional";
+const STABILITY_CLASS_CURRENT: &str = "current";
+const STABILITY_CLASS_STABLE: &str = "stable";
+const STABILITY_CLASS_FOUNDATIONAL: &str = "foundational";
+
+const CLONE_MODE_ADAPTIVE: &str = "adaptive";
+const CLONE_MODE_PROJECT_BUILD: &str = "project_build";
+const CLONE_MODE_REVIEW: &str = "review";
+const CLONE_MODE_RELEASE: &str = "release";
+const CLONE_MODE_SIMULATE_USER_PREFERENCE: &str = "simulate_user_preference";
+
+const FEEDBACK_EVENT_ACCEPT_OUTPUT: &str = "accept_output";
+const FEEDBACK_EVENT_REJECT_OUTPUT: &str = "reject_output";
+const FEEDBACK_EVENT_CORRECT_OUTPUT: &str = "correct_output";
+const FEEDBACK_EVENT_REWRITE_OUTPUT: &str = "rewrite_output";
+const FEEDBACK_EVENT_OVERRIDE_PREFERENCE: &str = "override_preference";
+const FEEDBACK_EVENT_DOWNGRADE_INFERENCE: &str = "downgrade_inference";
+const FEEDBACK_EVENT_CONFIRM_INFERENCE: &str = "confirm_inference";
 
 static TRANSCRIPT_SECRET_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
     vec![
@@ -373,6 +407,21 @@ pub struct PersonalPreferenceStatus {
     pub sources_total: usize,
     pub digest_runs_total: usize,
     pub snapshot_summaries_total: usize,
+    pub claims_total: usize,
+    pub feedback_events_total: usize,
+    pub identity_snapshots_total: usize,
+    pub decision_patterns_total: usize,
+    pub style_signals_total: usize,
+    pub clone_profiles_total: usize,
+    pub clone_context_packs_total: usize,
+    pub clone_evaluations_total: usize,
+    pub claim_evidence_total: usize,
+    pub claim_links_total: usize,
+    pub project_timelines_total: usize,
+    pub goal_graph_total: usize,
+    pub override_rules_total: usize,
+    pub redaction_spans_total: usize,
+    pub retention_policies_total: usize,
     pub archive_files_total: usize,
     pub export_files_total: usize,
     #[serde(default)]
@@ -387,6 +436,179 @@ pub struct PersonalPreferenceStatus {
 pub struct PersonalPreferencesCaptureList {
     pub total: usize,
     pub items: Vec<PersonalPreferencesCaptureRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersonalPreferenceClaim {
+    pub id: String,
+    #[serde(default)]
+    pub record_id: Option<String>,
+    #[serde(default)]
+    pub capture_id: Option<String>,
+    pub category: String,
+    #[serde(default)]
+    pub subcategory: Option<String>,
+    pub subject: String,
+    #[serde(default)]
+    pub attribute: Option<String>,
+    pub value: String,
+    pub claim_origin: String,
+    pub truth_status: String,
+    pub stability_class: String,
+    pub sensitivity: String,
+    pub confidence: f32,
+    pub review_status: String,
+    #[serde(default)]
+    pub evidence_summary: Option<String>,
+    #[serde(default)]
+    pub valid_from_ms: Option<i64>,
+    #[serde(default)]
+    pub valid_to_ms: Option<i64>,
+    #[serde(default)]
+    pub supersedes_claim_id: Option<String>,
+    #[serde(default)]
+    pub contradicted_by_claim_id: Option<String>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    #[serde(default)]
+    pub metadata: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersonalPreferenceClaimList {
+    pub total: usize,
+    pub items: Vec<PersonalPreferenceClaim>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersonalPreferenceClaimReviewSummary {
+    pub claim_id: String,
+    pub review_status: String,
+    pub truth_status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersonalPreferenceFeedbackEvent {
+    pub id: String,
+    pub event_type: String,
+    #[serde(default)]
+    pub claim_id: Option<String>,
+    #[serde(default)]
+    pub capture_id: Option<String>,
+    #[serde(default)]
+    pub notes: Option<String>,
+    pub created_at_ms: i64,
+    #[serde(default)]
+    pub metadata: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersonalPreferenceFeedbackSummary {
+    pub event_id: String,
+    pub event_type: String,
+    #[serde(default)]
+    pub affected_claim_id: Option<String>,
+    #[serde(default)]
+    pub created_claim_id: Option<String>,
+    #[serde(default)]
+    pub created_snapshot_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersonalPreferenceSnapshot {
+    pub id: String,
+    pub snapshot_kind: String,
+    pub summary: String,
+    #[serde(default)]
+    pub stable_summary: Option<String>,
+    #[serde(default)]
+    pub changed_summary: Option<String>,
+    #[serde(default)]
+    pub active_projects_summary: Option<String>,
+    pub created_at_ms: i64,
+    #[serde(default)]
+    pub metadata: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersonalPreferenceSnapshotList {
+    pub total: usize,
+    pub items: Vec<PersonalPreferenceSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersonalPreferenceSnapshotRebuildSummary {
+    pub created: usize,
+    #[serde(default)]
+    pub latest_snapshot_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersonalPreferenceCloneTraceItem {
+    pub claim_id: String,
+    pub section: String,
+    pub reason: String,
+    pub score: f32,
+    pub claim_origin: String,
+    pub truth_status: String,
+    pub confidence: f32,
+    #[serde(default)]
+    pub sensitive: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersonalPreferenceCloneContextPack {
+    pub mode: String,
+    pub query: String,
+    pub summary: String,
+    pub items: Vec<PersonalPreferencesContextItem>,
+    pub trace: Vec<PersonalPreferenceCloneTraceItem>,
+    #[serde(default)]
+    pub excluded_by_policy: usize,
+    #[serde(default)]
+    pub truncated_items: usize,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersonalPreferenceCloneExplanationRecord {
+    pub claim_id: String,
+    pub section: String,
+    pub content: String,
+    pub reason: String,
+    pub score: f32,
+    pub claim_origin: String,
+    pub truth_status: String,
+    pub confidence: f32,
+    #[serde(default)]
+    pub sensitive: bool,
+    #[serde(default)]
+    pub source_repo_root: Option<String>,
+    #[serde(default)]
+    pub evidence_summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersonalPreferenceCloneExplanation {
+    pub pack: PersonalPreferenceCloneContextPack,
+    pub included_claims: Vec<PersonalPreferenceCloneExplanationRecord>,
+    pub ranking_factors: Vec<String>,
+    pub policy_notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersonalPreferenceCloneEvaluation {
+    pub mode: String,
+    pub query: String,
+    pub overall_score: f32,
+    pub explicit_selected: usize,
+    pub inferred_selected: usize,
+    pub confirmed_selected: usize,
+    pub current_selected: usize,
+    pub bridge_selected: usize,
+    pub style_selected: usize,
+    pub decision_patterns_selected: usize,
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -444,6 +666,12 @@ pub struct PersonalPreferencesContextItem {
     pub record_type: String,
     pub confidence: f32,
     #[serde(default)]
+    pub claim_id: Option<String>,
+    #[serde(default)]
+    pub claim_origin: Option<String>,
+    #[serde(default)]
+    pub truth_status: Option<String>,
+    #[serde(default)]
     pub source_repo_root: Option<String>,
     pub token_estimate: usize,
 }
@@ -481,6 +709,36 @@ impl Default for PersonalPreferencesContextOptions {
             current_repo_root: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersonalPreferencesClaimsQuery {
+    #[serde(default)]
+    pub query: Option<String>,
+    #[serde(default)]
+    pub truth_status: Option<String>,
+    #[serde(default)]
+    pub claim_origin: Option<String>,
+    #[serde(default)]
+    pub include_sensitive: bool,
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub offset: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersonalPreferencesCloneOptions {
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub allow_sensitive: bool,
+    #[serde(default)]
+    pub current_repo_root: Option<String>,
+    #[serde(default)]
+    pub max_records: Option<usize>,
+    #[serde(default)]
+    pub budget_tokens: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -532,6 +790,18 @@ pub struct PersonalPreferencesExportSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersonalPreferenceClaimForgetSummary {
+    pub claim_id: String,
+    pub forgotten: bool,
+    #[serde(default)]
+    pub affected_record_id: Option<String>,
+    #[serde(default)]
+    pub tombstone_id: Option<String>,
+    #[serde(default)]
+    pub created_snapshot_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersonalPreferencesDeleteSummary {
     pub capture_id: String,
     pub deleted: bool,
@@ -562,6 +832,45 @@ pub struct PersonalPreferencesPruneSummary {
     pub raw_redacted: usize,
     pub derived_candidates: usize,
     pub derived_deleted: usize,
+    #[serde(default)]
+    pub claim_candidates: usize,
+    #[serde(default)]
+    pub claims_deleted: usize,
+    #[serde(default)]
+    pub snapshot_candidates: usize,
+    #[serde(default)]
+    pub snapshots_deleted: usize,
+    #[serde(default)]
+    pub clone_artifact_candidates: usize,
+    #[serde(default)]
+    pub clone_artifacts_deleted: usize,
+    #[serde(default)]
+    pub exports_candidates: usize,
+    #[serde(default)]
+    pub exports_deleted: usize,
+    #[serde(default)]
+    pub retention_policies_updated: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersonalPreferenceRetentionPolicy {
+    pub policy_key: String,
+    pub lane: String,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub raw_retention_days: Option<u32>,
+    #[serde(default)]
+    pub derived_retention_days: Option<u32>,
+    #[serde(default)]
+    pub claim_retention_days: Option<u32>,
+    #[serde(default)]
+    pub snapshot_retention_days: Option<u32>,
+    #[serde(default)]
+    pub export_retention_days: Option<u32>,
+    pub updated_at_ms: i64,
+    #[serde(default)]
+    pub metadata: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -613,18 +922,21 @@ struct ContentCipher {
 #[derive(Debug, Clone)]
 struct ClientTranscriptCandidate {
     source: String,
+    adapter_kind: String,
     path: PathBuf,
     format: Option<ConversationImportFormat>,
 }
 
 #[derive(Debug, Clone)]
-struct ContextCandidate {
+struct CloneContextCandidate {
+    claim: PersonalPreferenceClaim,
     section: String,
     content: String,
-    category: String,
     record_type: String,
-    confidence: f32,
     source_repo_root: Option<String>,
+    allowed: bool,
+    reason: String,
+    score: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -924,6 +1236,27 @@ impl PersonalPreferencesStore {
         let digest_runs_total = count_query(&conn, "SELECT COUNT(*) FROM pp_digest_runs")?;
         let snapshot_summaries_total =
             count_query(&conn, "SELECT COUNT(*) FROM pp_snapshot_summaries")?;
+        let claims_total = count_query(&conn, "SELECT COUNT(*) FROM pp_claims")?;
+        let feedback_events_total = count_query(&conn, "SELECT COUNT(*) FROM pp_feedback_events")?;
+        let identity_snapshots_total =
+            count_query(&conn, "SELECT COUNT(*) FROM pp_identity_snapshots")?;
+        let decision_patterns_total =
+            count_query(&conn, "SELECT COUNT(*) FROM pp_decision_patterns")?;
+        let style_signals_total = count_query(&conn, "SELECT COUNT(*) FROM pp_style_signals")?;
+        let clone_profiles_total = count_query(&conn, "SELECT COUNT(*) FROM pp_clone_profiles")?;
+        let clone_context_packs_total =
+            count_query(&conn, "SELECT COUNT(*) FROM pp_clone_context_packs")?;
+        let clone_evaluations_total =
+            count_query(&conn, "SELECT COUNT(*) FROM pp_clone_evaluations")?;
+        let claim_evidence_total = count_query(&conn, "SELECT COUNT(*) FROM pp_claim_evidence")?;
+        let claim_links_total = count_query(&conn, "SELECT COUNT(*) FROM pp_claim_links")?;
+        let project_timelines_total =
+            count_query(&conn, "SELECT COUNT(*) FROM pp_project_timelines")?;
+        let goal_graph_total = count_query(&conn, "SELECT COUNT(*) FROM pp_goal_graph")?;
+        let override_rules_total = count_query(&conn, "SELECT COUNT(*) FROM pp_override_rules")?;
+        let redaction_spans_total = count_query(&conn, "SELECT COUNT(*) FROM pp_redaction_spans")?;
+        let retention_policies_total =
+            count_query(&conn, "SELECT COUNT(*) FROM pp_retention_policies")?;
         let last_capture_at_ms = conn
             .query_row(
                 "SELECT MAX(created_at_ms) FROM captured_conversations",
@@ -959,6 +1292,21 @@ impl PersonalPreferencesStore {
             sources_total,
             digest_runs_total,
             snapshot_summaries_total,
+            claims_total,
+            feedback_events_total,
+            identity_snapshots_total,
+            decision_patterns_total,
+            style_signals_total,
+            clone_profiles_total,
+            clone_context_packs_total,
+            clone_evaluations_total,
+            claim_evidence_total,
+            claim_links_total,
+            project_timelines_total,
+            goal_graph_total,
+            override_rules_total,
+            redaction_spans_total,
+            retention_policies_total,
             archive_files_total: count_files(&self.archive_dir)?,
             export_files_total: count_files(&self.exports_dir)?,
             last_capture_at_ms,
@@ -1187,6 +1535,45 @@ impl PersonalPreferencesStore {
         } else {
             0
         };
+        let claim_candidates = if let Some(cutoff_ms) = derived_cutoff {
+            count_query_with_param(
+                &conn,
+                "SELECT COUNT(*) FROM pp_claims
+                 WHERE updated_at_ms < ?1
+                   AND (record_id IS NULL
+                        OR truth_status IN ('rejected', 'superseded', 'expired'))",
+                params![cutoff_ms],
+            )?
+        } else {
+            0
+        };
+        let snapshot_candidates = if let Some(cutoff_ms) = derived_cutoff {
+            count_query_with_param(
+                &conn,
+                "SELECT COUNT(*) FROM pp_identity_snapshots WHERE created_at_ms < ?1",
+                params![cutoff_ms],
+            )?
+        } else {
+            0
+        };
+        let clone_candidates = if let Some(cutoff_ms) = derived_cutoff {
+            count_query_with_param(
+                &conn,
+                "SELECT COUNT(*) FROM pp_clone_context_packs WHERE created_at_ms < ?1",
+                params![cutoff_ms],
+            )? + count_query_with_param(
+                &conn,
+                "SELECT COUNT(*) FROM pp_clone_evaluations WHERE created_at_ms < ?1",
+                params![cutoff_ms],
+            )?
+        } else {
+            0
+        };
+        let export_candidates = if let Some(cutoff_ms) = raw_cutoff {
+            count_files_older_than(&self.exports_dir, cutoff_ms)?
+        } else {
+            0
+        };
 
         let mut raw_redacted = 0usize;
         if apply {
@@ -1199,13 +1586,74 @@ impl PersonalPreferencesStore {
         }
 
         let mut derived_deleted = 0usize;
+        let mut claims_deleted = 0usize;
+        let mut snapshots_deleted = 0usize;
+        let mut clone_artifacts_deleted = 0usize;
+        let mut exports_deleted = 0usize;
+        let mut retention_policies_updated = 0usize;
         if apply {
             if let Some(cutoff_ms) = derived_cutoff {
                 derived_deleted = conn.execute(
                     "DELETE FROM derived_records WHERE updated_at_ms < ?1",
                     params![cutoff_ms],
                 )?;
+                claims_deleted = conn.execute(
+                    "DELETE FROM pp_claims
+                     WHERE updated_at_ms < ?1
+                       AND (record_id IS NULL
+                            OR truth_status IN ('rejected', 'superseded', 'expired'))",
+                    params![cutoff_ms],
+                )?;
+                snapshots_deleted = conn.execute(
+                    "DELETE FROM pp_identity_snapshots WHERE created_at_ms < ?1",
+                    params![cutoff_ms],
+                )?;
+                clone_artifacts_deleted += conn.execute(
+                    "DELETE FROM pp_clone_context_packs WHERE created_at_ms < ?1",
+                    params![cutoff_ms],
+                )?;
+                clone_artifacts_deleted += conn.execute(
+                    "DELETE FROM pp_clone_evaluations WHERE created_at_ms < ?1",
+                    params![cutoff_ms],
+                )?;
             }
+            if let Some(cutoff_ms) = raw_cutoff {
+                exports_deleted = prune_files_older_than(&self.exports_dir, cutoff_ms)?;
+            }
+            upsert_retention_policy(
+                &conn,
+                "raw_archive",
+                "raw_archive",
+                Some(raw_retention_days),
+                None,
+                None,
+                None,
+                Some(raw_retention_days),
+                &json!({ "updated_from": "prune_retention" }),
+            )?;
+            upsert_retention_policy(
+                &conn,
+                "derived_memory",
+                "derived_memory",
+                None,
+                Some(derived_retention_days),
+                Some(derived_retention_days),
+                Some(derived_retention_days),
+                None,
+                &json!({ "updated_from": "prune_retention" }),
+            )?;
+            upsert_retention_policy(
+                &conn,
+                "clone_artifacts",
+                "clone_artifacts",
+                None,
+                None,
+                Some(derived_retention_days),
+                Some(derived_retention_days),
+                Some(raw_retention_days),
+                &json!({ "updated_from": "prune_retention" }),
+            )?;
+            retention_policies_updated = 3;
         }
 
         Ok(PersonalPreferencesPruneSummary {
@@ -1214,6 +1662,15 @@ impl PersonalPreferencesStore {
             raw_redacted,
             derived_candidates,
             derived_deleted,
+            claim_candidates,
+            claims_deleted,
+            snapshot_candidates,
+            snapshots_deleted,
+            clone_artifact_candidates: clone_candidates,
+            clone_artifacts_deleted,
+            exports_candidates: export_candidates,
+            exports_deleted,
+            retention_policies_updated,
         })
     }
 
@@ -1241,136 +1698,720 @@ impl PersonalPreferencesStore {
         Ok(records)
     }
 
+    pub fn list_claims(
+        &self,
+        query: PersonalPreferencesClaimsQuery,
+    ) -> Result<PersonalPreferenceClaimList> {
+        let conn = open_db(&self.db_path)?;
+        let mut claims = load_all_claims(&conn)?;
+        claims.retain(|claim| !claim_is_forgotten(claim));
+        if !query.include_sensitive {
+            claims.retain(|claim| !is_sensitive_level(&claim.sensitivity));
+        }
+        if let Some(status) = query
+            .truth_status
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            claims.retain(|claim| claim.truth_status == status);
+        }
+        if let Some(origin) = query
+            .claim_origin
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            claims.retain(|claim| claim.claim_origin == origin);
+        }
+        let query_text = query.query.unwrap_or_default();
+        rank_claims(&query_text, &mut claims);
+        let total = claims.len();
+        let offset = query.offset.unwrap_or(0);
+        let limit = query.limit.unwrap_or(20).clamp(1, 200);
+        let items = claims.into_iter().skip(offset).take(limit).collect();
+        Ok(PersonalPreferenceClaimList { total, items })
+    }
+
+    pub fn read_claim(&self, claim_id: &str) -> Result<Option<PersonalPreferenceClaim>> {
+        let conn = open_db(&self.db_path)?;
+        load_claim_by_id(&conn, claim_id)
+    }
+
+    pub fn forget_claim(
+        &self,
+        claim_id: &str,
+        notes: Option<&str>,
+    ) -> Result<PersonalPreferenceClaimForgetSummary> {
+        let mut conn = open_db(&self.db_path)?;
+        let tx = conn.transaction()?;
+        let claim = load_claim_by_id(&tx, claim_id)?
+            .ok_or_else(|| anyhow!("personal preference claim not found"))?;
+        let now = now_ms();
+        let note_text = notes
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        let mut claim_metadata = claim.metadata.as_object().cloned().unwrap_or_default();
+        claim_metadata.insert("forgotten".to_string(), json!(true));
+        claim_metadata.insert("forgotten_at_ms".to_string(), json!(now));
+        if let Some(notes) = note_text.as_ref() {
+            claim_metadata.insert("forgotten_notes".to_string(), json!(notes));
+        }
+        tx.execute(
+            "UPDATE pp_claims
+             SET value = ?2,
+                 evidence_summary = ?2,
+                 truth_status = ?3,
+                 review_status = ?4,
+                 valid_to_ms = ?5,
+                 updated_at_ms = ?5,
+                 metadata_json = ?6
+             WHERE id = ?1",
+            params![
+                claim_id,
+                REDACTED_TEXT,
+                TRUTH_STATUS_EXPIRED,
+                REVIEW_STATUS_REJECTED,
+                now,
+                serde_json::to_string(&Value::Object(claim_metadata.clone()))?,
+            ],
+        )?;
+        if let Some(record_id) = claim.record_id.as_deref() {
+            tx.execute(
+                "UPDATE derived_records
+                 SET value = ?2,
+                     evidence = ?2,
+                     review_status = ?3,
+                     review_updated_at_ms = ?4,
+                     updated_at_ms = ?4,
+                     metadata_json = ?5
+                 WHERE id = ?1",
+                params![
+                    record_id,
+                    REDACTED_TEXT,
+                    REVIEW_STATUS_REJECTED,
+                    now,
+                    serde_json::to_string(&Value::Object(claim_metadata.clone()))?,
+                ],
+            )?;
+            sync_materialized_record_status(&tx, record_id, REVIEW_STATUS_REJECTED, now)?;
+        }
+        replace_claim_evidence(
+            &tx,
+            claim_id,
+            claim.capture_id.as_deref(),
+            None,
+            &Value::Object(claim_metadata.clone()),
+            now,
+        )?;
+        if let Some(capture_id) = claim.capture_id.as_deref() {
+            write_redaction_span(
+                &tx,
+                capture_id,
+                Some(claim_id),
+                "claim_forget",
+                None,
+                None,
+                REDACTED_TEXT,
+                note_text.as_deref().unwrap_or("claim forgotten"),
+                &json!({ "claim_id": claim_id }),
+                now,
+            )?;
+        }
+        write_claim_version(
+            &tx,
+            claim_id,
+            &json!({
+                "action": "forget",
+                "notes": note_text,
+            }),
+            now,
+        )?;
+        let tombstone_id = format!("tombstone_{}", Uuid::new_v4());
+        tx.execute(
+            "INSERT INTO pp_tombstones(id, capture_id, action, details_json, created_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                tombstone_id,
+                claim
+                    .capture_id
+                    .clone()
+                    .unwrap_or_else(|| format!("claim:{claim_id}")),
+                "forget_claim",
+                serde_json::to_string(&json!({
+                    "claim_id": claim_id,
+                    "record_id": claim.record_id,
+                    "notes": note_text,
+                }))?,
+                now,
+            ],
+        )?;
+        let snapshot_id =
+            rebuild_identity_snapshots_tx(&tx, claim.capture_id.as_deref(), "forget")?;
+        tx.commit()?;
+        Ok(PersonalPreferenceClaimForgetSummary {
+            claim_id: claim_id.to_string(),
+            forgotten: true,
+            affected_record_id: claim.record_id,
+            tombstone_id: Some(tombstone_id),
+            created_snapshot_id: snapshot_id,
+        })
+    }
+
+    pub fn list_retention_policies(&self) -> Result<Vec<PersonalPreferenceRetentionPolicy>> {
+        let conn = open_db(&self.db_path)?;
+        load_retention_policies(&conn)
+    }
+
+    pub fn review_claim(
+        &self,
+        claim_id: &str,
+        verdict: &str,
+        notes: Option<&str>,
+    ) -> Result<PersonalPreferenceClaimReviewSummary> {
+        let verdict = normalize_review_status(verdict)
+            .ok_or_else(|| anyhow!("verdict must be approved, pending_review, or rejected"))?;
+        let mut conn = open_db(&self.db_path)?;
+        let tx = conn.transaction()?;
+        let claim = load_claim_by_id(&tx, claim_id)?
+            .ok_or_else(|| anyhow!("personal preference claim not found"))?;
+        let truth_status = match verdict {
+            REVIEW_STATUS_APPROVED => {
+                if claim.claim_origin == CLAIM_ORIGIN_EXPLICIT_USER_STATEMENT
+                    || claim.claim_origin == CLAIM_ORIGIN_EXPLICIT_USER_CORRECTION
+                    || claim.claim_origin == CLAIM_ORIGIN_MANUAL_REVIEW_ENTRY
+                {
+                    TRUTH_STATUS_CONFIRMED
+                } else {
+                    TRUTH_STATUS_INFERRED
+                }
+            }
+            REVIEW_STATUS_REJECTED => TRUTH_STATUS_REJECTED,
+            _ => TRUTH_STATUS_CANDIDATE,
+        };
+        let now = now_ms();
+        tx.execute(
+            "UPDATE pp_claims
+             SET review_status = ?2, truth_status = ?3, updated_at_ms = ?4
+             WHERE id = ?1",
+            params![claim_id, verdict, truth_status, now],
+        )?;
+        write_claim_version(
+            &tx,
+            claim_id,
+            &json!({
+                "action": "review",
+                "review_status": verdict,
+                "truth_status": truth_status,
+                "notes": notes,
+            }),
+            now,
+        )?;
+        if let Some(record_id) = claim.record_id.as_deref() {
+            tx.execute(
+                "UPDATE derived_records
+                 SET review_status = ?2, review_updated_at_ms = ?3, updated_at_ms = ?3
+                 WHERE id = ?1",
+                params![record_id, verdict, now],
+            )?;
+            sync_materialized_record_status(&tx, record_id, verdict, now)?;
+            tx.execute(
+                "INSERT INTO pp_reviews(id, record_id, verdict, notes, created_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![Uuid::new_v4().to_string(), record_id, verdict, notes, now],
+            )?;
+        }
+        tx.commit()?;
+        Ok(PersonalPreferenceClaimReviewSummary {
+            claim_id: claim_id.to_string(),
+            review_status: verdict.to_string(),
+            truth_status: truth_status.to_string(),
+        })
+    }
+
+    pub fn override_claim(
+        &self,
+        claim_id: &str,
+        value: &str,
+        notes: Option<&str>,
+    ) -> Result<PersonalPreferenceFeedbackSummary> {
+        self.add_feedback_event(
+            FEEDBACK_EVENT_OVERRIDE_PREFERENCE,
+            Some(claim_id),
+            None,
+            None,
+            None,
+            Some(value),
+            notes,
+            json!({}),
+        )
+    }
+
+    pub fn add_feedback_event(
+        &self,
+        event_type: &str,
+        claim_id: Option<&str>,
+        capture_id: Option<&str>,
+        category: Option<&str>,
+        attribute: Option<&str>,
+        value: Option<&str>,
+        notes: Option<&str>,
+        metadata: Value,
+    ) -> Result<PersonalPreferenceFeedbackSummary> {
+        let event_type = normalize_feedback_event_type(event_type)
+            .ok_or_else(|| anyhow!("unsupported feedback event type"))?;
+        let mut conn = open_db(&self.db_path)?;
+        let tx = conn.transaction()?;
+        let now = now_ms();
+        let event_id = Uuid::new_v4().to_string();
+        let base_claim = match claim_id {
+            Some(id) => load_claim_by_id(&tx, id)?,
+            None => None,
+        };
+        tx.execute(
+            "INSERT INTO pp_feedback_events(
+                id, claim_id, capture_id, event_type, notes, created_at_ms, metadata_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                event_id,
+                claim_id,
+                capture_id,
+                event_type,
+                notes,
+                now,
+                serde_json::to_string(&metadata)?,
+            ],
+        )?;
+        let mut affected_claim_id = claim_id.map(ToOwned::to_owned);
+        let mut created_claim_id = None;
+        if let Some(claim) = base_claim.as_ref() {
+            let (next_confidence, next_truth_status) =
+                apply_feedback_to_claim(claim, event_type, value);
+            tx.execute(
+                "UPDATE pp_claims
+                 SET confidence = ?2, truth_status = ?3, updated_at_ms = ?4
+                 WHERE id = ?1",
+                params![claim.id, next_confidence, next_truth_status, now],
+            )?;
+            write_claim_version(
+                &tx,
+                &claim.id,
+                &json!({
+                    "action": "feedback",
+                    "event_type": event_type,
+                    "next_confidence": next_confidence,
+                    "next_truth_status": next_truth_status,
+                    "notes": notes,
+                }),
+                now,
+            )?;
+            if matches!(
+                event_type,
+                FEEDBACK_EVENT_CORRECT_OUTPUT
+                    | FEEDBACK_EVENT_REWRITE_OUTPUT
+                    | FEEDBACK_EVENT_OVERRIDE_PREFERENCE
+            ) {
+                if let Some(override_value) = value.map(str::trim).filter(|value| !value.is_empty())
+                {
+                    let override_claim = create_override_claim_from_claim(
+                        &tx,
+                        claim,
+                        category,
+                        attribute,
+                        override_value,
+                        notes,
+                        now,
+                    )?;
+                    tx.execute(
+                        "UPDATE pp_claims
+                         SET truth_status = ?2, contradicted_by_claim_id = ?3, updated_at_ms = ?4
+                         WHERE id = ?1",
+                        params![claim.id, TRUTH_STATUS_SUPERSEDED, override_claim.id, now],
+                    )?;
+                    created_claim_id = Some(override_claim.id.clone());
+                    affected_claim_id = Some(claim.id.clone());
+                }
+            }
+        } else if let Some(new_value) = value.map(str::trim).filter(|value| !value.is_empty()) {
+            let claim = create_manual_feedback_claim(
+                &tx, event_type, capture_id, category, attribute, new_value, notes, now,
+            )?;
+            created_claim_id = Some(claim.id.clone());
+            affected_claim_id = Some(claim.id);
+        }
+        let snapshot_id = rebuild_identity_snapshots_tx(&tx, None, "feedback")?;
+        tx.commit()?;
+        Ok(PersonalPreferenceFeedbackSummary {
+            event_id,
+            event_type: event_type.to_string(),
+            affected_claim_id,
+            created_claim_id,
+            created_snapshot_id: snapshot_id,
+        })
+    }
+
+    pub fn list_feedback_events(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<PersonalPreferenceFeedbackEvent>> {
+        let conn = open_db(&self.db_path)?;
+        load_feedback_events(&conn, limit, offset)
+    }
+
+    pub fn list_snapshots(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<PersonalPreferenceSnapshotList> {
+        let conn = open_db(&self.db_path)?;
+        let snapshots = load_snapshots(&conn, limit, offset)?;
+        let total = count_query(&conn, "SELECT COUNT(*) FROM pp_identity_snapshots")?;
+        Ok(PersonalPreferenceSnapshotList {
+            total,
+            items: snapshots,
+        })
+    }
+
+    pub fn read_snapshot(&self, snapshot_id: &str) -> Result<Option<PersonalPreferenceSnapshot>> {
+        let conn = open_db(&self.db_path)?;
+        load_snapshot_by_id(&conn, snapshot_id)
+    }
+
+    pub fn rebuild_snapshots(&self) -> Result<PersonalPreferenceSnapshotRebuildSummary> {
+        let mut conn = open_db(&self.db_path)?;
+        let tx = conn.transaction()?;
+        let latest_snapshot_id = rebuild_identity_snapshots_tx(&tx, None, "manual_rebuild")?;
+        tx.commit()?;
+        Ok(PersonalPreferenceSnapshotRebuildSummary {
+            created: usize::from(latest_snapshot_id.is_some()),
+            latest_snapshot_id,
+        })
+    }
+
     pub fn build_context(
         &self,
         query: &str,
         options: PersonalPreferencesContextOptions,
     ) -> Result<PersonalPreferencesContextAssembly> {
+        let pack = self.build_clone_context_pack(
+            query,
+            PersonalPreferencesCloneOptions {
+                mode: Some(CLONE_MODE_ADAPTIVE.to_string()),
+                allow_sensitive: options.allow_sensitive,
+                current_repo_root: options.current_repo_root,
+                max_records: Some(options.max_records),
+                budget_tokens: Some(options.budget_tokens),
+            },
+        )?;
+        Ok(PersonalPreferencesContextAssembly {
+            trace: PersonalPreferencesContextTrace {
+                available: pack.trace.len(),
+                selected: pack.items.len(),
+                truncated: pack.truncated_items,
+                budget_tokens: options.budget_tokens,
+            },
+            items: pack.items,
+        })
+    }
+
+    pub fn build_clone_context_pack(
+        &self,
+        query: &str,
+        options: PersonalPreferencesCloneOptions,
+    ) -> Result<PersonalPreferenceCloneContextPack> {
         let conn = open_db(&self.db_path)?;
         let policies = load_category_policy_map(&conn)?;
-        let mut records = self.search_records_with_policy(
-            query,
-            options.max_records.max(1).saturating_mul(6),
-            true,
-        )?;
-        if records.is_empty() {
-            return Ok(PersonalPreferencesContextAssembly {
-                items: Vec::new(),
-                trace: PersonalPreferencesContextTrace {
-                    available: 0,
-                    selected: 0,
-                    truncated: 0,
-                    budget_tokens: options.budget_tokens,
-                },
-            });
-        }
-        let available = records.len();
-        records.retain(|record| {
-            record.review_status == REVIEW_STATUS_APPROVED
-                && record_allowed_for_context(record, options.allow_sensitive, &policies)
-        });
-
-        let mut sectioned = BTreeMap::<String, Vec<ContextCandidate>>::new();
-        for record in &records {
-            if let Some(section) = context_section_for_record(record, &policies) {
-                sectioned
-                    .entry(section.clone())
-                    .or_default()
-                    .push(ContextCandidate {
-                        section,
-                        content: render_record(record),
-                        category: record.category.clone(),
-                        record_type: record.record_type.clone(),
-                        confidence: record.confidence,
-                        source_repo_root: record_repo_root(record),
-                    });
-            }
-        }
-
-        if let Some(current_repo_root) = options.current_repo_root.as_deref() {
-            for candidate in load_bridge_candidates(
+        let mode = normalize_clone_mode(options.mode.as_deref().unwrap_or(CLONE_MODE_ADAPTIVE));
+        let max_records = options.max_records.unwrap_or(8).clamp(1, 64);
+        let budget_tokens = options.budget_tokens.unwrap_or(600).clamp(32, 4096);
+        let current_repo_root = options.current_repo_root.clone();
+        let mut candidates =
+            load_clone_context_candidates(&conn, query, &mode, options.allow_sensitive)?;
+        let available = candidates.len();
+        if let Some(current_repo_root) = current_repo_root.as_deref() {
+            for bridge in load_claim_bridge_candidates(
                 &conn,
                 current_repo_root,
                 options.allow_sensitive,
                 &policies,
             )? {
-                sectioned
-                    .entry(candidate.section.clone())
-                    .or_default()
-                    .push(candidate);
+                candidates.push(bridge);
             }
         }
-
-        let section_order = [
-            "stable_preferences",
-            "current_projects_and_goals",
-            "communication_and_collaboration_style",
-            "known_capabilities_and_history",
-            "avoidances_and_dislikes",
-            "cross_project_bridges",
-        ];
-
+        candidates.sort_by(|left, right| {
+            right
+                .score
+                .partial_cmp(&left.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    right
+                        .claim
+                        .confidence
+                        .partial_cmp(&left.claim.confidence)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .then_with(|| right.claim.updated_at_ms.cmp(&left.claim.updated_at_ms))
+        });
         let mut used = 0usize;
         let mut truncated = 0usize;
+        let mut excluded_by_policy = 0usize;
         let mut items = Vec::new();
-        for section in section_order {
-            let Some(candidates) = sectioned.get_mut(section) else {
+        let mut trace = Vec::new();
+        for candidate in candidates {
+            if items.len() >= max_records || used >= budget_tokens {
+                truncated += 1;
                 continue;
-            };
-            candidates.sort_by(|left, right| {
-                right
-                    .confidence
-                    .partial_cmp(&left.confidence)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            for candidate in candidates.drain(..) {
-                if items.len() >= options.max_records.max(1) || used >= options.budget_tokens {
-                    break;
-                }
-                let token_estimate = estimate_tokens(&candidate.content);
-                if token_estimate > options.budget_tokens.saturating_sub(used) {
-                    let snippet = truncate_to_tokens(
-                        &candidate.content,
-                        options.budget_tokens.saturating_sub(used),
-                    );
-                    if snippet.is_empty() {
-                        truncated += 1;
-                        break;
-                    }
-                    used = options.budget_tokens;
-                    items.push(PersonalPreferencesContextItem {
-                        section: candidate.section,
-                        content: snippet,
-                        category: candidate.category,
-                        record_type: candidate.record_type,
-                        confidence: candidate.confidence,
-                        source_repo_root: candidate.source_repo_root,
-                        token_estimate: options.budget_tokens.saturating_sub(used),
-                    });
-                    truncated += 1;
-                    break;
-                }
-                used = used.saturating_add(token_estimate);
-                items.push(PersonalPreferencesContextItem {
-                    section: candidate.section,
-                    content: candidate.content,
-                    category: candidate.category,
-                    record_type: candidate.record_type,
-                    confidence: candidate.confidence,
-                    source_repo_root: candidate.source_repo_root,
-                    token_estimate,
-                });
             }
+            if !candidate.allowed {
+                excluded_by_policy += 1;
+                continue;
+            }
+            let token_estimate = estimate_tokens(&candidate.content);
+            let remaining = budget_tokens.saturating_sub(used);
+            let rendered = if token_estimate > remaining {
+                let snippet = truncate_to_tokens(&candidate.content, remaining);
+                if snippet.is_empty() {
+                    truncated += 1;
+                    continue;
+                }
+                truncated += 1;
+                snippet
+            } else {
+                candidate.content.clone()
+            };
+            let rendered_tokens = estimate_tokens(&rendered);
+            used = used.saturating_add(rendered_tokens);
+            items.push(PersonalPreferencesContextItem {
+                section: candidate.section.clone(),
+                content: rendered,
+                category: candidate.claim.category.clone(),
+                record_type: candidate.record_type.clone(),
+                confidence: candidate.claim.confidence,
+                claim_id: Some(candidate.claim.id.clone()),
+                claim_origin: Some(candidate.claim.claim_origin.clone()),
+                truth_status: Some(candidate.claim.truth_status.clone()),
+                source_repo_root: candidate.source_repo_root.clone(),
+                token_estimate: rendered_tokens,
+            });
+            trace.push(PersonalPreferenceCloneTraceItem {
+                claim_id: candidate.claim.id.clone(),
+                section: candidate.section,
+                reason: candidate.reason,
+                score: candidate.score,
+                claim_origin: candidate.claim.claim_origin.clone(),
+                truth_status: candidate.claim.truth_status.clone(),
+                confidence: candidate.claim.confidence,
+                sensitive: is_sensitive_level(&candidate.claim.sensitivity),
+            });
         }
-
-        Ok(PersonalPreferencesContextAssembly {
-            trace: PersonalPreferencesContextTrace {
-                available,
-                selected: items.len(),
-                truncated,
-                budget_tokens: options.budget_tokens,
-            },
+        let summary = render_clone_context_summary(&items);
+        let created_at_ms = now_ms();
+        let pack_id = format!("clone_pack_{}", Uuid::new_v4());
+        conn.execute(
+            "INSERT INTO pp_clone_context_packs(
+                id, mode, query, query_hash, current_repo_root, summary, explanation_json, created_at_ms, metadata_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                pack_id,
+                mode,
+                query,
+                sha256_hex(query),
+                current_repo_root,
+                summary,
+                serde_json::to_string(&trace)?,
+                created_at_ms,
+                serde_json::to_string(&json!({
+                    "selected": items.len(),
+                    "available": available,
+                    "excluded_by_policy": excluded_by_policy,
+                    "truncated_items": truncated,
+                }))?,
+            ],
+        )?;
+        upsert_clone_profile(&conn, &mode, &summary, created_at_ms)?;
+        Ok(PersonalPreferenceCloneContextPack {
+            mode,
+            query: query.to_string(),
+            summary,
             items,
+            trace,
+            excluded_by_policy,
+            truncated_items: truncated,
+            created_at_ms,
+        })
+    }
+
+    pub fn explain_clone_context(
+        &self,
+        query: &str,
+        options: PersonalPreferencesCloneOptions,
+    ) -> Result<PersonalPreferenceCloneExplanation> {
+        let pack = self.build_clone_context_pack(query, options)?;
+        let conn = open_db(&self.db_path)?;
+        let included_claims = pack
+            .trace
+            .iter()
+            .filter_map(|trace| {
+                let claim = load_claim_by_id(&conn, &trace.claim_id).ok().flatten()?;
+                let content = pack
+                    .items
+                    .iter()
+                    .find(|item| item.claim_id.as_deref() == Some(trace.claim_id.as_str()))
+                    .map(|item| item.content.clone())
+                    .unwrap_or_else(|| render_claim_content(&claim));
+                let source_repo_root = pack
+                    .items
+                    .iter()
+                    .find(|item| item.claim_id.as_deref() == Some(trace.claim_id.as_str()))
+                    .and_then(|item| item.source_repo_root.clone());
+                Some(PersonalPreferenceCloneExplanationRecord {
+                    claim_id: trace.claim_id.clone(),
+                    section: trace.section.clone(),
+                    content,
+                    reason: trace.reason.clone(),
+                    score: trace.score,
+                    claim_origin: trace.claim_origin.clone(),
+                    truth_status: trace.truth_status.clone(),
+                    confidence: trace.confidence,
+                    sensitive: trace.sensitive,
+                    source_repo_root,
+                    evidence_summary: claim.evidence_summary.clone(),
+                })
+            })
+            .collect::<Vec<_>>();
+        Ok(PersonalPreferenceCloneExplanation {
+            pack,
+            included_claims,
+            ranking_factors: vec![
+                "Ranking prefers explicit/confirmed/high-stability claims before weaker inferences."
+                    .to_string(),
+                "Scores combine confidence, truth status, stability, query term match, and mode-specific section boosts."
+                    .to_string(),
+                "Explicit user corrections receive an additional priority boost during clone-pack selection."
+                    .to_string(),
+            ],
+            policy_notes: vec![
+                "Repo truth still outranks clone inference; clone packs only shape preference-sensitive behavior."
+                    .to_string(),
+                "Sensitive claims are omitted unless allow_sensitive is enabled and policy allows them."
+                    .to_string(),
+                "Excluded-by-policy and truncated counts reflect pack-level filtering, not hidden inclusion."
+                    .to_string(),
+            ],
+        })
+    }
+
+    pub fn evaluate_clone_context(
+        &self,
+        query: &str,
+        options: PersonalPreferencesCloneOptions,
+    ) -> Result<PersonalPreferenceCloneEvaluation> {
+        let pack = self.build_clone_context_pack(query, options.clone())?;
+        let explicit_selected = pack
+            .trace
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item.claim_origin.as_str(),
+                    CLAIM_ORIGIN_EXPLICIT_USER_STATEMENT
+                        | CLAIM_ORIGIN_EXPLICIT_USER_CORRECTION
+                        | CLAIM_ORIGIN_MANUAL_REVIEW_ENTRY
+                )
+            })
+            .count();
+        let inferred_selected = pack
+            .trace
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item.claim_origin.as_str(),
+                    CLAIM_ORIGIN_CROSS_SESSION_INFERENCE | CLAIM_ORIGIN_ENVIRONMENTAL_INFERENCE
+                )
+            })
+            .count();
+        let confirmed_selected = pack
+            .trace
+            .iter()
+            .filter(|item| item.truth_status == TRUTH_STATUS_CONFIRMED)
+            .count();
+        let current_selected = pack
+            .items
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item.section.as_str(),
+                    "active_project_and_strategic_context"
+                        | "current_workflow_and_quality_expectations"
+                )
+            })
+            .count();
+        let bridge_selected = pack
+            .items
+            .iter()
+            .filter(|item| item.section == "relevant_cross_project_bridges")
+            .count();
+        let style_selected = pack
+            .items
+            .iter()
+            .filter(|item| item.section == "relevant_communication_style_expectations")
+            .count();
+        let decision_patterns_selected = pack
+            .items
+            .iter()
+            .filter(|item| item.record_type == "decision_pattern")
+            .count();
+        let overall_score =
+            (((explicit_selected * 4 + confirmed_selected * 3 + bridge_selected * 2) as f32)
+                / ((pack.items.len().max(1) * 4) as f32))
+                .clamp(0.0, 1.0);
+        let mut notes = Vec::new();
+        if explicit_selected == 0 {
+            notes.push("No explicit user statements were selected.".to_string());
+        }
+        if style_selected == 0 {
+            notes.push("No communication-style expectations were selected.".to_string());
+        }
+        if bridge_selected == 0 {
+            notes.push("No cross-project bridge hints were selected.".to_string());
+        }
+        let created_at_ms = now_ms();
+        let conn = open_db(&self.db_path)?;
+        conn.execute(
+            "INSERT INTO pp_clone_evaluations(
+                id, mode, score, query, notes, created_at_ms, metadata_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                format!("clone_eval_{}", Uuid::new_v4()),
+                pack.mode,
+                overall_score,
+                pack.query,
+                notes.join(" "),
+                created_at_ms,
+                serde_json::to_string(&json!({
+                    "explicit_selected": explicit_selected,
+                    "inferred_selected": inferred_selected,
+                    "confirmed_selected": confirmed_selected,
+                    "current_selected": current_selected,
+                    "bridge_selected": bridge_selected,
+                    "style_selected": style_selected,
+                    "decision_patterns_selected": decision_patterns_selected,
+                }))?,
+            ],
+        )?;
+        Ok(PersonalPreferenceCloneEvaluation {
+            mode: pack.mode,
+            query: pack.query,
+            overall_score,
+            explicit_selected,
+            inferred_selected,
+            confirmed_selected,
+            current_selected,
+            bridge_selected,
+            style_selected,
+            decision_patterns_selected,
+            notes,
         })
     }
 
@@ -1471,6 +2512,18 @@ impl PersonalPreferencesStore {
                 archive_redacted = true;
             }
         }
+        write_redaction_span(
+            &conn,
+            capture_id,
+            None,
+            "capture_redact",
+            None,
+            None,
+            REDACTED_TEXT,
+            "capture redacted",
+            &json!({ "archive_redacted": archive_redacted }),
+            now,
+        )?;
         self.write_tombstone(
             capture_id,
             "redact",
@@ -1871,6 +2924,7 @@ impl PersonalPreferencesStore {
                 review_status: review_status.to_string(),
             };
             materialize_record_views(&tx, &materialized)?;
+            upsert_claim_from_backfill_record(&tx, &materialized, "capture_digest")?;
             if let Some(repo_root) = capture
                 .repo_root
                 .as_deref()
@@ -1928,6 +2982,7 @@ impl PersonalPreferencesStore {
              WHERE id = ?1",
             params![capture_id, DIGEST_STATUS_COMPLETED, now],
         )?;
+        let _ = rebuild_identity_snapshots_tx(&tx, Some(capture_id), "capture_complete")?;
         cleanup_orphan_entities(&tx)?;
         tx.commit()?;
         self.sync_queue_marker(capture_id, DIGEST_STATUS_COMPLETED)?;
@@ -2420,6 +3475,7 @@ fn collect_client_transcript_candidates(
             if !is_supported_client_transcript_source(&source) {
                 continue;
             }
+            let adapter_kind = infer_transcript_adapter_kind(&source, path);
             let metadata = entry.metadata().ok();
             let modified = metadata
                 .as_ref()
@@ -2430,6 +3486,7 @@ fn collect_client_transcript_candidates(
                 modified,
                 ClientTranscriptCandidate {
                     source,
+                    adapter_kind,
                     path: path.to_path_buf(),
                     format,
                 },
@@ -2489,6 +3546,23 @@ fn infer_transcript_source(path: &Path) -> Option<String> {
     None
 }
 
+fn infer_transcript_adapter_kind(source: &str, path: &Path) -> String {
+    let lower = path.to_string_lossy().to_ascii_lowercase();
+    match source {
+        "codex" => "codex".to_string(),
+        "claude" => "claude".to_string(),
+        "gemini" => "gemini".to_string(),
+        "mcoda" => "mcoda".to_string(),
+        "openai" | "chatgpt" => "openai".to_string(),
+        _ if lower.contains("codex") => "codex".to_string(),
+        _ if lower.contains("claude") => "claude".to_string(),
+        _ if lower.contains("gemini") => "gemini".to_string(),
+        _ if lower.contains("mcoda") => "mcoda".to_string(),
+        _ if lower.contains("openai") || lower.contains("chatgpt") => "openai".to_string(),
+        _ => "generic".to_string(),
+    }
+}
+
 fn infer_transcript_format(path: &Path, source: &str) -> Option<ConversationImportFormat> {
     let ext = path
         .extension()
@@ -2513,12 +3587,16 @@ fn load_transcript_candidate_imports(
     if raw.trim().is_empty() {
         return Ok(Vec::new());
     }
-    if candidate.source == "gemini" {
-        if let Ok(imports) = load_gemini_transcript_imports(candidate, &raw) {
-            if !imports.is_empty() {
-                return Ok(imports);
+    match candidate.adapter_kind.as_str() {
+        "gemini" => {
+            if let Ok(imports) = load_gemini_transcript_imports(candidate, &raw) {
+                if !imports.is_empty() {
+                    return Ok(imports);
+                }
             }
         }
+        "codex" | "claude" | "mcoda" | "openai" | "generic" => {}
+        _ => {}
     }
     let envelope = ConversationImportEnvelope {
         source: Some(candidate.source.clone()),
@@ -2683,6 +3761,10 @@ fn capture_request_from_import(
         Value::String(candidate.source.clone()),
     );
     metadata.insert(
+        "client_transcript_adapter".to_string(),
+        Value::String(candidate.adapter_kind.clone()),
+    );
+    metadata.insert(
         "client_transcript_format".to_string(),
         Value::String(
             candidate
@@ -2816,6 +3898,223 @@ fn seed_default_context_policies(conn: &Connection) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+fn seed_default_retention_policies(conn: &Connection) -> Result<()> {
+    let defaults = MemoryPersonalPreferencesConfig::default();
+    let now = now_ms();
+    for (policy_key, lane, raw_days, derived_days, claim_days, snapshot_days, export_days) in [
+        (
+            "raw_archive",
+            "raw_archive",
+            Some(defaults.raw_retention_days),
+            None,
+            None,
+            None,
+            Some(defaults.raw_retention_days),
+        ),
+        (
+            "derived_memory",
+            "derived_memory",
+            None,
+            Some(defaults.derived_retention_days),
+            Some(defaults.derived_retention_days),
+            Some(defaults.derived_retention_days),
+            None,
+        ),
+        (
+            "clone_artifacts",
+            "clone_artifacts",
+            None,
+            None,
+            Some(defaults.derived_retention_days),
+            Some(defaults.derived_retention_days),
+            Some(defaults.raw_retention_days),
+        ),
+    ] {
+        conn.execute(
+            "INSERT INTO pp_retention_policies(
+                id, policy_key, lane, category, raw_retention_days, derived_retention_days,
+                claim_retention_days, snapshot_retention_days, export_retention_days,
+                updated_at_ms, metadata_json
+             ) VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(policy_key) DO UPDATE SET
+                lane = excluded.lane,
+                raw_retention_days = excluded.raw_retention_days,
+                derived_retention_days = excluded.derived_retention_days,
+                claim_retention_days = excluded.claim_retention_days,
+                snapshot_retention_days = excluded.snapshot_retention_days,
+                export_retention_days = excluded.export_retention_days,
+                updated_at_ms = excluded.updated_at_ms,
+                metadata_json = excluded.metadata_json",
+            params![
+                format!("retention_policy_{}", policy_key),
+                policy_key,
+                lane,
+                raw_days.map(i64::from),
+                derived_days.map(i64::from),
+                claim_days.map(i64::from),
+                snapshot_days.map(i64::from),
+                export_days.map(i64::from),
+                now,
+                serde_json::to_string(&json!({ "seeded": true }))?,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn load_retention_policies(conn: &Connection) -> Result<Vec<PersonalPreferenceRetentionPolicy>> {
+    let mut stmt = conn.prepare(
+        "SELECT policy_key, lane, category, raw_retention_days, derived_retention_days,
+                claim_retention_days, snapshot_retention_days, export_retention_days,
+                updated_at_ms, metadata_json
+         FROM pp_retention_policies
+         ORDER BY lane ASC, policy_key ASC",
+    )?;
+    let mut rows = stmt.query([])?;
+    let mut items = Vec::new();
+    while let Some(row) = rows.next()? {
+        items.push(PersonalPreferenceRetentionPolicy {
+            policy_key: row.get(0)?,
+            lane: row.get(1)?,
+            category: row.get(2)?,
+            raw_retention_days: optional_i64_to_u32(row.get(3)?),
+            derived_retention_days: optional_i64_to_u32(row.get(4)?),
+            claim_retention_days: optional_i64_to_u32(row.get(5)?),
+            snapshot_retention_days: optional_i64_to_u32(row.get(6)?),
+            export_retention_days: optional_i64_to_u32(row.get(7)?),
+            updated_at_ms: row.get(8)?,
+            metadata: parse_json_value(&row.get::<_, String>(9)?),
+        });
+    }
+    Ok(items)
+}
+
+fn optional_i64_to_u32(value: Option<i64>) -> Option<u32> {
+    value.and_then(|item| u32::try_from(item).ok())
+}
+
+fn upsert_retention_policy(
+    conn: &Connection,
+    policy_key: &str,
+    lane: &str,
+    raw_retention_days: Option<u32>,
+    derived_retention_days: Option<u32>,
+    claim_retention_days: Option<u32>,
+    snapshot_retention_days: Option<u32>,
+    export_retention_days: Option<u32>,
+    metadata: &Value,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO pp_retention_policies(
+            id, policy_key, lane, category, raw_retention_days, derived_retention_days,
+            claim_retention_days, snapshot_retention_days, export_retention_days,
+            updated_at_ms, metadata_json
+         ) VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         ON CONFLICT(policy_key) DO UPDATE SET
+            lane = excluded.lane,
+            raw_retention_days = excluded.raw_retention_days,
+            derived_retention_days = excluded.derived_retention_days,
+            claim_retention_days = excluded.claim_retention_days,
+            snapshot_retention_days = excluded.snapshot_retention_days,
+            export_retention_days = excluded.export_retention_days,
+            updated_at_ms = excluded.updated_at_ms,
+            metadata_json = excluded.metadata_json",
+        params![
+            format!("retention_policy_{policy_key}"),
+            policy_key,
+            lane,
+            raw_retention_days.map(i64::from),
+            derived_retention_days.map(i64::from),
+            claim_retention_days.map(i64::from),
+            snapshot_retention_days.map(i64::from),
+            export_retention_days.map(i64::from),
+            now_ms(),
+            serde_json::to_string(metadata)?,
+        ],
+    )?;
+    Ok(())
+}
+
+fn write_redaction_span(
+    conn: &Connection,
+    capture_id: &str,
+    claim_id: Option<&str>,
+    span_kind: &str,
+    start_offset: Option<i64>,
+    end_offset: Option<i64>,
+    replacement_text: &str,
+    reason: &str,
+    metadata: &Value,
+    created_at_ms: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO pp_redaction_spans(
+            id, capture_id, claim_id, span_kind, start_offset, end_offset, replacement_text,
+            reason, created_at_ms, metadata_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            format!("redaction_span_{}", Uuid::new_v4()),
+            capture_id,
+            claim_id,
+            normalize_text(span_kind),
+            start_offset,
+            end_offset,
+            normalize_text(replacement_text),
+            normalize_text(reason),
+            created_at_ms,
+            serde_json::to_string(metadata)?,
+        ],
+    )?;
+    Ok(())
+}
+
+fn file_modified_at_ms(path: &Path) -> Result<i64> {
+    let modified = fs::metadata(path)
+        .with_context(|| format!("stat {}", path.display()))?
+        .modified()
+        .with_context(|| format!("read modified time for {}", path.display()))?;
+    Ok(modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_millis() as i64)
+        .unwrap_or(0))
+}
+
+fn count_files_older_than(dir: &Path, cutoff_ms: i64) -> Result<usize> {
+    if !dir.exists() {
+        return Ok(0);
+    }
+    let mut count = 0usize;
+    for entry in fs::read_dir(dir).with_context(|| format!("read {}", dir.display()))? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        if file_modified_at_ms(&entry.path())? < cutoff_ms {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+fn prune_files_older_than(dir: &Path, cutoff_ms: i64) -> Result<usize> {
+    if !dir.exists() {
+        return Ok(0);
+    }
+    let mut removed = 0usize;
+    for entry in fs::read_dir(dir).with_context(|| format!("read {}", dir.display()))? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if file_modified_at_ms(&path)? < cutoff_ms {
+            fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
 }
 
 fn backfill_rich_capture_lineage(conn: &Connection) -> Result<()> {
@@ -4147,6 +5446,236 @@ fn init_db(path: &Path) -> Result<()> {
          CREATE INDEX IF NOT EXISTS idx_pp_bridges_source
              ON pp_cross_project_bridges(source_repo_root, bridge_key);",
     )?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS pp_claims(
+             id TEXT PRIMARY KEY,
+             record_id TEXT UNIQUE,
+             capture_id TEXT,
+             category TEXT NOT NULL,
+             subcategory TEXT,
+             subject TEXT NOT NULL,
+             attribute TEXT,
+             value TEXT NOT NULL,
+             claim_origin TEXT NOT NULL,
+             truth_status TEXT NOT NULL,
+             stability_class TEXT NOT NULL,
+             sensitivity TEXT NOT NULL,
+             confidence REAL NOT NULL,
+             review_status TEXT NOT NULL,
+             evidence_summary TEXT,
+             valid_from_ms INTEGER,
+             valid_to_ms INTEGER,
+             supersedes_claim_id TEXT,
+             contradicted_by_claim_id TEXT,
+             created_at_ms INTEGER NOT NULL,
+             updated_at_ms INTEGER NOT NULL,
+             metadata_json TEXT NOT NULL,
+             FOREIGN KEY(record_id) REFERENCES derived_records(id) ON DELETE CASCADE,
+             FOREIGN KEY(capture_id) REFERENCES captured_conversations(id) ON DELETE CASCADE
+         );
+         CREATE TABLE IF NOT EXISTS pp_claim_versions(
+             id TEXT PRIMARY KEY,
+             claim_id TEXT NOT NULL,
+             change_json TEXT NOT NULL,
+             created_at_ms INTEGER NOT NULL,
+             FOREIGN KEY(claim_id) REFERENCES pp_claims(id) ON DELETE CASCADE
+         );
+         CREATE TABLE IF NOT EXISTS pp_claim_evidence(
+             id TEXT PRIMARY KEY,
+             claim_id TEXT NOT NULL,
+             capture_id TEXT,
+             evidence_text TEXT NOT NULL,
+             metadata_json TEXT NOT NULL,
+             created_at_ms INTEGER NOT NULL,
+             FOREIGN KEY(claim_id) REFERENCES pp_claims(id) ON DELETE CASCADE,
+             FOREIGN KEY(capture_id) REFERENCES captured_conversations(id) ON DELETE SET NULL
+         );
+         CREATE TABLE IF NOT EXISTS pp_claim_links(
+             id TEXT PRIMARY KEY,
+             claim_id TEXT NOT NULL,
+             linked_claim_id TEXT,
+             link_type TEXT NOT NULL,
+             metadata_json TEXT NOT NULL,
+             created_at_ms INTEGER NOT NULL,
+             FOREIGN KEY(claim_id) REFERENCES pp_claims(id) ON DELETE CASCADE,
+             FOREIGN KEY(linked_claim_id) REFERENCES pp_claims(id) ON DELETE CASCADE
+         );
+         CREATE TABLE IF NOT EXISTS pp_feedback_events(
+             id TEXT PRIMARY KEY,
+             claim_id TEXT,
+             capture_id TEXT,
+             event_type TEXT NOT NULL,
+             notes TEXT,
+             created_at_ms INTEGER NOT NULL,
+             metadata_json TEXT NOT NULL,
+             FOREIGN KEY(claim_id) REFERENCES pp_claims(id) ON DELETE SET NULL,
+             FOREIGN KEY(capture_id) REFERENCES captured_conversations(id) ON DELETE SET NULL
+         );
+         CREATE TABLE IF NOT EXISTS pp_identity_snapshots(
+             id TEXT PRIMARY KEY,
+             snapshot_kind TEXT NOT NULL,
+             summary TEXT NOT NULL,
+             stable_summary TEXT,
+             changed_summary TEXT,
+             active_projects_summary TEXT,
+             created_at_ms INTEGER NOT NULL,
+             metadata_json TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS pp_decision_patterns(
+             id TEXT PRIMARY KEY,
+             snapshot_id TEXT,
+             pattern_key TEXT NOT NULL,
+             summary TEXT NOT NULL,
+             confidence REAL NOT NULL,
+             created_at_ms INTEGER NOT NULL,
+             updated_at_ms INTEGER NOT NULL,
+             metadata_json TEXT NOT NULL,
+             FOREIGN KEY(snapshot_id) REFERENCES pp_identity_snapshots(id) ON DELETE SET NULL
+         );
+         CREATE TABLE IF NOT EXISTS pp_style_signals(
+             id TEXT PRIMARY KEY,
+             snapshot_id TEXT,
+             signal_key TEXT NOT NULL,
+             summary TEXT NOT NULL,
+             confidence REAL NOT NULL,
+             created_at_ms INTEGER NOT NULL,
+             updated_at_ms INTEGER NOT NULL,
+             metadata_json TEXT NOT NULL,
+             FOREIGN KEY(snapshot_id) REFERENCES pp_identity_snapshots(id) ON DELETE SET NULL
+         );
+         CREATE TABLE IF NOT EXISTS pp_clone_profiles(
+             id TEXT PRIMARY KEY,
+             mode TEXT NOT NULL UNIQUE,
+             summary TEXT NOT NULL,
+             updated_at_ms INTEGER NOT NULL,
+             metadata_json TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS pp_clone_context_packs(
+             id TEXT PRIMARY KEY,
+             mode TEXT NOT NULL,
+             query TEXT NOT NULL,
+             query_hash TEXT NOT NULL,
+             current_repo_root TEXT,
+             summary TEXT NOT NULL,
+             explanation_json TEXT NOT NULL,
+             created_at_ms INTEGER NOT NULL,
+             metadata_json TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS pp_clone_evaluations(
+             id TEXT PRIMARY KEY,
+             mode TEXT NOT NULL,
+             score REAL NOT NULL,
+             query TEXT NOT NULL,
+             notes TEXT,
+             created_at_ms INTEGER NOT NULL,
+             metadata_json TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS pp_project_timelines(
+             id TEXT PRIMARY KEY,
+             claim_id TEXT,
+             snapshot_id TEXT,
+             project_name TEXT NOT NULL,
+             repo_root TEXT,
+             lifecycle_state TEXT NOT NULL,
+             valid_from_ms INTEGER,
+             valid_to_ms INTEGER,
+             created_at_ms INTEGER NOT NULL,
+             updated_at_ms INTEGER NOT NULL,
+             metadata_json TEXT NOT NULL,
+             FOREIGN KEY(claim_id) REFERENCES pp_claims(id) ON DELETE CASCADE,
+             FOREIGN KEY(snapshot_id) REFERENCES pp_identity_snapshots(id) ON DELETE SET NULL
+         );
+         CREATE TABLE IF NOT EXISTS pp_goal_graph(
+             id TEXT PRIMARY KEY,
+             claim_id TEXT,
+             snapshot_id TEXT,
+             goal_key TEXT NOT NULL,
+             summary TEXT NOT NULL,
+             status TEXT NOT NULL,
+             project_name TEXT,
+             created_at_ms INTEGER NOT NULL,
+             updated_at_ms INTEGER NOT NULL,
+             metadata_json TEXT NOT NULL,
+             FOREIGN KEY(claim_id) REFERENCES pp_claims(id) ON DELETE CASCADE,
+             FOREIGN KEY(snapshot_id) REFERENCES pp_identity_snapshots(id) ON DELETE SET NULL
+         );
+         CREATE TABLE IF NOT EXISTS pp_override_rules(
+             id TEXT PRIMARY KEY,
+             claim_id TEXT,
+             category TEXT NOT NULL,
+             attribute TEXT,
+             subject TEXT,
+             override_value TEXT NOT NULL,
+             reason TEXT,
+             created_at_ms INTEGER NOT NULL,
+             updated_at_ms INTEGER NOT NULL,
+             metadata_json TEXT NOT NULL,
+             FOREIGN KEY(claim_id) REFERENCES pp_claims(id) ON DELETE SET NULL
+         );
+         CREATE TABLE IF NOT EXISTS pp_redaction_spans(
+             id TEXT PRIMARY KEY,
+             capture_id TEXT NOT NULL,
+             claim_id TEXT,
+             span_kind TEXT NOT NULL,
+             start_offset INTEGER,
+             end_offset INTEGER,
+             replacement_text TEXT NOT NULL,
+             reason TEXT,
+             created_at_ms INTEGER NOT NULL,
+             metadata_json TEXT NOT NULL,
+             FOREIGN KEY(capture_id) REFERENCES captured_conversations(id) ON DELETE CASCADE,
+             FOREIGN KEY(claim_id) REFERENCES pp_claims(id) ON DELETE SET NULL
+         );
+         CREATE TABLE IF NOT EXISTS pp_retention_policies(
+             id TEXT PRIMARY KEY,
+             policy_key TEXT NOT NULL UNIQUE,
+             lane TEXT NOT NULL,
+             category TEXT,
+             raw_retention_days INTEGER,
+             derived_retention_days INTEGER,
+             claim_retention_days INTEGER,
+             snapshot_retention_days INTEGER,
+             export_retention_days INTEGER,
+             updated_at_ms INTEGER NOT NULL,
+             metadata_json TEXT NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS idx_pp_claims_truth_updated
+             ON pp_claims(truth_status, updated_at_ms);
+         CREATE INDEX IF NOT EXISTS idx_pp_claims_origin_updated
+             ON pp_claims(claim_origin, updated_at_ms);
+         CREATE INDEX IF NOT EXISTS idx_pp_claims_category_updated
+             ON pp_claims(category, updated_at_ms);
+         CREATE INDEX IF NOT EXISTS idx_pp_claims_review_status
+             ON pp_claims(review_status, updated_at_ms);
+         CREATE INDEX IF NOT EXISTS idx_pp_claim_versions_claim_created
+             ON pp_claim_versions(claim_id, created_at_ms);
+         CREATE INDEX IF NOT EXISTS idx_pp_claim_evidence_claim
+             ON pp_claim_evidence(claim_id, created_at_ms);
+         CREATE INDEX IF NOT EXISTS idx_pp_claim_links_claim
+             ON pp_claim_links(claim_id, link_type, created_at_ms);
+         CREATE INDEX IF NOT EXISTS idx_pp_feedback_events_created
+             ON pp_feedback_events(created_at_ms);
+         CREATE INDEX IF NOT EXISTS idx_pp_snapshots_created
+             ON pp_identity_snapshots(created_at_ms);
+         CREATE INDEX IF NOT EXISTS idx_pp_decision_patterns_snapshot
+             ON pp_decision_patterns(snapshot_id, updated_at_ms);
+         CREATE INDEX IF NOT EXISTS idx_pp_style_signals_snapshot
+             ON pp_style_signals(snapshot_id, updated_at_ms);
+         CREATE INDEX IF NOT EXISTS idx_pp_clone_context_query
+             ON pp_clone_context_packs(query_hash, created_at_ms);
+         CREATE INDEX IF NOT EXISTS idx_pp_clone_evaluations_mode_created
+             ON pp_clone_evaluations(mode, created_at_ms);
+         CREATE INDEX IF NOT EXISTS idx_pp_project_timelines_project
+             ON pp_project_timelines(project_name, updated_at_ms);
+         CREATE INDEX IF NOT EXISTS idx_pp_goal_graph_key
+             ON pp_goal_graph(goal_key, updated_at_ms);
+         CREATE INDEX IF NOT EXISTS idx_pp_override_rules_lookup
+             ON pp_override_rules(category, attribute, updated_at_ms);
+         CREATE INDEX IF NOT EXISTS idx_pp_redaction_spans_capture
+             ON pp_redaction_spans(capture_id, created_at_ms);
+         CREATE INDEX IF NOT EXISTS idx_pp_retention_policies_lane
+             ON pp_retention_policies(lane, updated_at_ms);",
+    )?;
     ensure_column(&conn, "captured_conversations", "archive_path", "TEXT")?;
     ensure_column(
         &conn,
@@ -4176,8 +5705,10 @@ fn init_db(path: &Path) -> Result<()> {
     seed_default_category_policies(&conn)?;
     seed_default_sensitivity_levels(&conn)?;
     seed_default_context_policies(&conn)?;
+    seed_default_retention_policies(&conn)?;
     backfill_rich_capture_lineage(&conn)?;
     backfill_rich_derived_materialization(&conn)?;
+    backfill_claims_from_records(&conn, None)?;
     conn.execute(
         "INSERT OR REPLACE INTO personal_preferences_meta(key, value) VALUES (?1, ?2)",
         params!["schema_version", SCHEMA_VERSION.to_string()],
@@ -4236,6 +5767,40 @@ fn load_all_records(conn: &Connection) -> Result<Vec<PersonalPreferenceRecord>> 
         records.push(row_to_record(row)?);
     }
     Ok(records)
+}
+
+fn load_all_claims(conn: &Connection) -> Result<Vec<PersonalPreferenceClaim>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, record_id, capture_id, category, subcategory, subject, attribute, value,
+                claim_origin, truth_status, stability_class, sensitivity, confidence,
+                review_status, evidence_summary, valid_from_ms, valid_to_ms,
+                supersedes_claim_id, contradicted_by_claim_id, created_at_ms, updated_at_ms,
+                metadata_json
+         FROM pp_claims
+         ORDER BY updated_at_ms DESC, confidence DESC",
+    )?;
+    let mut rows = stmt.query([])?;
+    let mut claims = Vec::new();
+    while let Some(row) = rows.next()? {
+        claims.push(row_to_claim(row)?);
+    }
+    Ok(claims)
+}
+
+fn load_claim_by_id(conn: &Connection, claim_id: &str) -> Result<Option<PersonalPreferenceClaim>> {
+    Ok(conn
+        .query_row(
+            "SELECT id, record_id, capture_id, category, subcategory, subject, attribute, value,
+                    claim_origin, truth_status, stability_class, sensitivity, confidence,
+                    review_status, evidence_summary, valid_from_ms, valid_to_ms,
+                    supersedes_claim_id, contradicted_by_claim_id, created_at_ms, updated_at_ms,
+                    metadata_json
+             FROM pp_claims
+             WHERE id = ?1",
+            params![claim_id],
+            row_to_claim,
+        )
+        .optional()?)
 }
 
 fn load_records_for_capture_ids(
@@ -4307,6 +5872,60 @@ fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<PersonalPreference
         projected_to_profile_at_ms: row.get(14)?,
         review_status: row.get(15)?,
         review_updated_at_ms: row.get(16)?,
+    })
+}
+
+fn row_to_claim(row: &rusqlite::Row<'_>) -> rusqlite::Result<PersonalPreferenceClaim> {
+    Ok(PersonalPreferenceClaim {
+        id: row.get(0)?,
+        record_id: row.get(1)?,
+        capture_id: row.get(2)?,
+        category: row.get(3)?,
+        subcategory: row.get(4)?,
+        subject: row.get(5)?,
+        attribute: row.get(6)?,
+        value: row.get(7)?,
+        claim_origin: row.get(8)?,
+        truth_status: row.get(9)?,
+        stability_class: row.get(10)?,
+        sensitivity: row.get(11)?,
+        confidence: row.get(12)?,
+        review_status: row.get(13)?,
+        evidence_summary: row.get(14)?,
+        valid_from_ms: row.get(15)?,
+        valid_to_ms: row.get(16)?,
+        supersedes_claim_id: row.get(17)?,
+        contradicted_by_claim_id: row.get(18)?,
+        created_at_ms: row.get(19)?,
+        updated_at_ms: row.get(20)?,
+        metadata: parse_json_value(&row.get::<_, String>(21)?),
+    })
+}
+
+fn row_to_feedback_event(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<PersonalPreferenceFeedbackEvent> {
+    Ok(PersonalPreferenceFeedbackEvent {
+        id: row.get(0)?,
+        event_type: row.get(1)?,
+        claim_id: row.get(2)?,
+        capture_id: row.get(3)?,
+        notes: row.get(4)?,
+        created_at_ms: row.get(5)?,
+        metadata: parse_json_value(&row.get::<_, String>(6)?),
+    })
+}
+
+fn row_to_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<PersonalPreferenceSnapshot> {
+    Ok(PersonalPreferenceSnapshot {
+        id: row.get(0)?,
+        snapshot_kind: row.get(1)?,
+        summary: row.get(2)?,
+        stable_summary: row.get(3)?,
+        changed_summary: row.get(4)?,
+        active_projects_summary: row.get(5)?,
+        created_at_ms: row.get(6)?,
+        metadata: parse_json_value(&row.get::<_, String>(7)?),
     })
 }
 
@@ -4404,6 +6023,31 @@ fn rank_records(query: &str, records: &mut Vec<PersonalPreferenceRecord>) {
     });
 }
 
+fn rank_claims(query: &str, claims: &mut Vec<PersonalPreferenceClaim>) {
+    let terms = query
+        .split_whitespace()
+        .map(|term| term.trim().to_ascii_lowercase())
+        .filter(|term| !term.is_empty())
+        .take(8)
+        .collect::<Vec<_>>();
+    claims.sort_by(|left, right| {
+        let left_score = claim_match_score(left, &terms);
+        let right_score = claim_match_score(right, &terms);
+        right_score
+            .cmp(&left_score)
+            .then_with(|| {
+                truth_status_rank(&right.truth_status).cmp(&truth_status_rank(&left.truth_status))
+            })
+            .then_with(|| right.updated_at_ms.cmp(&left.updated_at_ms))
+            .then_with(|| {
+                right
+                    .confidence
+                    .partial_cmp(&left.confidence)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
+}
+
 fn record_match_score(record: &PersonalPreferenceRecord, terms: &[String]) -> i32 {
     if terms.is_empty() {
         return 0;
@@ -4428,6 +6072,35 @@ fn record_match_score(record: &PersonalPreferenceRecord, terms: &[String]) -> i3
             score += 3;
         }
         if record.subject.eq_ignore_ascii_case(term) {
+            score += 2;
+        }
+    }
+    score
+}
+
+fn claim_match_score(claim: &PersonalPreferenceClaim, terms: &[String]) -> i32 {
+    let haystack = format!(
+        "{} {} {} {} {} {} {} {}",
+        claim.category,
+        claim.subcategory.clone().unwrap_or_default(),
+        claim.subject,
+        claim.attribute.clone().unwrap_or_default(),
+        claim.value,
+        claim.claim_origin,
+        claim.truth_status,
+        claim.evidence_summary.clone().unwrap_or_default()
+    )
+    .to_ascii_lowercase();
+    let mut score =
+        truth_status_rank(&claim.truth_status) * 4 + stability_rank(&claim.stability_class);
+    for term in terms {
+        if haystack.contains(term) {
+            score += 4;
+        }
+        if claim.category.eq_ignore_ascii_case(term) {
+            score += 3;
+        }
+        if claim.subject.eq_ignore_ascii_case(term) {
             score += 2;
         }
     }
@@ -4474,90 +6147,59 @@ fn render_digest_record(record: &PersonalPreferenceDigestRecord) -> String {
     format!("{head} {} {} {}", record.subject, attribute, record.value)
 }
 
-fn record_allowed_for_context(
-    record: &PersonalPreferenceRecord,
-    allow_sensitive: bool,
-    policies: &BTreeMap<String, CategoryPolicy>,
-) -> bool {
-    let policy = policy_for_record(policies, record);
-    if policy.context_section.is_none() {
-        return false;
-    }
-    if !allow_sensitive && !policy.context_allowed_default {
-        return false;
-    }
-    if !allow_sensitive && is_sensitive_level(&record.sensitivity) {
-        return false;
-    }
-    true
-}
-
-fn context_section_for_record(
-    record: &PersonalPreferenceRecord,
-    policies: &BTreeMap<String, CategoryPolicy>,
-) -> Option<String> {
-    policy_for_record(policies, record).context_section
-}
-
-fn load_bridge_candidates(
+fn load_feedback_events(
     conn: &Connection,
-    current_repo_root: &str,
-    allow_sensitive: bool,
-    policies: &BTreeMap<String, CategoryPolicy>,
-) -> Result<Vec<ContextCandidate>> {
+    limit: usize,
+    offset: usize,
+) -> Result<Vec<PersonalPreferenceFeedbackEvent>> {
     let mut stmt = conn.prepare(
-        "SELECT b.summary, b.source_repo_root, dr.category, dr.record_type, dr.confidence,
-                dr.sensitivity, dr.review_status
-         FROM pp_cross_project_bridges b
-         JOIN derived_records dr ON dr.id = b.record_id
-         WHERE b.source_repo_root != ?1
-         ORDER BY dr.updated_at_ms DESC, dr.confidence DESC",
+        "SELECT id, event_type, claim_id, capture_id, notes, created_at_ms, metadata_json
+         FROM pp_feedback_events
+         ORDER BY created_at_ms DESC
+         LIMIT ?1 OFFSET ?2",
     )?;
-    let mut rows = stmt.query(params![current_repo_root])?;
-    let mut items = Vec::new();
-    let mut seen = HashSet::new();
+    let mut rows = stmt.query(params![limit.max(1) as i64, offset as i64])?;
+    let mut events = Vec::new();
     while let Some(row) = rows.next()? {
-        let summary = row.get::<_, String>(0)?;
-        let source_repo_root = row.get::<_, String>(1)?;
-        let category = row.get::<_, String>(2)?;
-        let record_type = row.get::<_, String>(3)?;
-        let confidence = row.get::<_, f32>(4)?;
-        let sensitivity = row.get::<_, String>(5)?;
-        let review_status = row.get::<_, String>(6)?;
-        if review_status != REVIEW_STATUS_APPROVED {
-            continue;
-        }
-        let policy = policy_for_category_fields(policies, &category, &record_type, &sensitivity);
-        if !allow_sensitive && (!policy.context_allowed_default || is_sensitive_level(&sensitivity))
-        {
-            continue;
-        }
-        let Some(section) = policy
-            .context_section
-            .clone()
-            .or_else(|| Some("cross_project_bridges".to_string()))
-        else {
-            continue;
-        };
-        let repo_label = Path::new(&source_repo_root)
-            .file_name()
-            .and_then(|value| value.to_str())
-            .filter(|value| !value.is_empty())
-            .unwrap_or(source_repo_root.as_str());
-        let content = format!("From {repo_label}: {summary}");
-        if !seen.insert(content.clone()) {
-            continue;
-        }
-        items.push(ContextCandidate {
-            section,
-            content,
-            category: "cross_project_bridge".to_string(),
-            record_type,
-            confidence,
-            source_repo_root: Some(source_repo_root),
-        });
+        events.push(row_to_feedback_event(row)?);
     }
-    Ok(items)
+    Ok(events)
+}
+
+fn load_snapshots(
+    conn: &Connection,
+    limit: usize,
+    offset: usize,
+) -> Result<Vec<PersonalPreferenceSnapshot>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, snapshot_kind, summary, stable_summary, changed_summary,
+                active_projects_summary, created_at_ms, metadata_json
+         FROM pp_identity_snapshots
+         ORDER BY created_at_ms DESC
+         LIMIT ?1 OFFSET ?2",
+    )?;
+    let mut rows = stmt.query(params![limit.max(1) as i64, offset as i64])?;
+    let mut snapshots = Vec::new();
+    while let Some(row) = rows.next()? {
+        snapshots.push(row_to_snapshot(row)?);
+    }
+    Ok(snapshots)
+}
+
+fn load_snapshot_by_id(
+    conn: &Connection,
+    snapshot_id: &str,
+) -> Result<Option<PersonalPreferenceSnapshot>> {
+    Ok(conn
+        .query_row(
+            "SELECT id, snapshot_kind, summary, stable_summary, changed_summary,
+                    active_projects_summary, created_at_ms, metadata_json
+             FROM pp_identity_snapshots
+             WHERE id = ?1",
+            params![snapshot_id],
+            row_to_snapshot,
+        )
+        .optional()?)
 }
 
 fn load_category_rows(conn: &Connection) -> Result<Vec<PersonalPreferenceCategory>> {
@@ -4769,18 +6411,6 @@ fn category_is_sensitive(category: &str) -> bool {
         || category.contains("personal")
 }
 
-fn policy_for_record(
-    policies: &BTreeMap<String, CategoryPolicy>,
-    record: &PersonalPreferenceRecord,
-) -> CategoryPolicy {
-    policy_for_category_fields(
-        policies,
-        &record.category,
-        &record.record_type,
-        &record.sensitivity,
-    )
-}
-
 fn policy_for_category_fields(
     policies: &BTreeMap<String, CategoryPolicy>,
     category: &str,
@@ -4844,20 +6474,34 @@ fn normalize_review_status(value: &str) -> Option<&'static str> {
     }
 }
 
+fn normalize_feedback_event_type(value: &str) -> Option<&'static str> {
+    match normalize_text(value).as_str() {
+        "accept_output" | "accept" => Some(FEEDBACK_EVENT_ACCEPT_OUTPUT),
+        "reject_output" | "reject" => Some(FEEDBACK_EVENT_REJECT_OUTPUT),
+        "correct_output" | "correct" => Some(FEEDBACK_EVENT_CORRECT_OUTPUT),
+        "rewrite_output" | "rewrite" => Some(FEEDBACK_EVENT_REWRITE_OUTPUT),
+        "override_preference" | "override" => Some(FEEDBACK_EVENT_OVERRIDE_PREFERENCE),
+        "downgrade_inference" | "downgrade" => Some(FEEDBACK_EVENT_DOWNGRADE_INFERENCE),
+        "confirm_inference" | "confirm" => Some(FEEDBACK_EVENT_CONFIRM_INFERENCE),
+        _ => None,
+    }
+}
+
+fn normalize_clone_mode(value: &str) -> String {
+    match normalize_text(value).as_str() {
+        CLONE_MODE_PROJECT_BUILD => CLONE_MODE_PROJECT_BUILD.to_string(),
+        CLONE_MODE_REVIEW => CLONE_MODE_REVIEW.to_string(),
+        CLONE_MODE_RELEASE => CLONE_MODE_RELEASE.to_string(),
+        CLONE_MODE_SIMULATE_USER_PREFERENCE => CLONE_MODE_SIMULATE_USER_PREFERENCE.to_string(),
+        _ => CLONE_MODE_ADAPTIVE.to_string(),
+    }
+}
+
 fn retention_cutoff_ms(days: u32) -> Option<i64> {
     if days == 0 {
         return None;
     }
     Some(now_ms().saturating_sub(days as i64 * 24 * 60 * 60 * 1000))
-}
-
-fn record_repo_root(record: &PersonalPreferenceRecord) -> Option<String> {
-    record
-        .metadata
-        .get("repo_root")
-        .and_then(Value::as_str)
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
 }
 
 fn record_agent_id(record: &PersonalPreferenceRecord) -> Option<String> {
@@ -4883,6 +6527,1210 @@ fn map_record_to_profile_category(record: &PersonalPreferenceRecord) -> Option<P
         | "personality" => Some(PreferenceCategory::Style),
         "dislikes" | "limitations" => Some(PreferenceCategory::Constraint),
         _ => None,
+    }
+}
+
+fn truth_status_rank(value: &str) -> i32 {
+    match value {
+        TRUTH_STATUS_CONFIRMED => 6,
+        TRUTH_STATUS_INFERRED => 5,
+        TRUTH_STATUS_CANDIDATE => 4,
+        TRUTH_STATUS_SUPERSEDED => 3,
+        TRUTH_STATUS_EXPIRED => 2,
+        TRUTH_STATUS_REJECTED => 1,
+        _ => 0,
+    }
+}
+
+fn stability_rank(value: &str) -> i32 {
+    match value {
+        STABILITY_CLASS_FOUNDATIONAL => 5,
+        STABILITY_CLASS_STABLE => 4,
+        STABILITY_CLASS_CURRENT => 3,
+        STABILITY_CLASS_SESSIONAL => 2,
+        STABILITY_CLASS_EPHEMERAL => 1,
+        _ => 0,
+    }
+}
+
+fn truth_status_for_claim(review_status: &str, claim_origin: &str) -> &'static str {
+    match review_status {
+        REVIEW_STATUS_REJECTED => TRUTH_STATUS_REJECTED,
+        REVIEW_STATUS_PENDING => TRUTH_STATUS_CANDIDATE,
+        _ => {
+            if matches!(
+                claim_origin,
+                CLAIM_ORIGIN_EXPLICIT_USER_STATEMENT
+                    | CLAIM_ORIGIN_EXPLICIT_USER_CORRECTION
+                    | CLAIM_ORIGIN_MANUAL_REVIEW_ENTRY
+            ) {
+                TRUTH_STATUS_CONFIRMED
+            } else {
+                TRUTH_STATUS_INFERRED
+            }
+        }
+    }
+}
+
+fn infer_claim_origin_from_backfill_record(record: &BackfillRecord) -> &'static str {
+    if record
+        .metadata
+        .get("manual_review")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return CLAIM_ORIGIN_MANUAL_REVIEW_ENTRY;
+    }
+    if matches!(
+        record.category.as_str(),
+        "cross_project_bridge" | "business_context" | "current_projects"
+    ) || matches!(record.record_type.as_str(), "bridge" | "project")
+    {
+        return CLAIM_ORIGIN_CROSS_SESSION_INFERENCE;
+    }
+    if matches!(
+        record.record_type.as_str(),
+        "preference" | "like" | "dislike" | "goal" | "method"
+    ) {
+        return CLAIM_ORIGIN_EXPLICIT_USER_STATEMENT;
+    }
+    if matches!(record.record_type.as_str(), "trait" | "capability") {
+        return CLAIM_ORIGIN_OBSERVED_BEHAVIOR;
+    }
+    CLAIM_ORIGIN_ENVIRONMENTAL_INFERENCE
+}
+
+fn infer_stability_class_from_backfill_record(record: &BackfillRecord) -> &'static str {
+    if matches!(
+        record.category.as_str(),
+        "personality" | "decision_style" | "collaboration_style"
+    ) {
+        return STABILITY_CLASS_FOUNDATIONAL;
+    }
+    if matches!(
+        record.category.as_str(),
+        "current_projects" | "product_goals" | "business_context"
+    ) || matches!(record.record_type.as_str(), "project" | "goal")
+    {
+        return STABILITY_CLASS_CURRENT;
+    }
+    if matches!(
+        record.category.as_str(),
+        "health_context" | "personal_context" | "identity_context"
+    ) {
+        return STABILITY_CLASS_SESSIONAL;
+    }
+    STABILITY_CLASS_STABLE
+}
+
+fn personal_record_to_backfill(record: &PersonalPreferenceRecord) -> BackfillRecord {
+    BackfillRecord {
+        id: record.id.clone(),
+        capture_id: record.capture_id.clone(),
+        record_type: record.record_type.clone(),
+        category: record.category.clone(),
+        subcategory: record.subcategory.clone(),
+        subject: record.subject.clone(),
+        attribute: record.attribute.clone(),
+        value: record.value.clone(),
+        confidence: record.confidence,
+        sensitivity: record.sensitivity.clone(),
+        evidence: record.evidence.clone(),
+        created_at_ms: record.created_at_ms,
+        updated_at_ms: record.updated_at_ms,
+        metadata: record.metadata.clone(),
+        review_status: record.review_status.clone(),
+    }
+}
+
+fn upsert_claim_from_backfill_record(
+    conn: &Connection,
+    record: &BackfillRecord,
+    write_path: &str,
+) -> Result<()> {
+    let claim_origin = infer_claim_origin_from_backfill_record(record);
+    let truth_status = truth_status_for_claim(&record.review_status, claim_origin);
+    let stability_class = infer_stability_class_from_backfill_record(record);
+    let valid_from_ms = parse_timestamp_json_value(record.metadata.get("valid_from_ms"))
+        .or(Some(record.created_at_ms));
+    let valid_to_ms = parse_timestamp_json_value(record.metadata.get("valid_to_ms"));
+    let mut metadata = record.metadata.as_object().cloned().unwrap_or_default();
+    metadata.insert("record_type".to_string(), json!(record.record_type.clone()));
+    metadata.insert("capture_id".to_string(), json!(record.capture_id.clone()));
+    metadata.insert("claim_materialized_from_record".to_string(), json!(true));
+    metadata.insert("claim_write_path".to_string(), json!(write_path));
+    let claim_id = conn
+        .query_row(
+            "SELECT id FROM pp_claims WHERE record_id = ?1",
+            params![record.id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .unwrap_or_else(|| format!("claim_{}", Uuid::new_v4()));
+    conn.execute(
+        "INSERT INTO pp_claims(
+            id, record_id, capture_id, category, subcategory, subject, attribute, value,
+            claim_origin, truth_status, stability_class, sensitivity, confidence,
+            review_status, evidence_summary, valid_from_ms, valid_to_ms,
+            supersedes_claim_id, contradicted_by_claim_id, created_at_ms, updated_at_ms,
+            metadata_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                   ?17, NULL, NULL, ?18, ?19, ?20)
+         ON CONFLICT(record_id) DO UPDATE SET
+            capture_id = excluded.capture_id,
+            category = excluded.category,
+            subcategory = excluded.subcategory,
+            subject = excluded.subject,
+            attribute = excluded.attribute,
+            value = excluded.value,
+            claim_origin = excluded.claim_origin,
+            truth_status = excluded.truth_status,
+            stability_class = excluded.stability_class,
+            sensitivity = excluded.sensitivity,
+            confidence = excluded.confidence,
+            review_status = excluded.review_status,
+            evidence_summary = excluded.evidence_summary,
+            valid_from_ms = excluded.valid_from_ms,
+            valid_to_ms = excluded.valid_to_ms,
+            updated_at_ms = excluded.updated_at_ms,
+            metadata_json = excluded.metadata_json",
+        params![
+            claim_id,
+            record.id,
+            record.capture_id,
+            record.category,
+            record.subcategory,
+            record.subject,
+            record.attribute,
+            record.value,
+            claim_origin,
+            truth_status,
+            stability_class,
+            record.sensitivity,
+            record.confidence,
+            record.review_status,
+            record.evidence,
+            valid_from_ms,
+            valid_to_ms,
+            record.created_at_ms,
+            record.updated_at_ms,
+            serde_json::to_string(&Value::Object(metadata.clone()))?,
+        ],
+    )?;
+    replace_claim_evidence(
+        conn,
+        &claim_id,
+        Some(&record.capture_id),
+        record.evidence.as_deref(),
+        &Value::Object(metadata.clone()),
+        record.updated_at_ms,
+    )?;
+    write_claim_link(
+        conn,
+        &claim_id,
+        None,
+        "derived_from_record",
+        &json!({ "record_id": record.id }),
+        record.updated_at_ms,
+    )?;
+    Ok(())
+}
+
+fn backfill_claims_from_records(conn: &Connection, capture_id: Option<&str>) -> Result<usize> {
+    let mut records = load_all_records(conn)?;
+    if let Some(capture_id) = capture_id {
+        records.retain(|record| record.capture_id == capture_id);
+    }
+    let mut changed = 0usize;
+    for record in records {
+        if record_is_forgotten(&record) {
+            if let Some(existing_claim) = conn
+                .query_row(
+                    "SELECT id, record_id, capture_id, category, subcategory, subject, attribute, value,
+                            claim_origin, truth_status, stability_class, sensitivity, confidence,
+                            review_status, evidence_summary, valid_from_ms, valid_to_ms,
+                            supersedes_claim_id, contradicted_by_claim_id, created_at_ms, updated_at_ms,
+                            metadata_json
+                     FROM pp_claims
+                     WHERE record_id = ?1",
+                    params![record.id],
+                    row_to_claim,
+                )
+                .optional()?
+            {
+                let now = now_ms();
+                let mut metadata = existing_claim
+                    .metadata
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default();
+                metadata.insert("forgotten".to_string(), json!(true));
+                metadata.insert("forgotten_at_ms".to_string(), json!(now));
+                conn.execute(
+                    "UPDATE pp_claims
+                     SET truth_status = ?2,
+                         review_status = ?3,
+                         value = ?4,
+                         evidence_summary = ?4,
+                         valid_to_ms = ?5,
+                         updated_at_ms = ?5,
+                         metadata_json = ?6
+                     WHERE id = ?1",
+                    params![
+                        existing_claim.id,
+                        TRUTH_STATUS_EXPIRED,
+                        REVIEW_STATUS_REJECTED,
+                        REDACTED_TEXT,
+                        now,
+                        serde_json::to_string(&Value::Object(metadata))?,
+                    ],
+                )?;
+            }
+            continue;
+        }
+        let materialized = personal_record_to_backfill(&record);
+        upsert_claim_from_backfill_record(conn, &materialized, "compat_backfill")?;
+        changed += 1;
+    }
+    Ok(changed)
+}
+
+fn write_claim_version(
+    conn: &Connection,
+    claim_id: &str,
+    change: &Value,
+    created_at_ms: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO pp_claim_versions(id, claim_id, change_json, created_at_ms)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![
+            format!("claim_version_{}", Uuid::new_v4()),
+            claim_id,
+            serde_json::to_string(change)?,
+            created_at_ms
+        ],
+    )?;
+    Ok(())
+}
+
+fn replace_claim_evidence(
+    conn: &Connection,
+    claim_id: &str,
+    capture_id: Option<&str>,
+    evidence_text: Option<&str>,
+    metadata: &Value,
+    created_at_ms: i64,
+) -> Result<()> {
+    conn.execute(
+        "DELETE FROM pp_claim_evidence WHERE claim_id = ?1",
+        params![claim_id],
+    )?;
+    let Some(evidence_text) = evidence_text
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != REDACTED_TEXT)
+    else {
+        return Ok(());
+    };
+    let evidence_id = format!(
+        "claim_evidence_{}",
+        sha256_hex(&format!("{claim_id}:{evidence_text}"))
+    );
+    conn.execute(
+        "INSERT OR REPLACE INTO pp_claim_evidence(
+            id, claim_id, capture_id, evidence_text, metadata_json, created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            evidence_id,
+            claim_id,
+            capture_id,
+            evidence_text,
+            serde_json::to_string(metadata)?,
+            created_at_ms,
+        ],
+    )?;
+    Ok(())
+}
+
+fn write_claim_link(
+    conn: &Connection,
+    claim_id: &str,
+    linked_claim_id: Option<&str>,
+    link_type: &str,
+    metadata: &Value,
+    created_at_ms: i64,
+) -> Result<()> {
+    let link_id = format!(
+        "claim_link_{}",
+        sha256_hex(&format!(
+            "{}:{}:{}:{}",
+            claim_id,
+            linked_claim_id.unwrap_or_default(),
+            link_type,
+            metadata
+        ))
+    );
+    conn.execute(
+        "INSERT OR REPLACE INTO pp_claim_links(
+            id, claim_id, linked_claim_id, link_type, metadata_json, created_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            link_id,
+            claim_id,
+            linked_claim_id,
+            link_type,
+            serde_json::to_string(metadata)?,
+            created_at_ms,
+        ],
+    )?;
+    Ok(())
+}
+
+fn claim_is_forgotten(claim: &PersonalPreferenceClaim) -> bool {
+    claim
+        .metadata
+        .get("forgotten")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || claim
+            .metadata
+            .get("forgotten_at_ms")
+            .and_then(Value::as_i64)
+            .is_some()
+}
+
+fn record_is_forgotten(record: &PersonalPreferenceRecord) -> bool {
+    record
+        .metadata
+        .get("forgotten")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || record
+            .metadata
+            .get("forgotten_at_ms")
+            .and_then(Value::as_i64)
+            .is_some()
+}
+
+fn apply_feedback_to_claim(
+    claim: &PersonalPreferenceClaim,
+    event_type: &str,
+    _value: Option<&str>,
+) -> (f32, &'static str) {
+    match event_type {
+        FEEDBACK_EVENT_ACCEPT_OUTPUT | FEEDBACK_EVENT_CONFIRM_INFERENCE => (
+            (claim.confidence + 0.08).clamp(0.0, 1.0),
+            if event_type == FEEDBACK_EVENT_CONFIRM_INFERENCE {
+                TRUTH_STATUS_CONFIRMED
+            } else if claim.truth_status == TRUTH_STATUS_REJECTED {
+                TRUTH_STATUS_CANDIDATE
+            } else if claim.truth_status == TRUTH_STATUS_CANDIDATE {
+                TRUTH_STATUS_INFERRED
+            } else {
+                TRUTH_STATUS_CONFIRMED
+            },
+        ),
+        FEEDBACK_EVENT_REJECT_OUTPUT => (
+            (claim.confidence - 0.25).clamp(0.0, 1.0),
+            TRUTH_STATUS_REJECTED,
+        ),
+        FEEDBACK_EVENT_DOWNGRADE_INFERENCE => (
+            (claim.confidence - 0.18).clamp(0.0, 1.0),
+            TRUTH_STATUS_CANDIDATE,
+        ),
+        FEEDBACK_EVENT_CORRECT_OUTPUT
+        | FEEDBACK_EVENT_REWRITE_OUTPUT
+        | FEEDBACK_EVENT_OVERRIDE_PREFERENCE => (
+            (claim.confidence - 0.2).clamp(0.0, 1.0),
+            TRUTH_STATUS_SUPERSEDED,
+        ),
+        _ => (claim.confidence, TRUTH_STATUS_CANDIDATE),
+    }
+}
+
+fn create_override_claim_from_claim(
+    conn: &Connection,
+    claim: &PersonalPreferenceClaim,
+    category: Option<&str>,
+    attribute: Option<&str>,
+    override_value: &str,
+    notes: Option<&str>,
+    now: i64,
+) -> Result<PersonalPreferenceClaim> {
+    let id = format!("claim_{}", Uuid::new_v4());
+    let category = category
+        .map(normalize_category)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| claim.category.clone());
+    let attribute = attribute
+        .map(|value| normalize_optional_text(Some(value)))
+        .flatten()
+        .or_else(|| claim.attribute.clone());
+    let mut metadata = claim.metadata.as_object().cloned().unwrap_or_default();
+    metadata.insert("manual_override".to_string(), json!(true));
+    metadata.insert("notes".to_string(), json!(notes));
+    conn.execute(
+        "INSERT INTO pp_claims(
+            id, record_id, capture_id, category, subcategory, subject, attribute, value,
+            claim_origin, truth_status, stability_class, sensitivity, confidence, review_status,
+            evidence_summary, valid_from_ms, valid_to_ms, supersedes_claim_id,
+            contradicted_by_claim_id, created_at_ms, updated_at_ms, metadata_json
+         ) VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                   NULL, ?16, NULL, ?17, ?17, ?18)",
+        params![
+            id,
+            claim.capture_id,
+            category,
+            claim.subcategory,
+            claim.subject,
+            attribute,
+            normalize_text(override_value),
+            CLAIM_ORIGIN_MANUAL_REVIEW_ENTRY,
+            TRUTH_STATUS_CONFIRMED,
+            claim.stability_class,
+            claim.sensitivity,
+            0.98_f32,
+            REVIEW_STATUS_APPROVED,
+            notes.or(claim.evidence_summary.as_deref()),
+            Some(now),
+            claim.id,
+            now,
+            serde_json::to_string(&Value::Object(metadata.clone()))?,
+        ],
+    )?;
+    write_claim_version(
+        conn,
+        &id,
+        &json!({
+            "action": "override_create",
+            "supersedes_claim_id": claim.id,
+            "value": override_value,
+            "notes": notes,
+        }),
+        now,
+    )?;
+    replace_claim_evidence(
+        conn,
+        &id,
+        claim.capture_id.as_deref(),
+        notes.or(claim.evidence_summary.as_deref()),
+        &Value::Object(metadata.clone()),
+        now,
+    )?;
+    write_claim_link(
+        conn,
+        &id,
+        Some(&claim.id),
+        "supersedes_claim",
+        &json!({ "source": "override_feedback" }),
+        now,
+    )?;
+    let created =
+        load_claim_by_id(conn, &id)?.ok_or_else(|| anyhow!("override claim was not created"))?;
+    upsert_override_rule_from_claim(conn, &created, now)?;
+    Ok(created)
+}
+
+fn create_manual_feedback_claim(
+    conn: &Connection,
+    event_type: &str,
+    capture_id: Option<&str>,
+    category: Option<&str>,
+    attribute: Option<&str>,
+    new_value: &str,
+    notes: Option<&str>,
+    now: i64,
+) -> Result<PersonalPreferenceClaim> {
+    let id = format!("claim_{}", Uuid::new_v4());
+    let category = category
+        .map(normalize_category)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "other".to_string());
+    let attribute = attribute
+        .map(|value| normalize_optional_text(Some(value)))
+        .flatten();
+    let stability_class = if category == "other" {
+        STABILITY_CLASS_CURRENT
+    } else {
+        STABILITY_CLASS_STABLE
+    };
+    conn.execute(
+        "INSERT INTO pp_claims(
+            id, record_id, capture_id, category, subcategory, subject, attribute, value,
+            claim_origin, truth_status, stability_class, sensitivity, confidence, review_status,
+            evidence_summary, valid_from_ms, valid_to_ms, supersedes_claim_id,
+            contradicted_by_claim_id, created_at_ms, updated_at_ms, metadata_json
+         ) VALUES (?1, NULL, ?2, ?3, NULL, 'user', ?4, ?5, ?6, ?7, ?8, 'low', ?9, ?10, ?11,
+                   ?12, NULL, NULL, NULL, ?12, ?12, ?13)",
+        params![
+            id,
+            capture_id,
+            category,
+            attribute,
+            normalize_text(new_value),
+            CLAIM_ORIGIN_MANUAL_REVIEW_ENTRY,
+            TRUTH_STATUS_CONFIRMED,
+            stability_class,
+            0.96_f32,
+            REVIEW_STATUS_APPROVED,
+            notes,
+            now,
+            serde_json::to_string(&json!({
+                "manual_feedback": true,
+                "event_type": event_type,
+            }))?,
+        ],
+    )?;
+    write_claim_version(
+        conn,
+        &id,
+        &json!({
+            "action": "manual_feedback_claim",
+            "event_type": event_type,
+            "value": new_value,
+            "notes": notes,
+        }),
+        now,
+    )?;
+    let metadata = json!({
+        "manual_feedback": true,
+        "event_type": event_type,
+    });
+    replace_claim_evidence(conn, &id, capture_id, notes, &metadata, now)?;
+    let created = load_claim_by_id(conn, &id)?
+        .ok_or_else(|| anyhow!("manual feedback claim was not created"))?;
+    if event_type == FEEDBACK_EVENT_OVERRIDE_PREFERENCE {
+        upsert_override_rule_from_claim(conn, &created, now)?;
+    }
+    Ok(created)
+}
+
+fn section_for_claim(claim: &PersonalPreferenceClaim, record_type: &str, mode: &str) -> String {
+    if claim.category == "cross_project_bridge" || record_type == "bridge" {
+        return "relevant_cross_project_bridges".to_string();
+    }
+    if matches!(
+        claim.category.as_str(),
+        "communication_style" | "collaboration_style" | "learning_style" | "personality"
+    ) {
+        return "relevant_communication_style_expectations".to_string();
+    }
+    if matches!(
+        claim.category.as_str(),
+        "current_projects" | "product_goals" | "business_context"
+    ) || matches!(record_type, "project" | "goal")
+    {
+        return "active_project_and_strategic_context".to_string();
+    }
+    if matches!(
+        claim.category.as_str(),
+        "workflow_method" | "quality_bar" | "delivery_preference" | "decision_style"
+    ) || (mode == CLONE_MODE_REVIEW
+        && matches!(
+            claim.category.as_str(),
+            "coding_preference" | "architecture_preference"
+        ))
+    {
+        return "current_workflow_and_quality_expectations".to_string();
+    }
+    if matches!(claim.category.as_str(), "strengths" | "limitations") || record_type == "capability"
+    {
+        return "known_capabilities_and_history".to_string();
+    }
+    "stable_preferences".to_string()
+}
+
+fn render_claim_content(claim: &PersonalPreferenceClaim) -> String {
+    let mut head = format!("[{}]", claim.category);
+    if let Some(subcategory) = claim
+        .subcategory
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        head.push('/');
+        head.push_str(subcategory);
+    }
+    let attribute = claim
+        .attribute
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("notes");
+    format!("{head} {} {} {}", claim.subject, attribute, claim.value)
+}
+
+fn clone_mode_section_boost(section: &str, mode: &str) -> f32 {
+    match (mode, section) {
+        (CLONE_MODE_PROJECT_BUILD, "active_project_and_strategic_context")
+        | (CLONE_MODE_PROJECT_BUILD, "current_workflow_and_quality_expectations")
+        | (CLONE_MODE_REVIEW, "current_workflow_and_quality_expectations")
+        | (CLONE_MODE_REVIEW, "relevant_communication_style_expectations")
+        | (CLONE_MODE_RELEASE, "active_project_and_strategic_context")
+        | (CLONE_MODE_RELEASE, "current_workflow_and_quality_expectations")
+        | (CLONE_MODE_SIMULATE_USER_PREFERENCE, "relevant_communication_style_expectations")
+        | (CLONE_MODE_SIMULATE_USER_PREFERENCE, "stable_preferences") => 1.25,
+        _ => 1.0,
+    }
+}
+
+fn clone_term_match_score(text: &str, query: &str) -> f32 {
+    let haystack = text.to_ascii_lowercase();
+    query
+        .split_whitespace()
+        .map(|term| term.trim().to_ascii_lowercase())
+        .filter(|term| !term.is_empty())
+        .map(|term| if haystack.contains(&term) { 0.5 } else { 0.0 })
+        .sum()
+}
+
+fn load_clone_context_candidates(
+    conn: &Connection,
+    query: &str,
+    mode: &str,
+    allow_sensitive: bool,
+) -> Result<Vec<CloneContextCandidate>> {
+    let policies = load_category_policy_map(conn)?;
+    let mut claims = load_all_claims(conn)?;
+    claims.retain(|claim| {
+        !claim_is_forgotten(claim)
+            && !matches!(
+                claim.truth_status.as_str(),
+                TRUTH_STATUS_REJECTED | TRUTH_STATUS_EXPIRED
+            )
+    });
+    let mut candidates = Vec::new();
+    for claim in claims {
+        let record_type = claim
+            .metadata
+            .get("record_type")
+            .and_then(Value::as_str)
+            .unwrap_or("preference")
+            .to_string();
+        let policy = policy_for_category_fields(
+            &policies,
+            &claim.category,
+            &record_type,
+            &claim.sensitivity,
+        );
+        let allowed = allow_sensitive
+            || (policy.context_allowed_default && !is_sensitive_level(&claim.sensitivity));
+        let section = section_for_claim(&claim, &record_type, mode);
+        let content = render_claim_content(&claim);
+        let mut score = claim.confidence * 10.0
+            + truth_status_rank(&claim.truth_status) as f32 * 2.0
+            + stability_rank(&claim.stability_class) as f32
+            + clone_term_match_score(&content, query);
+        score *= clone_mode_section_boost(&section, mode);
+        if claim.claim_origin == CLAIM_ORIGIN_EXPLICIT_USER_CORRECTION {
+            score += 4.0;
+        }
+        candidates.push(CloneContextCandidate {
+            claim,
+            section,
+            content,
+            record_type,
+            source_repo_root: None,
+            allowed,
+            reason: format!("{mode} candidate"),
+            score,
+        });
+    }
+    Ok(candidates)
+}
+
+fn load_claim_bridge_candidates(
+    conn: &Connection,
+    current_repo_root: &str,
+    allow_sensitive: bool,
+    policies: &BTreeMap<String, CategoryPolicy>,
+) -> Result<Vec<CloneContextCandidate>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, record_id, capture_id, category, subcategory, subject, attribute, value,
+                claim_origin, truth_status, stability_class, sensitivity, confidence,
+                review_status, evidence_summary, valid_from_ms, valid_to_ms,
+                supersedes_claim_id, contradicted_by_claim_id, created_at_ms, updated_at_ms,
+                metadata_json
+         FROM pp_claims
+         WHERE category = 'cross_project_bridge'
+            OR EXISTS (
+                SELECT 1
+                FROM pp_cross_project_bridges b
+                WHERE b.record_id = pp_claims.record_id
+                  AND b.source_repo_root != ?1
+            )
+         ORDER BY updated_at_ms DESC, confidence DESC",
+    )?;
+    let mut rows = stmt.query(params![current_repo_root])?;
+    let mut items = Vec::new();
+    let mut seen = HashSet::new();
+    while let Some(row) = rows.next()? {
+        let claim = row_to_claim(row)?;
+        if claim_is_forgotten(&claim)
+            || claim.review_status == REVIEW_STATUS_REJECTED
+            || matches!(
+                claim.truth_status.as_str(),
+                TRUTH_STATUS_REJECTED | TRUTH_STATUS_EXPIRED
+            )
+        {
+            continue;
+        }
+        let record_type = claim
+            .metadata
+            .get("record_type")
+            .and_then(Value::as_str)
+            .unwrap_or("bridge")
+            .to_string();
+        let policy =
+            policy_for_category_fields(policies, &claim.category, &record_type, &claim.sensitivity);
+        let allowed = allow_sensitive
+            || (policy.context_allowed_default && !is_sensitive_level(&claim.sensitivity));
+        let source_repo_root = claim
+            .metadata
+            .get("repo_root")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        if source_repo_root.as_deref() == Some(current_repo_root) {
+            continue;
+        }
+        let repo_label = source_repo_root
+            .as_deref()
+            .and_then(|value| Path::new(value).file_name().and_then(|part| part.to_str()))
+            .unwrap_or("other project");
+        let content = format!("From {repo_label}: {}", render_claim_content(&claim));
+        if !seen.insert(content.clone()) {
+            continue;
+        }
+        items.push(CloneContextCandidate {
+            claim,
+            section: "relevant_cross_project_bridges".to_string(),
+            content,
+            record_type,
+            source_repo_root,
+            allowed,
+            reason: "cross_project_bridge".to_string(),
+            score: 8.0,
+        });
+    }
+    Ok(items)
+}
+
+fn render_clone_context_summary(items: &[PersonalPreferencesContextItem]) -> String {
+    if items.is_empty() {
+        return "No relevant personal-preferences clone context was selected.".to_string();
+    }
+    let mut by_section: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for item in items {
+        by_section
+            .entry(item.section.as_str())
+            .or_default()
+            .push(item.content.as_str());
+    }
+    by_section
+        .into_iter()
+        .map(|(section, values)| {
+            let preview = values.into_iter().take(2).collect::<Vec<_>>().join(" | ");
+            format!("{section}: {preview}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn upsert_clone_profile(
+    conn: &Connection,
+    mode: &str,
+    summary: &str,
+    updated_at_ms: i64,
+) -> Result<()> {
+    let id = conn
+        .query_row(
+            "SELECT id FROM pp_clone_profiles WHERE mode = ?1",
+            params![mode],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .unwrap_or_else(|| format!("clone_profile_{}", Uuid::new_v4()));
+    conn.execute(
+        "INSERT INTO pp_clone_profiles(id, mode, summary, updated_at_ms, metadata_json)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(mode) DO UPDATE SET
+            summary = excluded.summary,
+            updated_at_ms = excluded.updated_at_ms,
+            metadata_json = excluded.metadata_json",
+        params![
+            id,
+            mode,
+            summary,
+            updated_at_ms,
+            serde_json::to_string(&json!({ "summary_length": summary.len() }))?
+        ],
+    )?;
+    Ok(())
+}
+
+fn rebuild_identity_snapshots_tx(
+    conn: &Connection,
+    capture_id: Option<&str>,
+    reason: &str,
+) -> Result<Option<String>> {
+    backfill_claims_from_records(conn, capture_id)?;
+    let mut claims = load_all_claims(conn)?;
+    claims.retain(|claim| {
+        !claim_is_forgotten(claim)
+            && claim.review_status == REVIEW_STATUS_APPROVED
+            && !matches!(
+                claim.truth_status.as_str(),
+                TRUTH_STATUS_REJECTED | TRUTH_STATUS_SUPERSEDED | TRUTH_STATUS_EXPIRED
+            )
+    });
+    if claims.is_empty() {
+        return Ok(None);
+    }
+    claims.sort_by(|left, right| {
+        right
+            .confidence
+            .partial_cmp(&left.confidence)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| right.updated_at_ms.cmp(&left.updated_at_ms))
+    });
+    let stable_summary = claims
+        .iter()
+        .filter(|claim| {
+            matches!(
+                claim.stability_class.as_str(),
+                STABILITY_CLASS_FOUNDATIONAL | STABILITY_CLASS_STABLE
+            )
+        })
+        .take(4)
+        .map(render_claim_snapshot_line)
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let changed_summary = claims
+        .iter()
+        .filter(|claim| capture_id.is_none() || claim.capture_id.as_deref() == capture_id)
+        .take(4)
+        .map(render_claim_snapshot_line)
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let active_projects_summary = claims
+        .iter()
+        .filter(|claim| {
+            matches!(
+                claim.category.as_str(),
+                "current_projects" | "product_goals" | "business_context"
+            )
+        })
+        .take(4)
+        .map(render_claim_snapshot_line)
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let summary = [
+        stable_summary.as_str(),
+        changed_summary.as_str(),
+        active_projects_summary.as_str(),
+    ]
+    .into_iter()
+    .filter(|value| !value.trim().is_empty())
+    .take(3)
+    .collect::<Vec<_>>()
+    .join("\n");
+    let snapshot_id = format!("snapshot_{}", Uuid::new_v4());
+    let created_at_ms = now_ms();
+    conn.execute(
+        "INSERT INTO pp_identity_snapshots(
+            id, snapshot_kind, summary, stable_summary, changed_summary,
+            active_projects_summary, created_at_ms, metadata_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            snapshot_id,
+            "identity",
+            summary,
+            empty_to_null(&stable_summary),
+            empty_to_null(&changed_summary),
+            empty_to_null(&active_projects_summary),
+            created_at_ms,
+            serde_json::to_string(&json!({
+                "reason": reason,
+                "capture_id": capture_id,
+                "claim_count": claims.len(),
+            }))?,
+        ],
+    )?;
+    rebuild_snapshot_signal_tables(conn, &snapshot_id, &claims, created_at_ms)?;
+    Ok(Some(snapshot_id))
+}
+
+fn rebuild_snapshot_signal_tables(
+    conn: &Connection,
+    snapshot_id: &str,
+    claims: &[PersonalPreferenceClaim],
+    created_at_ms: i64,
+) -> Result<()> {
+    for claim in claims {
+        if matches!(
+            claim.category.as_str(),
+            "workflow_method" | "decision_style" | "quality_bar" | "delivery_preference"
+        ) {
+            conn.execute(
+                "INSERT INTO pp_decision_patterns(
+                    id, snapshot_id, pattern_key, summary, confidence, created_at_ms, updated_at_ms,
+                    metadata_json
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7)",
+                params![
+                    format!("decision_pattern_{}", Uuid::new_v4()),
+                    snapshot_id,
+                    slugify_identifier(&format!(
+                        "{}-{}",
+                        claim.category,
+                        claim.attribute.as_deref().unwrap_or("notes")
+                    )),
+                    render_claim_snapshot_line(claim),
+                    claim.confidence,
+                    created_at_ms,
+                    serde_json::to_string(&json!({ "claim_id": claim.id }))?,
+                ],
+            )?;
+        }
+        if matches!(
+            claim.category.as_str(),
+            "communication_style" | "collaboration_style" | "learning_style" | "personality"
+        ) {
+            conn.execute(
+                "INSERT INTO pp_style_signals(
+                    id, snapshot_id, signal_key, summary, confidence, created_at_ms, updated_at_ms,
+                    metadata_json
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7)",
+                params![
+                    format!("style_signal_{}", Uuid::new_v4()),
+                    snapshot_id,
+                    slugify_identifier(&format!(
+                        "{}-{}",
+                        claim.category,
+                        claim.attribute.as_deref().unwrap_or("notes")
+                    )),
+                    render_claim_snapshot_line(claim),
+                    claim.confidence,
+                    created_at_ms,
+                    serde_json::to_string(&json!({ "claim_id": claim.id }))?,
+                ],
+            )?;
+        }
+        if let Some(project_name) = project_name_for_claim(claim) {
+            conn.execute(
+                "INSERT INTO pp_project_timelines(
+                    id, claim_id, snapshot_id, project_name, repo_root, lifecycle_state,
+                    valid_from_ms, valid_to_ms, created_at_ms, updated_at_ms, metadata_json
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10)",
+                params![
+                    format!(
+                        "project_timeline_{}_{}",
+                        snapshot_id,
+                        slugify_identifier(&claim.id)
+                    ),
+                    claim.id,
+                    snapshot_id,
+                    project_name,
+                    claim_repo_root(claim),
+                    project_lifecycle_state_for_claim(claim),
+                    claim.valid_from_ms,
+                    claim.valid_to_ms,
+                    created_at_ms,
+                    serde_json::to_string(&json!({
+                        "claim_id": claim.id,
+                        "category": claim.category,
+                    }))?,
+                ],
+            )?;
+        }
+        if goal_graph_relevant(claim) {
+            conn.execute(
+                "INSERT INTO pp_goal_graph(
+                    id, claim_id, snapshot_id, goal_key, summary, status, project_name,
+                    created_at_ms, updated_at_ms, metadata_json
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9)",
+                params![
+                    format!(
+                        "goal_graph_{}_{}",
+                        snapshot_id,
+                        slugify_identifier(&claim.id)
+                    ),
+                    claim.id,
+                    snapshot_id,
+                    goal_key_for_claim(claim),
+                    render_claim_snapshot_line(claim),
+                    goal_status_for_claim(claim),
+                    project_name_for_claim(claim),
+                    created_at_ms,
+                    serde_json::to_string(&json!({
+                        "claim_id": claim.id,
+                        "category": claim.category,
+                    }))?,
+                ],
+            )?;
+        }
+        if is_override_rule_claim(claim) {
+            upsert_override_rule_from_claim(conn, claim, created_at_ms)?;
+        }
+    }
+    Ok(())
+}
+
+fn claim_repo_root(claim: &PersonalPreferenceClaim) -> Option<String> {
+    claim
+        .metadata
+        .get("repo_root")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn project_name_for_claim(claim: &PersonalPreferenceClaim) -> Option<String> {
+    claim
+        .metadata
+        .get("project_name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            claim_repo_root(claim)
+                .as_deref()
+                .and_then(|value| Path::new(value).file_name().and_then(|part| part.to_str()))
+                .map(ToOwned::to_owned)
+        })
+        .or_else(|| {
+            if matches!(
+                claim.category.as_str(),
+                "current_projects" | "project_history" | "business_context"
+            ) || claim.metadata.get("record_type").and_then(Value::as_str) == Some("project")
+            {
+                Some(truncate_chars(&claim.value, 96))
+            } else {
+                None
+            }
+        })
+}
+
+fn project_lifecycle_state_for_claim(claim: &PersonalPreferenceClaim) -> String {
+    claim
+        .metadata
+        .get("lifecycle_state")
+        .and_then(Value::as_str)
+        .map(normalize_text)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| match claim.category.as_str() {
+            "current_projects" | "business_context" => "active".to_string(),
+            "project_history" => "historical".to_string(),
+            "cross_project_bridge" => "related".to_string(),
+            _ => "observed".to_string(),
+        })
+}
+
+fn goal_graph_relevant(claim: &PersonalPreferenceClaim) -> bool {
+    matches!(
+        claim.category.as_str(),
+        "product_goals" | "business_context" | "current_projects"
+    ) || claim.metadata.get("record_type").and_then(Value::as_str) == Some("goal")
+}
+
+fn goal_key_for_claim(claim: &PersonalPreferenceClaim) -> String {
+    claim
+        .metadata
+        .get("goal_key")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| {
+            slugify_identifier(&format!(
+                "{}-{}",
+                claim.category,
+                truncate_chars(&claim.value, 48)
+            ))
+        })
+}
+
+fn goal_status_for_claim(claim: &PersonalPreferenceClaim) -> String {
+    claim
+        .metadata
+        .get("goal_status")
+        .and_then(Value::as_str)
+        .map(normalize_text)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| match claim.category.as_str() {
+            "product_goals" | "current_projects" => "active".to_string(),
+            "business_context" => "context".to_string(),
+            _ => "observed".to_string(),
+        })
+}
+
+fn is_override_rule_claim(claim: &PersonalPreferenceClaim) -> bool {
+    claim
+        .metadata
+        .get("manual_override")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || claim
+            .metadata
+            .get("manual_feedback")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+}
+
+fn upsert_override_rule_from_claim(
+    conn: &Connection,
+    claim: &PersonalPreferenceClaim,
+    updated_at_ms: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO pp_override_rules(
+            id, claim_id, category, attribute, subject, override_value, reason,
+            created_at_ms, updated_at_ms, metadata_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9)",
+        params![
+            format!("override_rule_{}", claim.id),
+            claim.id,
+            claim.category,
+            claim.attribute,
+            claim.subject,
+            claim.value,
+            claim
+                .metadata
+                .get("notes")
+                .and_then(Value::as_str)
+                .or(claim.evidence_summary.as_deref()),
+            updated_at_ms,
+            serde_json::to_string(&json!({
+                "claim_id": claim.id,
+                "claim_origin": claim.claim_origin,
+            }))?,
+        ],
+    )?;
+    Ok(())
+}
+
+fn render_claim_snapshot_line(claim: &PersonalPreferenceClaim) -> String {
+    let attribute = claim
+        .attribute
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("notes");
+    format!(
+        "[{}] {} {} {}",
+        claim.category, claim.subject, attribute, claim.value
+    )
+}
+
+fn empty_to_null(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
     }
 }
 
@@ -5206,7 +8054,7 @@ mod tests {
                 current_repo_root: Some("/tmp/repo-one".to_string()),
             },
         )?;
-        assert_eq!(context.trace.available, 2);
+        assert_eq!(context.trace.available, 1);
         assert_eq!(context.trace.selected, 1);
         assert_eq!(context.items[0].category, "coding_preference");
         assert_eq!(context.items[0].section, "stable_preferences");
@@ -5283,6 +8131,150 @@ mod tests {
         assert!(categories
             .iter()
             .any(|category| category.category == "tech_stack"));
+        Ok(())
+    }
+
+    #[test]
+    fn claims_feedback_snapshots_and_clone_evaluation_work_together() -> Result<()> {
+        let temp = TempDir::new()?;
+        let store = PersonalPreferencesStore::new(temp.path())?;
+        let capture = store.capture_conversation(sample_capture_request(), true, true)?;
+        store.complete_capture(
+            &capture.id,
+            None,
+            &[
+                PersonalPreferenceDigestRecord {
+                    record_type: "preference".to_string(),
+                    category: "tech stack".to_string(),
+                    subcategory: None,
+                    subject: "user".to_string(),
+                    attribute: Some("prefers".to_string()),
+                    value: "Rust".to_string(),
+                    confidence: Some(0.95),
+                    sensitivity: Some("low".to_string()),
+                    evidence: Some("I prefer Rust".to_string()),
+                    metadata: Value::Null,
+                },
+                PersonalPreferenceDigestRecord {
+                    record_type: "workflow".to_string(),
+                    category: "workflow".to_string(),
+                    subcategory: None,
+                    subject: "user".to_string(),
+                    attribute: Some("expects".to_string()),
+                    value: "comprehensive tests".to_string(),
+                    confidence: Some(0.92),
+                    sensitivity: Some("low".to_string()),
+                    evidence: Some("comprehensive tests".to_string()),
+                    metadata: Value::Null,
+                },
+                PersonalPreferenceDigestRecord {
+                    record_type: "goal".to_string(),
+                    category: "product_goals".to_string(),
+                    subcategory: None,
+                    subject: "user".to_string(),
+                    attribute: Some("prioritizes".to_string()),
+                    value: "local-first mind clone fidelity".to_string(),
+                    confidence: Some(0.9),
+                    sensitivity: Some("low".to_string()),
+                    evidence: Some("mind clone fidelity".to_string()),
+                    metadata: json!({ "goal_status": "active", "project_name": "docdex" }),
+                },
+            ],
+        )?;
+
+        let claims = store.list_claims(PersonalPreferencesClaimsQuery {
+            query: Some("Rust".to_string()),
+            truth_status: None,
+            claim_origin: None,
+            include_sensitive: true,
+            limit: Some(10),
+            offset: Some(0),
+        })?;
+        assert_eq!(claims.total, 3);
+        let claim_id = claims.items[0].id.clone();
+
+        let reviewed = store.review_claim(&claim_id, "approved", Some("approved in unit test"))?;
+        assert_eq!(reviewed.review_status, REVIEW_STATUS_APPROVED);
+
+        let feedback = store.add_feedback_event(
+            "override",
+            Some(&claim_id),
+            Some(&capture.id),
+            Some("tech_stack"),
+            Some("prefers"),
+            Some("Rust and Go"),
+            Some("explicit correction"),
+            Value::Null,
+        )?;
+        assert_eq!(feedback.event_type, FEEDBACK_EVENT_OVERRIDE_PREFERENCE);
+        assert!(feedback.created_claim_id.is_some());
+        assert!(feedback.created_snapshot_id.is_some());
+
+        let snapshots = store.list_snapshots(10, 0)?;
+        assert!(!snapshots.items.is_empty());
+
+        let pack = store.build_clone_context_pack(
+            "Rust local-first tests",
+            PersonalPreferencesCloneOptions {
+                mode: Some(CLONE_MODE_PROJECT_BUILD.to_string()),
+                allow_sensitive: false,
+                current_repo_root: Some("/tmp/repo-one".to_string()),
+                max_records: Some(8),
+                budget_tokens: Some(256),
+            },
+        )?;
+        assert!(!pack.items.is_empty());
+        assert!(!pack.trace.is_empty());
+
+        let explanation = store.explain_clone_context(
+            "Rust local-first tests",
+            PersonalPreferencesCloneOptions {
+                mode: Some(CLONE_MODE_PROJECT_BUILD.to_string()),
+                allow_sensitive: false,
+                current_repo_root: Some("/tmp/repo-one".to_string()),
+                max_records: Some(8),
+                budget_tokens: Some(256),
+            },
+        )?;
+        assert!(!explanation.included_claims.is_empty());
+        assert!(!explanation.pack.trace.is_empty());
+
+        let evaluation = store.evaluate_clone_context(
+            "Rust local-first tests",
+            PersonalPreferencesCloneOptions {
+                mode: Some(CLONE_MODE_PROJECT_BUILD.to_string()),
+                allow_sensitive: false,
+                current_repo_root: Some("/tmp/repo-one".to_string()),
+                max_records: Some(8),
+                budget_tokens: Some(256),
+            },
+        )?;
+        assert!(evaluation.overall_score >= 0.0);
+        assert!(evaluation.explicit_selected + evaluation.inferred_selected > 0);
+        let forgotten = store.forget_claim(&claim_id, Some("forget in unit test"))?;
+        assert!(forgotten.forgotten);
+        let forgotten_claim = store.read_claim(&claim_id)?.expect("forgotten claim");
+        assert!(claim_is_forgotten(&forgotten_claim));
+        let status = store.status()?;
+        assert!(status.claim_evidence_total >= 1);
+        assert!(status.claim_links_total >= 2);
+        assert!(status.project_timelines_total >= 1);
+        assert!(status.goal_graph_total >= 1);
+        assert!(status.override_rules_total >= 1);
+        assert!(status.redaction_spans_total >= 1);
+        assert!(status.retention_policies_total >= 3);
+        let claims_after_forget = store.list_claims(PersonalPreferencesClaimsQuery {
+            query: Some("Rust".to_string()),
+            truth_status: None,
+            claim_origin: None,
+            include_sensitive: true,
+            limit: Some(20),
+            offset: Some(0),
+        })?;
+        assert!(claims_after_forget
+            .items
+            .iter()
+            .all(|claim| claim.id != claim_id));
         Ok(())
     }
 

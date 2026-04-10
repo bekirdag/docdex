@@ -571,3 +571,224 @@ fn personal_preferences_scan_handler_imports_supported_client_transcripts(
     server.shutdown();
     Ok(())
 }
+
+#[test]
+fn personal_preferences_http_mind_clone_surfaces_work() -> Result<(), Box<dyn Error>> {
+    let repo = TempDir::new()?;
+    let state_root = TempDir::new()?;
+    let home_dir = TempDir::new()?;
+    write_repo(repo.path())?;
+    let global_state_dir = home_dir.path().join(".docdex").join("state");
+    write_config(home_dir.path(), &global_state_dir)?;
+    seed_processed_personal_preferences(home_dir.path())?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let mut server = TestServerHarness::spawn_basic(
+        state_root.path(),
+        home_dir.path(),
+        repo.path(),
+        host,
+        port,
+        false,
+    )?;
+    wait_for_health(host, port)?;
+
+    let client = Client::builder().timeout(Duration::from_secs(5)).build()?;
+    let base_url = format!("http://{host}:{port}");
+
+    let claims: Value = client
+        .get(format!(
+            "{base_url}/v1/personal-preferences/claims?limit=10&include_sensitive=true"
+        ))
+        .send()?
+        .json()?;
+    assert!(claims.get("total").and_then(Value::as_u64).unwrap_or(0) >= 2);
+    let claim_id = claims
+        .get("items")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(|item| item.get("id"))
+        .and_then(Value::as_str)
+        .ok_or("missing claim id")?
+        .to_string();
+
+    let claim: Value = client
+        .get(format!(
+            "{base_url}/v1/personal-preferences/claims/{claim_id}"
+        ))
+        .send()?
+        .json()?;
+    assert_eq!(
+        claim.get("id").and_then(Value::as_str),
+        Some(claim_id.as_str())
+    );
+
+    let reviewed: Value = client
+        .post(format!(
+            "{base_url}/v1/personal-preferences/claims/{claim_id}/review"
+        ))
+        .json(&json!({
+            "verdict": "approved",
+            "notes": "approved in http test"
+        }))
+        .send()?
+        .json()?;
+    assert_eq!(
+        reviewed.get("review_status").and_then(Value::as_str),
+        Some("approved")
+    );
+
+    let overridden: Value = client
+        .post(format!(
+            "{base_url}/v1/personal-preferences/claims/{claim_id}/override"
+        ))
+        .json(&json!({
+            "value": "Rust and Go",
+            "notes": "explicit override in http test"
+        }))
+        .send()?
+        .json()?;
+    assert_eq!(
+        overridden.get("event_type").and_then(Value::as_str),
+        Some("override_preference")
+    );
+    assert!(overridden
+        .get("created_claim_id")
+        .and_then(Value::as_str)
+        .is_some());
+
+    let forgotten: Value = client
+        .post(format!(
+            "{base_url}/v1/personal-preferences/claims/{claim_id}/forget"
+        ))
+        .json(&json!({
+            "notes": "forget the superseded claim in http test"
+        }))
+        .send()?
+        .json()?;
+    assert_eq!(
+        forgotten.get("forgotten").and_then(Value::as_bool),
+        Some(true)
+    );
+
+    let feedback: Value = client
+        .post(format!("{base_url}/v1/personal-preferences/feedback"))
+        .json(&json!({
+            "event_type": "override",
+            "category": "workflow",
+            "attribute": "prefers",
+            "value": "Always verify tests before commit",
+            "notes": "manual workflow correction"
+        }))
+        .send()?
+        .json()?;
+    assert_eq!(
+        feedback.get("event_type").and_then(Value::as_str),
+        Some("override_preference")
+    );
+    assert!(feedback
+        .get("created_claim_id")
+        .and_then(Value::as_str)
+        .is_some());
+
+    let snapshots: Value = client
+        .get(format!(
+            "{base_url}/v1/personal-preferences/snapshots?limit=10&offset=0"
+        ))
+        .send()?
+        .json()?;
+    assert!(snapshots.get("total").and_then(Value::as_u64).unwrap_or(0) >= 1);
+    let snapshot_id = snapshots
+        .get("items")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(|item| item.get("id"))
+        .and_then(Value::as_str)
+        .ok_or("missing snapshot id")?
+        .to_string();
+
+    let snapshot: Value = client
+        .get(format!(
+            "{base_url}/v1/personal-preferences/snapshots/{snapshot_id}"
+        ))
+        .send()?
+        .json()?;
+    assert_eq!(
+        snapshot.get("id").and_then(Value::as_str),
+        Some(snapshot_id.as_str())
+    );
+
+    let rebuilt: Value = client
+        .post(format!(
+            "{base_url}/v1/personal-preferences/snapshots/rebuild"
+        ))
+        .send()?
+        .json()?;
+    assert_eq!(rebuilt.get("created").and_then(Value::as_u64), Some(1));
+
+    let clone_context: Value = client
+        .post(format!("{base_url}/v1/personal-preferences/clone/context"))
+        .json(&json!({
+            "query": "local-first Rust tests",
+            "mode": "project_build",
+            "current_repo_root": "/tmp/repo-one",
+            "max_records": 8,
+            "budget_tokens": 256
+        }))
+        .send()?
+        .json()?;
+    assert_eq!(
+        clone_context.get("mode").and_then(Value::as_str),
+        Some("project_build")
+    );
+    assert!(clone_context
+        .get("items")
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
+
+    let clone_explain: Value = client
+        .post(format!("{base_url}/v1/personal-preferences/clone/explain"))
+        .json(&json!({
+            "query": "local-first Rust tests",
+            "mode": "project_build",
+            "current_repo_root": "/tmp/repo-one"
+        }))
+        .send()?
+        .json()?;
+    assert!(clone_explain.get("pack").is_some());
+    assert!(clone_explain
+        .get("included_claims")
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
+    assert!(clone_explain
+        .get("pack")
+        .and_then(|pack| pack.get("trace"))
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
+
+    let clone_eval: Value = client
+        .post(format!("{base_url}/v1/personal-preferences/clone/evaluate"))
+        .json(&json!({
+            "query": "local-first Rust tests",
+            "mode": "project_build",
+            "current_repo_root": "/tmp/repo-one"
+        }))
+        .send()?
+        .json()?;
+    assert!(
+        clone_eval
+            .get("overall_score")
+            .and_then(Value::as_f64)
+            .unwrap_or(-1.0)
+            >= 0.0
+    );
+
+    server.shutdown();
+    Ok(())
+}

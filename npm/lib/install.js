@@ -219,6 +219,12 @@ function getVersion() {
   return version;
 }
 
+function normalizeVersion(value) {
+  return String(value || "")
+    .trim()
+    .replace(/^v/i, "");
+}
+
 function requestOptions() {
   const headers = { "User-Agent": USER_AGENT };
   const token = process.env.DOCDEX_GITHUB_TOKEN || process.env.GITHUB_TOKEN;
@@ -665,11 +671,7 @@ function shouldPreferLocalInstall({ env, localBinaryPath, pathModule, localRepoR
   if (parseEnvBool(env?.[LOCAL_FALLBACK_ENV]) === false) return false;
   if (env?.[LOCAL_BINARY_ENV]) return true;
   if (env?.npm_lifecycle_event !== "postinstall") return false;
-  if (isLocalInstallRequest({ env, pathModule })) return true;
-  if (!env?.INIT_CWD || !localRepoRoot) return false;
-  const initCwd = pathModule.resolve(env.INIT_CWD);
-  const repoRoot = pathModule.resolve(localRepoRoot);
-  return initCwd === repoRoot || initCwd.startsWith(`${repoRoot}${pathModule.sep}`);
+  return isLocalInstallRequest({ env, pathModule });
 }
 
 function resolveLocalBinaryCandidate({
@@ -746,6 +748,100 @@ async function installFromLocalBinary({
   return { binaryPath: destPath, outcome: "local", outcomeCode: "local" };
 }
 
+function parseBinaryVersionOutput(output) {
+  const text = String(output || "").trim();
+  if (!text) return null;
+  const taggedMatch = text.match(/\bdocdexd\s+v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z._-]+)?)\b/i);
+  if (taggedMatch?.[1]) return normalizeVersion(taggedMatch[1]);
+  const genericMatch = text.match(/\bv?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z._-]+)?)\b/);
+  if (genericMatch?.[1]) return normalizeVersion(genericMatch[1]);
+  return null;
+}
+
+function probeBinaryVersion({
+  binaryPath,
+  spawnSyncFn = spawnSync
+}) {
+  if (!binaryPath) {
+    return { version: null, raw: "", error: "missing_binary" };
+  }
+  const result = spawnSyncFn(binaryPath, ["--version"], {
+    encoding: "utf8"
+  });
+  const raw = [result?.stdout, result?.stderr].filter(Boolean).join("\n").trim();
+  if (result?.error) {
+    return {
+      version: null,
+      raw,
+      error: result.error?.message || String(result.error)
+    };
+  }
+  if (typeof result?.status === "number" && result.status !== 0) {
+    return {
+      version: null,
+      raw,
+      error: raw || `exit_${result.status}`
+    };
+  }
+  const version = parseBinaryVersionOutput(raw);
+  if (!version) {
+    return { version: null, raw, error: "version_unparseable" };
+  }
+  return { version, raw, error: null };
+}
+
+function validateLocalBinaryVersion({
+  binaryPath,
+  expectedVersion,
+  spawnSyncFn = spawnSync
+}) {
+  const probed = probeBinaryVersion({ binaryPath, spawnSyncFn });
+  if (!probed.version) {
+    return {
+      ok: false,
+      reason: probed.error || "version_probe_failed",
+      expectedVersion,
+      detectedVersion: null,
+      raw: probed.raw || ""
+    };
+  }
+  if (normalizeVersion(probed.version) !== normalizeVersion(expectedVersion)) {
+    return {
+      ok: false,
+      reason: "version_mismatch",
+      expectedVersion,
+      detectedVersion: probed.version,
+      raw: probed.raw || ""
+    };
+  }
+  return {
+    ok: true,
+    reason: "matched",
+    expectedVersion,
+    detectedVersion: probed.version,
+    raw: probed.raw || ""
+  };
+}
+
+function buildLocalBinaryVersionError({ binaryPath, validation, explicitEnvOverride = false } = {}) {
+  const expected = validation?.expectedVersion || "unknown";
+  const detected = validation?.detectedVersion || "unknown";
+  const sourceName = explicitEnvOverride ? "DOCDEX_LOCAL_BINARY" : "local Docdex binary";
+  const probeHint = validation?.reason === "version_mismatch"
+    ? `expected ${expected} but found ${detected}`
+    : `version probe failed (${validation?.reason || "unknown"})`;
+  return new InstallerConfigError(
+    `${sourceName} is stale or invalid: ${probeHint}`,
+    {
+      expectedVersion: expected,
+      detectedVersion: validation?.detectedVersion || null,
+      binaryPath: binaryPath || null,
+      explicitEnvOverride,
+      probeOutput: validation?.raw || null
+    }
+  );
+}
+
 async function maybeInstallLocalFallback({
   err,
   env,
@@ -761,7 +857,8 @@ async function maybeInstallLocalFallback({
   writeJsonFileAtomicFn,
   logger,
   localRepoRoot,
-  localBinaryPath
+  localBinaryPath,
+  spawnSyncFn = spawnSync
 }) {
   if (!err || err.code !== "DOCDEX_CHECKSUM_UNUSABLE") return null;
   const allowFallback = parseEnvBool(env[LOCAL_FALLBACK_ENV]);
@@ -777,6 +874,18 @@ async function maybeInstallLocalFallback({
       repoRoot: localRepoRoot
     });
   if (!candidate) return null;
+
+  const validation = validateLocalBinaryVersion({
+    binaryPath: candidate,
+    expectedVersion: version,
+    spawnSyncFn
+  });
+  if (!validation.ok) {
+    logger?.warn?.(
+      `[docdex] local fallback skipped for ${candidate}: expected ${version}, detected ${validation.detectedVersion || "unknown"} (${validation.reason}).`
+    );
+    return null;
+  }
 
   return installFromLocalBinary({
     fsModule,
@@ -1780,6 +1889,7 @@ async function runInstaller(options) {
   const artifactNameFn = opts.artifactNameFn || artifactName;
   const assetPatternForPlatformKeyFn = opts.assetPatternForPlatformKeyFn || assetPatternForPlatformKey;
   const sha256FileFn = opts.sha256FileFn || sha256File;
+  const spawnSyncFn = opts.spawnSyncFn || spawnSync;
   const writeJsonFileAtomicFn = opts.writeJsonFileAtomicFn || writeJsonFileAtomic;
   const restartFn = opts.restartFn;
   const localRepoRoot =
@@ -1853,6 +1963,18 @@ async function runInstaller(options) {
 
   const forceLocalBinary = Boolean(env?.[LOCAL_BINARY_ENV]);
   if (forceLocalBinary && localBinaryPath) {
+    const validation = validateLocalBinaryVersion({
+      binaryPath: localBinaryPath,
+      expectedVersion: version,
+      spawnSyncFn
+    });
+    if (!validation.ok) {
+      throw buildLocalBinaryVersionError({
+        binaryPath: localBinaryPath,
+        validation,
+        explicitEnvOverride: true
+      });
+    }
     const localInstall = await installFromLocalBinary({
       fsModule,
       pathModule,
@@ -1871,6 +1993,18 @@ async function runInstaller(options) {
   }
 
   if (preferLocal) {
+    const validation = validateLocalBinaryVersion({
+      binaryPath: localBinaryPath,
+      expectedVersion: version,
+      spawnSyncFn
+    });
+    if (!validation.ok) {
+      throw buildLocalBinaryVersionError({
+        binaryPath: localBinaryPath,
+        validation,
+        explicitEnvOverride: false
+      });
+    }
     const localInstall = await installFromLocalBinary({
       fsModule,
       pathModule,
@@ -1951,7 +2085,8 @@ async function runInstaller(options) {
       writeJsonFileAtomicFn,
       logger,
       localRepoRoot,
-      localBinaryPath
+      localBinaryPath,
+      spawnSyncFn
     });
     if (fallback) {
       return fallback;
@@ -2666,5 +2801,8 @@ module.exports = {
   ChecksumResolutionError,
   runInstaller,
   describeFatalError,
-  handleFatal
+  handleFatal,
+  parseBinaryVersionOutput,
+  probeBinaryVersion,
+  validateLocalBinaryVersion
 };

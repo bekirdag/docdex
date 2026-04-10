@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.62
+- Expand personal-preferences operations with claim, snapshot, feedback, and mind-clone surfaces across HTTP, CLI, and MCP, including review/override/forget flows and clone regression coverage.
+- Harden the npm installer's local-binary path selection by validating `docdexd --version` output before using explicit or fallback local binaries and by avoiding stale repo-local binaries during registry installs.
+
 ## 0.2.61
 - Add the optional personal-preferences memory subsystem: capture Docdex and supported local client conversations into a dedicated local store, digest them in the background, and expose status/search/process/export/redact/delete/purge controls over HTTP, CLI, and MCP.
 - Align the personal-preferences release surface with the new top-level `[personal_preferences]` config, richer record lineage/materialization, review and retention controls, bounded chat-context injection, and supported-client transcript scanning.

@@ -1241,6 +1241,165 @@ pub(crate) enum PersonalPreferencesCommand {
         #[arg(long, default_value_t = false)]
         include_exports: bool,
     },
+    /// Manage extracted personal-preference claims.
+    Claims {
+        #[command(subcommand)]
+        command: PersonalPreferencesClaimsCommand,
+    },
+    /// Add explicit feedback events that influence future mind-clone context.
+    Feedback {
+        #[command(subcommand)]
+        command: PersonalPreferencesFeedbackCommand,
+    },
+    /// Inspect temporal identity snapshots.
+    Snapshots {
+        #[command(subcommand)]
+        command: PersonalPreferencesSnapshotsCommand,
+    },
+    /// Compile or evaluate a bounded mind-clone context pack.
+    Clone {
+        #[command(subcommand)]
+        command: PersonalPreferencesCloneCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum PersonalPreferencesClaimsCommand {
+    /// List extracted claims.
+    List {
+        #[arg(long, value_parser = config::non_empty_string)]
+        query: Option<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        truth_status: Option<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        claim_origin: Option<String>,
+        #[arg(long, default_value_t = false)]
+        include_sensitive: bool,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+    },
+    /// Read one claim.
+    Read {
+        #[arg(value_parser = config::non_empty_string)]
+        claim_id: String,
+    },
+    /// Review one claim.
+    Review {
+        #[arg(value_parser = config::non_empty_string)]
+        claim_id: String,
+        #[arg(long, value_parser = config::non_empty_string)]
+        verdict: String,
+        #[arg(long)]
+        notes: Option<String>,
+    },
+    /// Override one claim with a corrected value.
+    Override {
+        #[arg(value_parser = config::non_empty_string)]
+        claim_id: String,
+        #[arg(long, value_parser = config::non_empty_string)]
+        value: String,
+        #[arg(long)]
+        notes: Option<String>,
+    },
+    /// Forget one claim and redact its usable value.
+    Forget {
+        #[arg(value_parser = config::non_empty_string)]
+        claim_id: String,
+        #[arg(long)]
+        notes: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum PersonalPreferencesFeedbackCommand {
+    /// Add a feedback event.
+    Add {
+        #[arg(long, value_parser = config::non_empty_string)]
+        event_type: String,
+        #[arg(long, value_parser = config::non_empty_string)]
+        claim_id: Option<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        capture_id: Option<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        category: Option<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        attribute: Option<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        value: Option<String>,
+        #[arg(long)]
+        notes: Option<String>,
+        #[arg(long = "metadata-json")]
+        metadata_json: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum PersonalPreferencesSnapshotsCommand {
+    /// List identity snapshots.
+    List {
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+    },
+    /// Read one snapshot.
+    Read {
+        #[arg(value_parser = config::non_empty_string)]
+        snapshot_id: String,
+    },
+    /// Rebuild the latest snapshot set from current claims.
+    Rebuild,
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum PersonalPreferencesCloneCommand {
+    /// Build a bounded clone context pack.
+    Context {
+        #[arg(value_parser = config::non_empty_string)]
+        query: String,
+        #[arg(long, value_parser = config::non_empty_string)]
+        mode: Option<String>,
+        #[arg(long, default_value_t = false)]
+        allow_sensitive: bool,
+        #[arg(long, value_parser = config::non_empty_string)]
+        current_repo_root: Option<String>,
+        #[arg(long)]
+        max_records: Option<usize>,
+        #[arg(long)]
+        budget_tokens: Option<usize>,
+    },
+    /// Explain why a clone context pack was selected.
+    Explain {
+        #[arg(value_parser = config::non_empty_string)]
+        query: String,
+        #[arg(long, value_parser = config::non_empty_string)]
+        mode: Option<String>,
+        #[arg(long, default_value_t = false)]
+        allow_sensitive: bool,
+        #[arg(long, value_parser = config::non_empty_string)]
+        current_repo_root: Option<String>,
+        #[arg(long)]
+        max_records: Option<usize>,
+        #[arg(long)]
+        budget_tokens: Option<usize>,
+    },
+    /// Evaluate clone-pack fidelity heuristics for a query.
+    Evaluate {
+        #[arg(value_parser = config::non_empty_string)]
+        query: String,
+        #[arg(long, value_parser = config::non_empty_string)]
+        mode: Option<String>,
+        #[arg(long, default_value_t = false)]
+        allow_sensitive: bool,
+        #[arg(long, value_parser = config::non_empty_string)]
+        current_repo_root: Option<String>,
+        #[arg(long)]
+        max_records: Option<usize>,
+        #[arg(long)]
+        budget_tokens: Option<usize>,
+    },
 }
 
 #[derive(Args, Debug, Clone)]

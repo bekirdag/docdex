@@ -41,6 +41,11 @@ test("installer falls back to local binary when integrity metadata is missing", 
       err.code = "DOCDEX_CHECKSUM_UNUSABLE";
       throw err;
     },
+    spawnSyncFn: () => ({
+      status: 0,
+      stdout: "docdexd 0.2.61\n",
+      stderr: ""
+    }),
     localRepoRoot: repoRoot
   });
 
@@ -48,7 +53,7 @@ test("installer falls back to local binary when integrity metadata is missing", 
   assert.ok(fs.existsSync(result.binaryPath));
 });
 
-test("installer prefers local binary when INIT_CWD points to a docdex repo", async (t) => {
+test("installer prefers local binary for explicit local npm install requests", async (t) => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-local-prefer-"));
   t.after(() => fs.promises.rm(tmp, { recursive: true, force: true }));
 
@@ -90,11 +95,177 @@ test("installer prefers local binary when INIT_CWD points to a docdex repo", asy
       INIT_CWD: repoRoot,
       npm_lifecycle_event: "postinstall",
       npm_config_argv: JSON.stringify({ original: ["install", "-g", "./npm"] })
-    }
+    },
+    spawnSyncFn: () => ({
+      status: 0,
+      stdout: "docdexd 0.2.61\n",
+      stderr: ""
+    })
   });
 
   assert.equal(result.outcome, "local");
   assert.ok(fs.existsSync(result.binaryPath));
+});
+
+test("installer does not prefer a local repo binary for registry installs from the repo cwd", async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-local-registry-"));
+  t.after(() => fs.promises.rm(tmp, { recursive: true, force: true }));
+
+  const repoRoot = path.join(tmp, "repo");
+  const binaryName = process.platform === "win32" ? "docdexd.exe" : "docdexd";
+  const localBinaryPath = path.join(repoRoot, "target", "release", binaryName);
+  await fs.promises.mkdir(path.dirname(localBinaryPath), { recursive: true });
+  await fs.promises.writeFile(localBinaryPath, "local-binary\n");
+  await fs.promises.mkdir(path.join(repoRoot, "npm"), { recursive: true });
+  await fs.promises.writeFile(
+    path.join(repoRoot, "npm", "package.json"),
+    JSON.stringify({ name: "docdex", version: "0.0.0" }),
+    "utf8"
+  );
+  await fs.promises.writeFile(
+    path.join(repoRoot, "Cargo.toml"),
+    ['[package]', 'name = "docdexd"', 'version = "0.0.0"'].join("\n"),
+    "utf8"
+  );
+
+  const distBaseDir = path.join(tmp, "dist");
+  const platformKey = detectPlatformKey();
+  const targetTriple = targetTripleForPlatformKey(platformKey);
+  const expectedArchive = `docdexd-${platformKey}.tar.gz`;
+  let downloadInvoked = false;
+
+  const result = await runInstaller({
+    logger: noopLogger(),
+    platform: process.platform,
+    arch: process.arch,
+    distBaseDir,
+    detectPlatformKeyFn: () => platformKey,
+    targetTripleForPlatformKeyFn: () => targetTriple,
+    parseRepoSlugFn: () => "owner/repo",
+    resolveInstallerDownloadPlanFn: async () => ({
+      archive: expectedArchive,
+      expectedSha256: null,
+      source: "fallback",
+      manifestAttempt: { errors: [], resolved: null, manifestName: null }
+    }),
+    downloadFn: async (_url, dest) => {
+      downloadInvoked = true;
+      await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+      await fs.promises.writeFile(dest, "fake-archive");
+    },
+    verifyDownloadedFileIntegrityFn: async () => null,
+    extractTarballFn: async (_archivePath, targetDir) => {
+      await fs.promises.mkdir(targetDir, { recursive: true });
+      const stagedBinaryPath = path.join(targetDir, binaryName);
+      await fs.promises.writeFile(stagedBinaryPath, "#!/bin/sh\necho docdexd\n");
+      if (process.platform !== "win32") {
+        await fs.promises.chmod(stagedBinaryPath, 0o755);
+      }
+    },
+    env: {
+      INIT_CWD: repoRoot,
+      npm_lifecycle_event: "postinstall",
+      npm_config_argv: JSON.stringify({ original: ["install", "-g", "docdex@0.0.0"] })
+    },
+    localRepoRoot: repoRoot
+  });
+
+  assert.notEqual(result.outcome, "local");
+  assert.equal(downloadInvoked, true);
+  assert.ok(fs.existsSync(result.binaryPath));
+});
+
+test("installer rejects explicit local installs when the local binary version mismatches the package version", async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-local-version-mismatch-"));
+  t.after(() => fs.promises.rm(tmp, { recursive: true, force: true }));
+
+  const repoRoot = path.join(tmp, "repo");
+  const binaryName = process.platform === "win32" ? "docdexd.exe" : "docdexd";
+  const binaryPath = path.join(repoRoot, "target", "release", binaryName);
+  await fs.promises.mkdir(path.dirname(binaryPath), { recursive: true });
+  await fs.promises.writeFile(binaryPath, "local-binary\n");
+  await fs.promises.mkdir(path.join(repoRoot, "npm"), { recursive: true });
+  await fs.promises.writeFile(
+    path.join(repoRoot, "npm", "package.json"),
+    JSON.stringify({ name: "docdex", version: "0.0.0" }),
+    "utf8"
+  );
+  await fs.promises.writeFile(
+    path.join(repoRoot, "Cargo.toml"),
+    ['[package]', 'name = "docdexd"', 'version = "0.0.0"'].join("\n"),
+    "utf8"
+  );
+
+  await assert.rejects(
+    runInstaller({
+      logger: noopLogger(),
+      platform: process.platform,
+      arch: process.arch,
+      distBaseDir: path.join(tmp, "dist"),
+      detectPlatformKeyFn: () => detectPlatformKey(),
+      targetTripleForPlatformKeyFn: () => targetTripleForPlatformKey(detectPlatformKey()),
+      getVersionFn: () => "0.2.61",
+      parseRepoSlugFn: () => {
+        throw new Error("parseRepoSlug should not run");
+      },
+      resolveInstallerDownloadPlanFn: async () => {
+        throw new Error("download plan should not run");
+      },
+      spawnSyncFn: () => ({
+        status: 0,
+        stdout: "docdexd 0.2.59\n",
+        stderr: ""
+      }),
+      env: {
+        INIT_CWD: repoRoot,
+        npm_lifecycle_event: "postinstall",
+        npm_config_argv: JSON.stringify({ original: ["install", "-g", "./npm"] })
+      },
+      localRepoRoot: repoRoot
+    }),
+    (err) => {
+      assert.equal(err.code, "DOCDEX_INSTALLER_CONFIG");
+      assert.match(err.message, /expected 0\.2\.61 but found 0\.2\.59/);
+      return true;
+    }
+  );
+});
+
+test("installer skips stale local fallback binaries when remote integrity metadata is unavailable", async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "docdex-local-fallback-version-"));
+  t.after(() => fs.promises.rm(tmp, { recursive: true, force: true }));
+
+  const repoRoot = path.join(tmp, "repo");
+  const binaryName = process.platform === "win32" ? "docdexd.exe" : "docdexd";
+  const binaryPath = path.join(repoRoot, "target", "release", binaryName);
+  await fs.promises.mkdir(path.dirname(binaryPath), { recursive: true });
+  await fs.promises.writeFile(binaryPath, "local-binary\n");
+
+  await assert.rejects(
+    runInstaller({
+      logger: noopLogger(),
+      platform: "linux",
+      arch: "x64",
+      distBaseDir: path.join(tmp, "dist"),
+      detectPlatformKeyFn: () => "linux-x64-gnu",
+      targetTripleForPlatformKeyFn: () => "x86_64-unknown-linux-gnu",
+      resolveInstallerDownloadPlanFn: async () => {
+        const err = new Error("missing checksums");
+        err.code = "DOCDEX_CHECKSUM_UNUSABLE";
+        throw err;
+      },
+      spawnSyncFn: () => ({
+        status: 0,
+        stdout: "docdexd 0.2.59\n",
+        stderr: ""
+      }),
+      localRepoRoot: repoRoot
+    }),
+    (err) => {
+      assert.equal(err.code, "DOCDEX_CHECKSUM_UNUSABLE");
+      return true;
+    }
+  );
 });
 
 test("installer honors DOCDEX_LOCAL_BINARY even when installed binary is up to date", async (t) => {
@@ -161,10 +332,15 @@ test("installer honors DOCDEX_LOCAL_BINARY even when installed binary is up to d
     resolveInstallerDownloadPlanFn: async () => {
       throw new Error("download plan should not run");
     },
-    env: {
-      DOCDEX_LOCAL_BINARY: binaryPath
-    }
-  });
+      env: {
+        DOCDEX_LOCAL_BINARY: binaryPath
+      },
+      spawnSyncFn: () => ({
+        status: 0,
+        stdout: "docdexd 0.0.0\n",
+        stderr: ""
+      })
+    });
 
   assert.equal(result.outcome, "local");
   const installed = fs.readFileSync(installedBinaryPath, "utf8");

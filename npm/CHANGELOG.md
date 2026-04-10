@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.62
+- Expand the packaged personal-preferences surface with claim, snapshot, feedback, and mind-clone flows across HTTP, CLI, and MCP, including review/override/forget controls and clone regression coverage.
+- Harden the packaged installer's local-binary path selection by validating `docdexd --version` output before using explicit or fallback local binaries and by avoiding stale repo-local binaries during registry installs.
+
 ## 0.2.61
 - Add the optional personal-preferences memory subsystem with local capture, background digestion, and packaged HTTP/CLI/MCP controls for status, search, processing, export, redaction, deletion, and purge flows.
 - Align the packaged personal-preferences surface with the top-level `[personal_preferences]` config, richer lineage/materialization, review and retention controls, bounded chat-context injection, and supported-client transcript scanning.

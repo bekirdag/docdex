@@ -291,3 +291,243 @@ fn cli_personal_preferences_commands_work_against_http_daemon() -> Result<(), Bo
     server.shutdown();
     Ok(())
 }
+
+#[test]
+fn cli_personal_preferences_mind_clone_commands_work() -> Result<(), Box<dyn Error>> {
+    let repo = TempDir::new()?;
+    let state_root = TempDir::new()?;
+    let home_dir = TempDir::new()?;
+    write_repo(repo.path())?;
+    let global_state_dir = home_dir.path().join(".docdex").join("state");
+    write_config(home_dir.path(), &global_state_dir)?;
+    seed_processed_personal_preferences(home_dir.path())?;
+
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+    let host = "127.0.0.1";
+    let base_url = format!("http://{host}:{port}");
+    let mut server = TestServerHarness::spawn_basic(
+        state_root.path(),
+        home_dir.path(),
+        repo.path(),
+        host,
+        port,
+        false,
+    )?;
+    wait_for_health(host, port)?;
+
+    let claims = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        [
+            "personal-preferences",
+            "claims",
+            "list",
+            "--limit",
+            "10",
+            "--include-sensitive",
+        ],
+    )?;
+    assert!(claims.get("total").and_then(Value::as_u64).unwrap_or(0) >= 2);
+    let claim_id = claims
+        .get("items")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(|item| item.get("id"))
+        .and_then(Value::as_str)
+        .ok_or("missing claim id")?
+        .to_string();
+
+    let claim = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        ["personal-preferences", "claims", "read", claim_id.as_str()],
+    )?;
+    assert_eq!(
+        claim.get("id").and_then(Value::as_str),
+        Some(claim_id.as_str())
+    );
+
+    let reviewed = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        [
+            "personal-preferences",
+            "claims",
+            "review",
+            claim_id.as_str(),
+            "--verdict",
+            "approved",
+        ],
+    )?;
+    assert_eq!(
+        reviewed.get("review_status").and_then(Value::as_str),
+        Some("approved")
+    );
+
+    let overridden = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        [
+            "personal-preferences",
+            "claims",
+            "override",
+            claim_id.as_str(),
+            "--value",
+            "Rust and Go",
+        ],
+    )?;
+    assert_eq!(
+        overridden.get("event_type").and_then(Value::as_str),
+        Some("override_preference")
+    );
+
+    let forgotten = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        [
+            "personal-preferences",
+            "claims",
+            "forget",
+            claim_id.as_str(),
+            "--notes",
+            "forget the superseded claim in cli test",
+        ],
+    )?;
+    assert_eq!(
+        forgotten.get("forgotten").and_then(Value::as_bool),
+        Some(true)
+    );
+
+    let feedback = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        [
+            "personal-preferences",
+            "feedback",
+            "add",
+            "--event-type",
+            "override",
+            "--category",
+            "workflow",
+            "--attribute",
+            "prefers",
+            "--value",
+            "Always verify tests",
+        ],
+    )?;
+    assert!(feedback
+        .get("created_claim_id")
+        .and_then(Value::as_str)
+        .is_some());
+
+    let snapshots = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        ["personal-preferences", "snapshots", "list", "--limit", "10"],
+    )?;
+    assert!(snapshots.get("total").and_then(Value::as_u64).unwrap_or(0) >= 1);
+    let snapshot_id = snapshots
+        .get("items")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(|item| item.get("id"))
+        .and_then(Value::as_str)
+        .ok_or("missing snapshot id")?
+        .to_string();
+
+    let snapshot = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        [
+            "personal-preferences",
+            "snapshots",
+            "read",
+            snapshot_id.as_str(),
+        ],
+    )?;
+    assert_eq!(
+        snapshot.get("id").and_then(Value::as_str),
+        Some(snapshot_id.as_str())
+    );
+
+    let rebuilt = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        ["personal-preferences", "snapshots", "rebuild"],
+    )?;
+    assert_eq!(rebuilt.get("created").and_then(Value::as_u64), Some(1));
+
+    let clone_context = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        [
+            "personal-preferences",
+            "clone",
+            "context",
+            "local-first Rust tests",
+            "--mode",
+            "project_build",
+            "--current-repo-root",
+            "/tmp/repo-one",
+        ],
+    )?;
+    assert!(clone_context
+        .get("items")
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
+
+    let clone_explain = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        [
+            "personal-preferences",
+            "clone",
+            "explain",
+            "local-first Rust tests",
+            "--mode",
+            "project_build",
+            "--current-repo-root",
+            "/tmp/repo-one",
+        ],
+    )?;
+    assert!(clone_explain.get("pack").is_some());
+    assert!(clone_explain
+        .get("included_claims")
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
+    assert!(clone_explain
+        .get("pack")
+        .and_then(|pack| pack.get("trace"))
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
+
+    let clone_evaluate = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        [
+            "personal-preferences",
+            "clone",
+            "evaluate",
+            "local-first Rust tests",
+            "--mode",
+            "project_build",
+            "--current-repo-root",
+            "/tmp/repo-one",
+        ],
+    )?;
+    assert!(
+        clone_evaluate
+            .get("overall_score")
+            .and_then(Value::as_f64)
+            .unwrap_or(-1.0)
+            >= 0.0
+    );
+
+    server.shutdown();
+    Ok(())
+}

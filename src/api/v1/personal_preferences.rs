@@ -5,8 +5,12 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::error::{ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED};
+use crate::personal_preferences::{
+    PersonalPreferencesClaimsQuery, PersonalPreferencesCloneOptions,
+};
 use crate::search::{json_error, AppState};
 
 #[derive(Debug, Deserialize)]
@@ -27,6 +31,22 @@ pub(crate) struct PersonalPreferencesSearchQuery {
     limit: Option<usize>,
     #[serde(default)]
     include_sensitive: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct PersonalPreferencesClaimsQueryParams {
+    #[serde(default, alias = "q")]
+    query: Option<String>,
+    #[serde(default)]
+    truth_status: Option<String>,
+    #[serde(default)]
+    claim_origin: Option<String>,
+    #[serde(default)]
+    include_sensitive: Option<bool>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    offset: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -76,6 +96,61 @@ pub(crate) struct PersonalPreferencesReviewRequest {
     verdict: String,
     #[serde(default)]
     notes: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct PersonalPreferencesClaimOverrideRequest {
+    value: String,
+    #[serde(default)]
+    notes: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct PersonalPreferencesClaimForgetRequest {
+    #[serde(default)]
+    notes: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct PersonalPreferencesFeedbackRequest {
+    event_type: String,
+    #[serde(default)]
+    claim_id: Option<String>,
+    #[serde(default)]
+    capture_id: Option<String>,
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    attribute: Option<String>,
+    #[serde(default)]
+    value: Option<String>,
+    #[serde(default)]
+    notes: Option<String>,
+    #[serde(default)]
+    metadata: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct PersonalPreferencesSnapshotsQuery {
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    offset: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct PersonalPreferencesCloneRequest {
+    query: String,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    allow_sensitive: Option<bool>,
+    #[serde(default)]
+    current_repo_root: Option<String>,
+    #[serde(default)]
+    max_records: Option<usize>,
+    #[serde(default)]
+    budget_tokens: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -219,6 +294,434 @@ pub(crate) async fn personal_preferences_search_handler(
         Err(err) => json_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             ERR_INTERNAL_ERROR,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_claims_handler(
+    State(state): State<AppState>,
+    Query(query): Query<PersonalPreferencesClaimsQueryParams>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    let request = PersonalPreferencesClaimsQuery {
+        query: query
+            .query
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        truth_status: query
+            .truth_status
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        claim_origin: query
+            .claim_origin
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        include_sensitive: query.include_sensitive.unwrap_or(false),
+        limit: query.limit,
+        offset: query.offset,
+    };
+    match personal_preferences.store.list_claims(request) {
+        Ok(list) => Json(list).into_response(),
+        Err(err) => json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ERR_INTERNAL_ERROR,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_claim_read_handler(
+    State(state): State<AppState>,
+    AxumPath(claim_id): AxumPath<String>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    let claim_id = claim_id.trim().to_string();
+    if claim_id.is_empty() {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "claim_id must not be empty",
+        );
+    }
+    match personal_preferences.store.read_claim(&claim_id) {
+        Ok(Some(claim)) => Json(claim).into_response(),
+        Ok(None) => json_error(
+            StatusCode::NOT_FOUND,
+            ERR_INVALID_ARGUMENT,
+            "personal preference claim not found",
+        ),
+        Err(err) => json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ERR_INTERNAL_ERROR,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_claim_review_handler(
+    State(state): State<AppState>,
+    AxumPath(claim_id): AxumPath<String>,
+    Json(body): Json<PersonalPreferencesReviewRequest>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    let claim_id = claim_id.trim().to_string();
+    if claim_id.is_empty() {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "claim_id must not be empty",
+        );
+    }
+    match personal_preferences.store.review_claim(
+        &claim_id,
+        body.verdict.trim(),
+        body.notes.as_deref(),
+    ) {
+        Ok(summary) => Json(summary).into_response(),
+        Err(err) => json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_claim_override_handler(
+    State(state): State<AppState>,
+    AxumPath(claim_id): AxumPath<String>,
+    Json(body): Json<PersonalPreferencesClaimOverrideRequest>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    let claim_id = claim_id.trim().to_string();
+    if claim_id.is_empty() {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "claim_id must not be empty",
+        );
+    }
+    let value = body.value.trim().to_string();
+    if value.is_empty() {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "value must not be empty",
+        );
+    }
+    match personal_preferences
+        .store
+        .override_claim(&claim_id, &value, body.notes.as_deref())
+    {
+        Ok(summary) => Json(summary).into_response(),
+        Err(err) => json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_claim_forget_handler(
+    State(state): State<AppState>,
+    AxumPath(claim_id): AxumPath<String>,
+    Json(body): Json<PersonalPreferencesClaimForgetRequest>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    let claim_id = claim_id.trim().to_string();
+    if claim_id.is_empty() {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "claim_id must not be empty",
+        );
+    }
+    match personal_preferences
+        .store
+        .forget_claim(&claim_id, body.notes.as_deref())
+    {
+        Ok(summary) => Json(summary).into_response(),
+        Err(err) => json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_feedback_handler(
+    State(state): State<AppState>,
+    Json(body): Json<PersonalPreferencesFeedbackRequest>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    let event_type = body.event_type.trim().to_string();
+    if event_type.is_empty() {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "event_type must not be empty",
+        );
+    }
+    match personal_preferences.store.add_feedback_event(
+        &event_type,
+        body.claim_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        body.capture_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        body.category
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        body.attribute
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        body.value
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        body.notes.as_deref(),
+        body.metadata.unwrap_or(Value::Null),
+    ) {
+        Ok(summary) => Json(summary).into_response(),
+        Err(err) => json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_snapshots_handler(
+    State(state): State<AppState>,
+    Query(query): Query<PersonalPreferencesSnapshotsQuery>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    match personal_preferences.store.list_snapshots(
+        query.limit.unwrap_or(20).clamp(1, 200),
+        query.offset.unwrap_or(0),
+    ) {
+        Ok(list) => Json(list).into_response(),
+        Err(err) => json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ERR_INTERNAL_ERROR,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_snapshot_read_handler(
+    State(state): State<AppState>,
+    AxumPath(snapshot_id): AxumPath<String>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    let snapshot_id = snapshot_id.trim().to_string();
+    if snapshot_id.is_empty() {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "snapshot_id must not be empty",
+        );
+    }
+    match personal_preferences.store.read_snapshot(&snapshot_id) {
+        Ok(Some(snapshot)) => Json(snapshot).into_response(),
+        Ok(None) => json_error(
+            StatusCode::NOT_FOUND,
+            ERR_INVALID_ARGUMENT,
+            "personal preference snapshot not found",
+        ),
+        Err(err) => json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ERR_INTERNAL_ERROR,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_snapshots_rebuild_handler(
+    State(state): State<AppState>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    match personal_preferences.store.rebuild_snapshots() {
+        Ok(summary) => Json(summary).into_response(),
+        Err(err) => json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ERR_INTERNAL_ERROR,
+            err.to_string(),
+        ),
+    }
+}
+
+fn clone_options_from_request(
+    body: PersonalPreferencesCloneRequest,
+) -> (String, PersonalPreferencesCloneOptions) {
+    (
+        body.query.trim().to_string(),
+        PersonalPreferencesCloneOptions {
+            mode: body
+                .mode
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+            allow_sensitive: body.allow_sensitive.unwrap_or(false),
+            current_repo_root: body
+                .current_repo_root
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+            max_records: body.max_records,
+            budget_tokens: body.budget_tokens,
+        },
+    )
+}
+
+pub(crate) async fn personal_preferences_clone_context_handler(
+    State(state): State<AppState>,
+    Json(body): Json<PersonalPreferencesCloneRequest>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    let (query, options) = clone_options_from_request(body);
+    if query.is_empty() {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "query must not be empty",
+        );
+    }
+    match personal_preferences
+        .store
+        .build_clone_context_pack(&query, options)
+    {
+        Ok(pack) => Json(pack).into_response(),
+        Err(err) => json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_clone_explain_handler(
+    State(state): State<AppState>,
+    Json(body): Json<PersonalPreferencesCloneRequest>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    let (query, options) = clone_options_from_request(body);
+    if query.is_empty() {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "query must not be empty",
+        );
+    }
+    match personal_preferences
+        .store
+        .explain_clone_context(&query, options)
+    {
+        Ok(explanation) => Json(explanation).into_response(),
+        Err(err) => json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_clone_evaluate_handler(
+    State(state): State<AppState>,
+    Json(body): Json<PersonalPreferencesCloneRequest>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    let (query, options) = clone_options_from_request(body);
+    if query.is_empty() {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "query must not be empty",
+        );
+    }
+    match personal_preferences
+        .store
+        .evaluate_clone_context(&query, options)
+    {
+        Ok(evaluation) => Json(evaluation).into_response(),
+        Err(err) => json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
             err.to_string(),
         ),
     }

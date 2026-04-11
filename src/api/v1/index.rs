@@ -8,11 +8,10 @@ use std::path::PathBuf;
 use tracing::warn;
 
 use crate::error::{AppError, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT};
+use crate::http_api::{app_error_response, json_error, repo_error_response, resolve_repo_context};
 use crate::indexer;
 use crate::libs;
-use crate::search::{
-    json_error, repo_error_response, resolve_repo_context, status_for_app_error, AppState,
-};
+use crate::search::AppState;
 
 #[derive(Deserialize)]
 pub struct IndexRebuildRequest {
@@ -190,11 +189,7 @@ pub async fn index_status_handler(
         Err(err) => {
             state.metrics.inc_error();
             if let Some(app) = err.downcast_ref::<AppError>() {
-                return json_error(
-                    status_for_app_error(app.code),
-                    app.code,
-                    app.message.clone(),
-                );
+                return app_error_response(app);
             }
             warn!(target: "docdexd", error = ?err, "index status lookup failed");
             return json_error(

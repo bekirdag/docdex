@@ -4,7 +4,7 @@ use chrono::{Datelike, Utc};
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use hmac::{Hmac, Mac};
-use reqwest::blocking::Client;
+use reqwest::Client;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -329,6 +329,14 @@ pub fn record_delegation_failure(
 }
 
 pub fn run_housekeeping_cycle(global_state_dir: Option<&Path>) -> Result<HousekeepingSummary> {
+    crate::mswarm::block_on_http_future(run_housekeeping_cycle_async(
+        global_state_dir.map(Path::to_path_buf),
+    ))
+}
+
+pub async fn run_housekeeping_cycle_async(
+    global_state_dir: Option<PathBuf>,
+) -> Result<HousekeepingSummary> {
     let mut summary = HousekeepingSummary::default();
     let config_path = config::default_config_path().context("resolve docdex config path")?;
     let app_config = config::load_config_from_path(&config_path)
@@ -348,17 +356,20 @@ pub fn run_housekeeping_cycle(global_state_dir: Option<&Path>) -> Result<Houseke
         return Ok(summary);
     }
 
-    let layout =
-        resolve_state_layout(global_state_dir.or(app_config.core.global_state_dir.as_deref()))?;
+    let layout = resolve_state_layout(
+        global_state_dir
+            .as_deref()
+            .or(app_config.core.global_state_dir.as_deref()),
+    )?;
     summary.pruned_paths = prune_stale_artifacts(&layout)?;
     summary.exported_ratings = export_mcoda_ratings_to_spool(&layout)?;
     summary.exported_delegation_snapshots =
         export_delegation_savings_to_spool(&layout, &app_config)?;
-    if let Some(auth) = resolve_upload_auth(&config_path, &app_config)? {
+    if let Some(auth) = resolve_upload_auth(&config_path, &app_config).await? {
         if create_pending_package(&layout, &auth)?.is_some() {
             summary.created_packages += 1;
         }
-        let upload_result = upload_queued_packages(&layout, &auth)?;
+        let upload_result = upload_queued_packages_async(&layout, &auth).await?;
         summary.uploaded_packages = upload_result.uploaded;
         summary.failed_packages = upload_result.failed;
         if upload_result.updated_last_upload_at_ms > 0 {
@@ -378,7 +389,10 @@ pub fn run_housekeeping_cycle(global_state_dir: Option<&Path>) -> Result<Houseke
     Ok(summary)
 }
 
-fn resolve_upload_auth(_config_path: &Path, app_config: &AppConfig) -> Result<Option<UploadAuth>> {
+async fn resolve_upload_auth(
+    _config_path: &Path,
+    app_config: &AppConfig,
+) -> Result<Option<UploadAuth>> {
     let telemetry = &app_config.integrations.mswarm.telemetry;
     let consent_token = telemetry
         .consent_token
@@ -417,12 +431,13 @@ fn resolve_upload_auth(_config_path: &Path, app_config: &AppConfig) -> Result<Op
     {
         existing
     } else {
-        let response = mswarm::register_free_docdex_client(
+        let response = mswarm::register_free_docdex_client_async(
             &app_config.integrations.mswarm.base_url,
             Some(client_id),
             &policy_version,
             now_epoch_ms(),
-        )?;
+        )
+        .await?;
         let secret = response
             .upload_signing_secret
             .filter(|value| !value.trim().is_empty())
@@ -802,12 +817,24 @@ struct UploadBatchResult {
     updated_last_upload_at_ms: u64,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn upload_queued_packages(layout: &StateLayout, auth: &UploadAuth) -> Result<UploadBatchResult> {
+    crate::mswarm::block_on_http_future(upload_queued_packages_async(layout, auth))
+}
+
+async fn upload_queued_packages_async(
+    layout: &StateLayout,
+    auth: &UploadAuth,
+) -> Result<UploadBatchResult> {
     let mut result = UploadBatchResult {
         uploaded: 0,
         failed: 0,
         updated_last_upload_at_ms: 0,
     };
+    let client = Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .context("build mswarm package upload client")?;
     let mut meta_paths = collect_package_metadata_paths(&layout.mswarm_packages_pending_dir())?;
     meta_paths.extend(collect_package_metadata_paths(
         &layout.mswarm_packages_failed_dir(),
@@ -827,7 +854,7 @@ fn upload_queued_packages(layout: &StateLayout, auth: &UploadAuth) -> Result<Upl
         let mut uploaded = false;
         let mut last_error = None;
         for _ in 0..UPLOAD_RETRY_ATTEMPTS {
-            match upload_package(auth, &metadata, &payload_bytes) {
+            match upload_package(&client, auth, &metadata, &payload_bytes).await {
                 Ok(()) => {
                     uploaded = true;
                     break;
@@ -868,7 +895,8 @@ fn upload_queued_packages(layout: &StateLayout, auth: &UploadAuth) -> Result<Upl
     Ok(result)
 }
 
-fn upload_package(
+async fn upload_package(
+    client: &Client,
     auth: &UploadAuth,
     metadata: &PendingPackageMetadata,
     payload_bytes: &[u8],
@@ -878,10 +906,6 @@ fn upload_package(
         auth.base_url.trim_end_matches('/'),
         DOCDEX_PACKAGE_INGEST_PATH
     );
-    let client = Client::builder()
-        .timeout(Duration::from_secs(20))
-        .build()
-        .context("build mswarm package upload client")?;
     let mut request = client.post(url).json(&json!({
         "client_id": metadata.client_id,
         "client_type": metadata.client_type,
@@ -899,10 +923,10 @@ fn upload_package(
     if let Some(api_key) = auth.api_key.as_deref() {
         request = request.header("x-api-key", api_key);
     }
-    let response = request.send().context("upload mswarm package")?;
+    let response = request.send().await.context("upload mswarm package")?;
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().unwrap_or_default();
+        let body = response.text().await.unwrap_or_default();
         return Err(anyhow!(
             "mswarm package upload failed with status {}: {}",
             status,
@@ -911,6 +935,7 @@ fn upload_package(
     }
     let ingest: PackageIngestResponse = response
         .json()
+        .await
         .context("decode mswarm package upload response")?;
     if !ingest.accepted {
         return Err(anyhow!("mswarm package upload was not accepted"));

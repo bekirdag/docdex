@@ -10,8 +10,9 @@ use url::Url;
 
 use crate::dag::logging as dag_logging;
 use crate::error::{ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MISSING_DEPENDENCY};
+use crate::http_api::{json_error, json_error_with_details};
 use crate::memory::repo_state_root_from_state_dir;
-use crate::search::{json_error, json_error_with_details, AppState, RequestId};
+use crate::search::{AppState, RequestId};
 use crate::util;
 use crate::web;
 use crate::web::readability::extract_readable_text;

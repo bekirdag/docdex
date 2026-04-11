@@ -1,8 +1,10 @@
+use crate::error::status_for_app_error;
 use crate::error::{
     AppError, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MISSING_REPO, ERR_UNKNOWN_REPO,
 };
+use crate::http_api::json_error;
 use crate::index::Indexer;
-use crate::search::{json_error, status_for_app_error, AppState};
+use crate::search::AppState;
 use axum::{extract::State, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

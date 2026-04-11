@@ -206,24 +206,7 @@ async fn run_graph_via_http(
 }
 
 fn normalize_rel_path(input: &str) -> Option<String> {
-    let path = std::path::Path::new(input);
-    if path.is_absolute() {
-        return None;
-    }
-    let mut clean = std::path::PathBuf::new();
-    for component in path.components() {
-        match component {
-            std::path::Component::CurDir => continue,
-            std::path::Component::Normal(part) => clean.push(part),
-            _ => return None,
-        }
-    }
-    let clean_str = clean.to_string_lossy().replace('\\', "/");
-    if clean_str.is_empty() {
-        None
-    } else {
-        Some(clean_str)
-    }
+    crate::path_utils::normalize_repo_relative_string(input)
 }
 
 fn parse_edge_types(input: Option<String>) -> Option<Vec<String>> {

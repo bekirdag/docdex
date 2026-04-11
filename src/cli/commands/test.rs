@@ -1,6 +1,6 @@
 use crate::config::RepoArgs;
 use anyhow::{Context, Result};
-use std::path::{Component, Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 #[cfg(unix)]
@@ -66,24 +66,5 @@ fn flatten_args(args: Vec<String>) -> Vec<String> {
 }
 
 fn normalize_rel_path(input: &str) -> Option<PathBuf> {
-    if input.is_empty() {
-        return None;
-    }
-    let path = Path::new(input);
-    if path.is_absolute() {
-        return None;
-    }
-    let mut clean = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => continue,
-            Component::Normal(part) => clean.push(part),
-            _ => return None,
-        }
-    }
-    if clean.as_os_str().is_empty() {
-        None
-    } else {
-        Some(clean)
-    }
+    crate::path_utils::normalize_repo_relative_path_from_str(input)
 }

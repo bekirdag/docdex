@@ -9,17 +9,18 @@ use std::collections::HashSet;
 use std::time::Instant;
 use tracing::warn;
 
+use crate::error::status_for_app_error;
 use crate::error::{
     AppError, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED, ERR_PROFILE_DISABLED,
+};
+use crate::http_api::{
+    json_error, repo_error_response, resolve_conversation_context, resolve_repo_context,
 };
 use crate::profiles::{
     check_any_type_usage, check_circular_dependencies, match_constraint_rules, ConstraintRule,
     PreferenceCategory,
 };
-use crate::search::{
-    json_error, repo_error_response, resolve_conversation_context, resolve_repo_context,
-    status_for_app_error, AppState,
-};
+use crate::search::AppState;
 
 #[derive(Deserialize)]
 pub struct HookValidateRequest {

@@ -2,6 +2,7 @@ use std::error::Error;
 use std::fmt;
 use std::time::Duration;
 
+use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use thiserror::Error;
@@ -90,6 +91,39 @@ impl AppError {
     }
 }
 
+pub fn status_for_app_error(code: &str) -> StatusCode {
+    match code {
+        ERR_EMBEDDING_TIMEOUT => StatusCode::GATEWAY_TIMEOUT,
+        ERR_EMBEDDING_MODEL_NOT_FOUND => StatusCode::BAD_REQUEST,
+        ERR_EMBEDDING_FAILED => StatusCode::BAD_GATEWAY,
+        ERR_INVALID_ARGUMENT => StatusCode::BAD_REQUEST,
+        ERR_MISSING_REPO => StatusCode::BAD_REQUEST,
+        ERR_MEMORY_DISABLED => StatusCode::CONFLICT,
+        ERR_PROFILE_DISABLED => StatusCode::CONFLICT,
+        ERR_CONVERSATION_NOT_FOUND => StatusCode::NOT_FOUND,
+        ERR_KNOWLEDGE_EPISODE_NOT_FOUND => StatusCode::NOT_FOUND,
+        ERR_MISSING_DEPENDENCY => StatusCode::CONFLICT,
+        ERR_MISSING_INDEX => StatusCode::CONFLICT,
+        ERR_STALE_INDEX => StatusCode::CONFLICT,
+        ERR_INDEXING_IN_PROGRESS => StatusCode::ACCEPTED,
+        ERR_REPO_STATE_MISMATCH => StatusCode::CONFLICT,
+        ERR_MISSING_REPO_PATH => StatusCode::NOT_FOUND,
+        ERR_UNKNOWN_REPO => StatusCode::NOT_FOUND,
+        ERR_UNAUTHORIZED => StatusCode::UNAUTHORIZED,
+        ERR_RATE_LIMITED => StatusCode::TOO_MANY_REQUESTS,
+        ERR_BACKOFF_REQUIRED => StatusCode::TOO_MANY_REQUESTS,
+        ERR_DELEGATION_LOCAL_REQUIRED => StatusCode::CONFLICT,
+        ERR_INTERNAL_ERROR => StatusCode::INTERNAL_SERVER_ERROR,
+        _ => {
+            debug_assert!(
+                false,
+                "unmapped app error code `{code}` defaulted to 500; add it to status_for_app_error"
+            );
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
+}
+
 pub fn repo_resolution_details(
     normalized_path: String,
     attempted_fingerprint: Option<String>,
@@ -145,5 +179,62 @@ impl RateLimited {
     pub fn with_retry_at(mut self, retry_at: DateTime<Utc>) -> Self {
         self.retry_at = Some(retry_at);
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_mapping_covers_expected_http_contracts() {
+        assert_eq!(
+            status_for_app_error(ERR_INVALID_ARGUMENT),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            status_for_app_error(ERR_MISSING_REPO),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            status_for_app_error(ERR_MISSING_REPO_PATH),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            status_for_app_error(ERR_UNKNOWN_REPO),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            status_for_app_error(ERR_MEMORY_DISABLED),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            status_for_app_error(ERR_PROFILE_DISABLED),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            status_for_app_error(ERR_CONVERSATION_NOT_FOUND),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            status_for_app_error(ERR_KNOWLEDGE_EPISODE_NOT_FOUND),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            status_for_app_error(ERR_INDEXING_IN_PROGRESS),
+            StatusCode::ACCEPTED
+        );
+        assert_eq!(
+            status_for_app_error(ERR_RATE_LIMITED),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(
+            status_for_app_error(ERR_BACKOFF_REQUIRED),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(
+            status_for_app_error(ERR_DELEGATION_LOCAL_REQUIRED),
+            StatusCode::CONFLICT
+        );
     }
 }

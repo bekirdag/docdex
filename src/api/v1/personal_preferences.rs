@@ -8,10 +8,11 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::error::{ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED};
+use crate::http_api::json_error;
 use crate::personal_preferences::{
     PersonalPreferencesClaimsQuery, PersonalPreferencesCloneOptions,
 };
-use crate::search::{json_error, AppState};
+use crate::search::AppState;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct PersonalPreferencesCaptureListQuery {

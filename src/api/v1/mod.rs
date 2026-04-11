@@ -14,6 +14,7 @@ pub mod libs;
 pub mod memory_layers;
 pub mod personal_preferences;
 pub mod profile;
+pub(crate) mod shared;
 pub mod symbols;
 pub mod telemetry;
 pub mod wakeup;

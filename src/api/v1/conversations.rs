@@ -9,10 +9,10 @@ use crate::conversations::{
 use crate::error::{
     ERR_CONVERSATION_NOT_FOUND, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED,
 };
-use crate::search::{
+use crate::http_api::{
     json_error, json_error_with_details, repo_error_response, resolve_conversation_context,
-    AppState, RepoIdQuery, RequestId,
 };
+use crate::search::{AppState, RepoIdQuery, RequestId};
 use axum::{
     extract::{Path as AxumPath, Query, State},
     http::{HeaderMap, StatusCode},

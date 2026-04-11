@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,23 +199,8 @@ fn normalize_paths(repo_root: &Path, paths: &[PathBuf]) -> Result<Vec<String>> {
 }
 
 fn normalize_rel_path(path: &Path) -> Result<String> {
-    let mut clean = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => continue,
-            Component::Normal(part) => clean.push(part),
-            _ => {
-                return Err(anyhow!(
-                    "diff path must be repo-relative without parent components"
-                ))
-            }
-        }
-    }
-    let clean_str = clean.to_string_lossy().replace('\\', "/");
-    if clean_str.is_empty() {
-        return Err(anyhow!("diff path must not be empty"));
-    }
-    Ok(clean_str)
+    crate::path_utils::normalize_repo_relative_string_from_path(path)
+        .ok_or_else(|| anyhow!("diff path must be repo-relative without parent components"))
 }
 
 fn parse_diff_output(output: &str) -> Vec<DiffFileChange> {

@@ -1,9 +1,8 @@
 use crate::error::{
     ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_KNOWLEDGE_EPISODE_NOT_FOUND, ERR_MEMORY_DISABLED,
 };
-use crate::search::{
-    json_error, repo_error_response, resolve_conversation_context, AppState, RequestId,
-};
+use crate::http_api::{json_error, repo_error_response, resolve_conversation_context};
+use crate::search::{AppState, RequestId};
 use axum::{
     extract::{Query, State},
     http::{HeaderMap, StatusCode},

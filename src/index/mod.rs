@@ -2389,57 +2389,7 @@ fn hold_after_state_dir_created() {
 }
 
 pub(crate) fn ensure_state_dir_secure(path: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::fs::DirBuilder;
-        use std::os::unix::fs::DirBuilderExt;
-        use std::os::unix::fs::PermissionsExt;
-
-        let mut builder = DirBuilder::new();
-        builder.recursive(true);
-        builder.mode(0o700);
-        builder.create(path)?;
-        let metadata = fs::metadata(path)?;
-        let current = metadata.permissions().mode() & 0o777;
-        if current != 0o700 {
-            let mut perms = metadata.permissions();
-            perms.set_mode(0o700);
-            if let Err(err) = fs::set_permissions(path, perms) {
-                let is_perm_err = err.kind() == std::io::ErrorKind::PermissionDenied
-                    || err.raw_os_error() == Some(1);
-                if is_perm_err && can_write_dir(path) {
-                    warn!(
-                        target: "docdexd",
-                        error = %err,
-                        "state dir permissions could not be tightened; continuing with existing perms"
-                    );
-                } else {
-                    return Err(err.into());
-                }
-            }
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        fs::create_dir_all(path)?;
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn can_write_dir(path: &Path) -> bool {
-    let probe = path.join(format!(".docdex-perm-check-{}", std::process::id()));
-    match fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&probe)
-    {
-        Ok(_) => {
-            let _ = fs::remove_file(&probe);
-            true
-        }
-        Err(_) => false,
-    }
+    crate::state_layout::ensure_state_dir_secure(path)
 }
 
 fn normalize_for_error(path: &Path) -> String {

@@ -9,9 +9,10 @@ use std::path::Path;
 use tracing::warn;
 
 use crate::error::{ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT};
+use crate::http_api::{json_error, repo_error_response, resolve_repo_context};
 use crate::libs;
 use crate::libs_source_resolver;
-use crate::search::{json_error, repo_error_response, resolve_repo_context, AppState};
+use crate::search::AppState;
 
 #[derive(Deserialize)]
 pub struct LibsRequest {

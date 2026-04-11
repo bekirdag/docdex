@@ -1,11 +1,9 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::path::{Path, PathBuf};
 
 /// Ensure the repo-scoped DAG directory exists.
 pub fn ensure_repo_state_dir(repo_state_root: &Path) -> Result<()> {
-    crate::state_layout::ensure_state_dir_secure(repo_state_root)
-        .with_context(|| format!("create DAG state dir at {}", repo_state_root.display()))?;
-    Ok(())
+    crate::state_layout::ensure_repo_state_root(repo_state_root)
 }
 
 /// Repository-scoped DAG database path.
@@ -14,14 +12,7 @@ pub fn dag_db_path(repo_state_root: &Path) -> PathBuf {
 }
 
 pub fn locks_dir_from_repo_state_root(repo_state_root: &Path) -> PathBuf {
-    if let Some(repos_dir) = repo_state_root.parent() {
-        if repos_dir.file_name().and_then(|name| name.to_str()) == Some("repos") {
-            if let Some(base_dir) = repos_dir.parent() {
-                return base_dir.join("locks");
-            }
-        }
-    }
-    repo_state_root.join("locks")
+    crate::state_layout::locks_dir_from_repo_state_root(repo_state_root)
 }
 
 pub fn dag_lock_path(repo_state_root: &Path) -> PathBuf {

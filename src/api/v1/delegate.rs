@@ -9,6 +9,10 @@ use crate::delegation_telemetry;
 use crate::error::{
     AppError, ERR_DELEGATION_LOCAL_REQUIRED, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
 };
+use crate::http_api::{
+    app_error_response, json_error, json_error_with_details, repo_error_response,
+    resolve_repo_context,
+};
 use crate::llm::delegation::{
     allowlist_allows, build_local_target_candidates_with_config, build_primary_target_candidates,
     compute_cost_micros, compute_delegation_savings, filter_automatic_local_targets_by_cost,
@@ -29,8 +33,7 @@ use crate::memory::repo_state_root_from_state_dir;
 use crate::metrics::DelegationTelemetrySnapshot;
 use crate::orchestrator::web::{run_web_research, WebResearchResponse};
 use crate::orchestrator::WebGateConfig;
-use crate::search::resolve_repo_context;
-use crate::search::{json_error, json_error_with_details, status_for_app_error, AppState};
+use crate::search::AppState;
 use tracing::warn;
 
 #[derive(Debug, Deserialize)]
@@ -100,7 +103,7 @@ pub async fn delegate_handler(
     let repo = match resolve_repo_context(&state, &headers, None, payload.repo_id.as_deref(), false)
     {
         Ok(repo) => repo,
-        Err(err) => return Err(crate::search::repo_error_response(err)),
+        Err(err) => return Err(repo_error_response(err)),
     };
 
     let task_type = TaskType::parse(&payload.task_type).ok_or_else(|| {
@@ -434,11 +437,7 @@ pub async fn delegate_handler(
             warn!(target: "docdexd", error = ?err, "delegation completion failed");
             persist_delegation_metrics();
             let app_error = AppError::new(ERR_INTERNAL_ERROR, "delegation failed");
-            return Err(json_error(
-                status_for_app_error(app_error.code),
-                app_error.code,
-                app_error.message,
-            ));
+            return Err(app_error_response(&app_error));
         }
     };
 

@@ -8,9 +8,10 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
+use crate::http_api::{repo_error_response, resolve_repo_context};
 use crate::metrics::DelegationTelemetrySnapshot;
 use crate::repo_manager;
-use crate::search::{repo_error_response, resolve_repo_context, AppState};
+use crate::search::AppState;
 
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]

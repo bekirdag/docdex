@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.65
+- Consolidate repo-relative path handling, secure state-dir/repo-state helpers, and shared HTTP repo-resolution/index-readiness flows so API, CLI, index, memory, DAG, and MCP code paths stop carrying duplicate infrastructure logic; this also fixes AST search using the wrong repo indexer in multi-repo contexts.
+- Refactor the impact subsystem by splitting parser, store, and traversal responsibilities and by adding a fingerprint-invalidated parsed impact-graph cache so repeated impact queries stop reparsing `impact_graph.json` on every request.
+- Continue the runtime hardening pass by moving mswarm and mswarm telemetry HTTP paths to async `reqwest::Client`, decomposing MCP handler groups into focused modules, extracting bulky config/test support modules, and replacing remaining production `unwrap()`/`expect()` panic points with validated fallbacks.
+
 ## 0.2.64
 - Add automatic six-layer memory routing across HTTP, CLI, MCP, and `/v1/chat/completions`, including a compact `Automatic memory route` context and a unified `Core memory` block so agents do not have to choose memory lanes purely from prompt guidance.
 - Move memory routing earlier in the waterfall, reuse the same route for retrieval and prompt assembly, and gate repo/profile/wake-up recall plus chat-side archive and personal-preferences capture on meaningful read and write lane signals.

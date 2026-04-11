@@ -7,8 +7,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::warn;
 
-use crate::error::{AppError, ERR_INTERNAL_ERROR};
-use crate::search::{json_error, repo_error_response, status_for_app_error, AppState};
+use crate::error::{status_for_app_error, AppError};
+use crate::http_api::json_error;
+use crate::search::AppState;
 
 #[derive(Serialize)]
 struct ImpactErrorResponse {
@@ -216,32 +217,18 @@ pub(crate) async fn impact_graph_handler(
         }
     };
 
-    let repo = match crate::search::resolve_repo_context(
+    let repo = match super::shared::resolve_repo_with_index(
         &state,
         &headers,
         repo_id.repo_id.as_deref(),
         None,
         false,
-    ) {
+    )
+    .await
+    {
         Ok(repo) => repo,
-        Err(err) => return repo_error_response(err),
+        Err(response) => return response,
     };
-    if let Err(err) = crate::index::ensure_indexed(repo.indexer.clone()).await {
-        state.metrics.inc_error();
-        if let Some(app) = err.downcast_ref::<AppError>() {
-            return json_error(
-                status_for_app_error(app.code),
-                app.code,
-                app.message.clone(),
-            );
-        }
-        warn!(target: "docdexd", error = ?err, "indexing failed");
-        return json_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            ERR_INTERNAL_ERROR,
-            "indexing failed",
-        );
-    }
 
     let repo_id = match crate::symbols::repo_id_for_root(repo.indexer.repo_root()) {
         Ok(value) => value,
@@ -307,32 +294,18 @@ pub(crate) async fn impact_diagnostics_handler(
     Query(params): Query<ImpactDiagnosticsQuery>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let repo = match crate::search::resolve_repo_context(
+    let repo = match super::shared::resolve_repo_with_index(
         &state,
         &headers,
         params.repo_id.as_deref(),
         None,
         false,
-    ) {
+    )
+    .await
+    {
         Ok(repo) => repo,
-        Err(err) => return repo_error_response(err),
+        Err(response) => return response,
     };
-    if let Err(err) = crate::index::ensure_indexed(repo.indexer.clone()).await {
-        state.metrics.inc_error();
-        if let Some(app) = err.downcast_ref::<AppError>() {
-            return json_error(
-                status_for_app_error(app.code),
-                app.code,
-                app.message.clone(),
-            );
-        }
-        warn!(target: "docdexd", error = ?err, "indexing failed");
-        return json_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            ERR_INTERNAL_ERROR,
-            "indexing failed",
-        );
-    }
 
     let repo_id = match crate::symbols::repo_id_for_root(repo.indexer.repo_root()) {
         Ok(value) => value,
@@ -440,22 +413,5 @@ pub(crate) async fn impact_diagnostics_handler(
 }
 
 fn normalize_rel_path(input: &str) -> Option<String> {
-    let path = std::path::Path::new(input);
-    if path.is_absolute() {
-        return None;
-    }
-    let mut clean = std::path::PathBuf::new();
-    for component in path.components() {
-        match component {
-            std::path::Component::CurDir => continue,
-            std::path::Component::Normal(part) => clean.push(part),
-            _ => return None,
-        }
-    }
-    let clean_str = clean.to_string_lossy().replace('\\', "/");
-    if clean_str.is_empty() {
-        None
-    } else {
-        Some(clean_str)
-    }
+    crate::path_utils::normalize_repo_relative_string(input)
 }

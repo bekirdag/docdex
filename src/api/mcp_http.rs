@@ -1,9 +1,11 @@
 use crate::api::v1::initialize::{parse_root_uri, resolve_initialize};
+use crate::error::status_for_app_error;
 use crate::error::{
     repo_resolution_details, AppError, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
     ERR_MISSING_DEPENDENCY, ERR_MISSING_REPO_PATH,
 };
-use crate::search::{json_error, json_error_with_details, status_for_app_error, AppState};
+use crate::http_api::{app_error_response, json_error};
+use crate::search::AppState;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -149,7 +151,7 @@ pub async fn mcp_message_handler(
                     }
                 }
                 Err(err) => {
-                    return app_error_response(err);
+                    return app_error_response(&err);
                 }
             }
         } else if bound_root.is_none() {
@@ -264,19 +266,19 @@ async fn handle_mcp_single(
                 ensure_initialize_root(&mut payload, &root);
                 Some(root)
             }
-            Err(err) => return Err(app_error_response(err)),
+            Err(err) => return Err(app_error_response(&err)),
         }
     } else if let Some(root_uri) = extract_project_root(&payload) {
         match resolve_repo_for_mcp(state, Some(root_uri)) {
             Ok(root) => Some(root),
             Err(err) => {
-                return Err(app_error_response(err));
+                return Err(app_error_response(&err));
             }
         }
     } else {
         match resolve_repo_for_mcp(state, None) {
             Ok(root) => Some(root),
-            Err(err) => return Err(app_error_response(err)),
+            Err(err) => return Err(app_error_response(&err)),
         }
     };
     match router.call(repo_root.as_deref(), payload).await {
@@ -286,15 +288,6 @@ async fn handle_mcp_single(
             ERR_INTERNAL_ERROR,
             format!("mcp proxy failed: {err}"),
         )),
-    }
-}
-
-fn app_error_response(err: AppError) -> Response {
-    let status = status_for_app_error(err.code);
-    if let Some(details) = err.details {
-        json_error_with_details(status, err.code, err.message, details)
-    } else {
-        json_error(status, err.code, err.message)
     }
 }
 

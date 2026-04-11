@@ -421,9 +421,24 @@ fn is_retryable_mcp_error(err: &anyhow::Error) -> bool {
     }
     let msg = err.to_string().to_lowercase();
     msg.contains("broken pipe")
+        || msg.contains("database is locked")
+        || msg.contains("database table is locked")
+        || msg.contains("sql busy")
         || msg.contains("write mcp request")
         || msg.contains("flush mcp request")
         || msg.contains("mcp proxy failed")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_retryable_mcp_error;
+    use anyhow::anyhow;
+
+    #[test]
+    fn retryable_mcp_error_detects_transient_sqlite_locking() {
+        assert!(is_retryable_mcp_error(&anyhow!("database is locked")));
+        assert!(is_retryable_mcp_error(&anyhow!("database table is locked")));
+    }
 }
 
 struct McpSpawnOptions {

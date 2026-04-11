@@ -7,9 +7,10 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::error::{ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_PROFILE_DISABLED};
+use crate::http_api::json_error;
 use crate::profiles::evolution::{build_ollama_evolution_client, EvolutionEngine};
 use crate::profiles::{Agent, Preference, PreferenceCategory, ProfileEmbedder};
-use crate::search::{json_error, AppState};
+use crate::search::AppState;
 use uuid::Uuid;
 
 #[derive(Deserialize)]

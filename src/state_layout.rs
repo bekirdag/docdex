@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -323,6 +323,37 @@ impl StatePaths {
             mswarm_packages_dir: self.layout.mswarm_packages_dir().display().to_string(),
         }
     }
+}
+
+pub fn ensure_repo_state_root(repo_state_root: &Path) -> Result<()> {
+    ensure_state_dir_secure(repo_state_root)
+        .with_context(|| format!("create repo state dir at {}", repo_state_root.display()))?;
+    Ok(())
+}
+
+pub fn repo_state_root_from_state_dir(state_dir: &Path) -> PathBuf {
+    if state_dir.file_name().and_then(|name| name.to_str()) == Some("index") {
+        if let Some(parent) = state_dir.parent() {
+            return parent.to_path_buf();
+        }
+    }
+    state_dir.to_path_buf()
+}
+
+pub fn locks_dir_from_repo_state_root(repo_state_root: &Path) -> PathBuf {
+    if let Some(repos_dir) = repo_state_root.parent() {
+        if repos_dir.file_name().and_then(|name| name.to_str()) == Some("repos") {
+            if let Some(base_dir) = repos_dir.parent() {
+                return base_dir.join("locks");
+            }
+        }
+    }
+    repo_state_root.join("locks")
+}
+
+pub fn locks_dir_from_state_dir(state_dir: &Path) -> PathBuf {
+    let repo_state_root = repo_state_root_from_state_dir(state_dir);
+    locks_dir_from_repo_state_root(&repo_state_root)
 }
 
 pub fn resolve_state_paths(

@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use serde_json::json;
 use std::fs;
 use std::io::{self, Read};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 pub(crate) fn run(command: super::super::FileCommand) -> Result<()> {
     match command {
@@ -93,23 +93,7 @@ fn resolve_repo_path(
 }
 
 fn normalize_rel_path(input: &str) -> Option<PathBuf> {
-    let path = Path::new(input);
-    if path.is_absolute() {
-        return None;
-    }
-    let mut clean = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => continue,
-            Component::Normal(part) => clean.push(part),
-            _ => return None,
-        }
-    }
-    if clean.as_os_str().is_empty() {
-        None
-    } else {
-        Some(clean)
-    }
+    crate::path_utils::normalize_repo_relative_path_from_str(input)
 }
 
 fn ensure_newline_at_path(path: &Path) -> Result<bool> {

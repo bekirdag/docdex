@@ -1,7 +1,8 @@
 use anyhow::{anyhow, Context, Result};
-use reqwest::blocking::Client;
+use reqwest::{Client, Response};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::future::Future;
 use std::time::Duration;
 
 pub const DOCDEX_CONSENT_POLICY_VERSION: &str = "2026-03-18";
@@ -106,7 +107,35 @@ pub fn effective_policy_version(value: Option<&str>) -> String {
         .to_string()
 }
 
+pub(crate) fn block_on_http_future<F, T>(future: F) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(future)),
+        Err(_) => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("build mswarm helper runtime")?
+            .block_on(future),
+    }
+}
+
 pub fn issue_paid_docdex_consent(
+    base_url: &str,
+    api_key: &str,
+    policy_version: &str,
+    timestamp_ms: u128,
+) -> Result<ConsentIssueResponse> {
+    block_on_http_future(issue_paid_docdex_consent_async(
+        base_url,
+        api_key,
+        policy_version,
+        timestamp_ms,
+    ))
+}
+
+pub async fn issue_paid_docdex_consent_async(
     base_url: &str,
     api_key: &str,
     policy_version: &str,
@@ -128,11 +157,26 @@ pub fn issue_paid_docdex_consent(
         .header("x-api-key", api_key)
         .json(&payload)
         .send()
+        .await
         .context("call mswarm paid consent endpoint")?;
-    parse_response(response, "paid consent")
+    parse_response(response, "paid consent").await
 }
 
 pub fn register_free_docdex_client(
+    base_url: &str,
+    client_id: Option<&str>,
+    policy_version: &str,
+    timestamp_ms: u128,
+) -> Result<ConsentIssueResponse> {
+    block_on_http_future(register_free_docdex_client_async(
+        base_url,
+        client_id,
+        policy_version,
+        timestamp_ms,
+    ))
+}
+
+pub async fn register_free_docdex_client_async(
     base_url: &str,
     client_id: Option<&str>,
     policy_version: &str,
@@ -152,11 +196,20 @@ pub fn register_free_docdex_client(
         .post(url)
         .json(&payload)
         .send()
+        .await
         .context("call mswarm free client register endpoint")?;
-    parse_response(response, "free client registration")
+    parse_response(response, "free client registration").await
 }
 
 pub fn revoke_docdex_consent(
+    base_url: &str,
+    consent_token: &str,
+    reason: Option<&str>,
+) -> Result<ConsentRevokeResponse> {
+    block_on_http_future(revoke_docdex_consent_async(base_url, consent_token, reason))
+}
+
+pub async fn revoke_docdex_consent_async(
     base_url: &str,
     consent_token: &str,
     reason: Option<&str>,
@@ -171,11 +224,30 @@ pub fn revoke_docdex_consent(
         .post(url)
         .json(&payload)
         .send()
+        .await
         .context("call mswarm consent revoke endpoint")?;
-    parse_response(response, "consent revoke")
+    parse_response(response, "consent revoke").await
 }
 
 pub fn request_docdex_data_deletion(
+    base_url: &str,
+    api_key: Option<&str>,
+    consent_token: &str,
+    client_id: Option<&str>,
+    client_type: Option<&str>,
+    reason: Option<&str>,
+) -> Result<DataDeletionRequestResponse> {
+    block_on_http_future(request_docdex_data_deletion_async(
+        base_url,
+        api_key,
+        consent_token,
+        client_id,
+        client_type,
+        reason,
+    ))
+}
+
+pub async fn request_docdex_data_deletion_async(
     base_url: &str,
     api_key: Option<&str>,
     consent_token: &str,
@@ -198,8 +270,9 @@ pub fn request_docdex_data_deletion(
     }
     let response = request
         .send()
+        .await
         .context("call mswarm data deletion endpoint")?;
-    parse_response(response, "data deletion request")
+    parse_response(response, "data deletion request").await
 }
 
 fn build_client() -> Result<Client> {
@@ -213,13 +286,13 @@ fn endpoint_url(base_url: &str, path: &str) -> String {
     format!("{}{}", base_url.trim_end_matches('/'), path)
 }
 
-fn parse_response<T>(response: reqwest::blocking::Response, context_label: &str) -> Result<T>
+async fn parse_response<T>(response: Response, context_label: &str) -> Result<T>
 where
     T: DeserializeOwned,
 {
     let status = response.status();
     if !status.is_success() {
-        let body = response.text().unwrap_or_default();
+        let body = response.text().await.unwrap_or_default();
         return Err(anyhow!(
             "mswarm {} failed with status {}: {}",
             context_label,
@@ -229,5 +302,6 @@ where
     }
     response
         .json::<T>()
+        .await
         .with_context(|| format!("decode mswarm {} response", context_label))
 }

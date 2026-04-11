@@ -1,8 +1,7 @@
 use crate::conversations::{read_diary_entries, record_diary_entry_episode, write_diary_entry};
 use crate::error::{ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED};
-use crate::search::{
-    json_error, repo_error_response, resolve_conversation_context, AppState, RepoIdQuery, RequestId,
-};
+use crate::http_api::{json_error, repo_error_response, resolve_conversation_context};
+use crate::search::{AppState, RepoIdQuery, RequestId};
 use axum::{
     extract::{Query, State},
     http::HeaderMap,

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.66
+- Update `Cargo.lock` to `rustls-webpki 0.103.12` so the nightly `cargo audit` gate clears RustSec `RUSTSEC-2026-0098` and `RUSTSEC-2026-0099`.
+- Bump release metadata to 0.2.66.
+
 ## 0.2.65
 - Consolidate repo-relative path handling, secure state-dir/repo-state helpers, and shared HTTP repo-resolution/index-readiness flows so API, CLI, index, memory, DAG, and MCP code paths stop carrying duplicate infrastructure logic; this also fixes AST search using the wrong repo indexer in multi-repo contexts.
 - Refactor the impact subsystem by splitting parser, store, and traversal responsibilities and by adding a fingerprint-invalidated parsed impact-graph cache so repeated impact queries stop reparsing `impact_graph.json` on every request.

@@ -24,7 +24,11 @@ use crate::llm::local_library::{
 };
 use crate::mcoda::ratings::{apply_agent_rating, AgentRunRating};
 use crate::setup::test_support::ENV_LOCK;
+use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::{Aes256Gcm, Nonce};
 use anyhow::anyhow;
+use base64::engine::general_purpose::STANDARD as Base64Engine;
+use base64::Engine;
 use parking_lot::ReentrantMutexGuard;
 use rusqlite::Connection;
 use std::fs;
@@ -89,6 +93,20 @@ fn make_profile(total_gb: f64, gpu: bool) -> HardwareProfile {
     }
 }
 
+fn encrypt_secret(key: &[u8], iv: &[u8; 12], plaintext: &str) -> String {
+    let cipher = Aes256Gcm::new_from_slice(key).expect("valid key");
+    let nonce = Nonce::from_slice(iv);
+    let mut encrypted = cipher
+        .encrypt(nonce, plaintext.as_bytes())
+        .expect("encrypt");
+    let tag = encrypted.split_off(encrypted.len() - 16);
+    let mut payload = Vec::new();
+    payload.extend_from_slice(iv);
+    payload.extend_from_slice(&tag);
+    payload.extend_from_slice(&encrypted);
+    Base64Engine.encode(payload)
+}
+
 fn seed_mcoda_registry_with_adapter(
     home: &Path,
     agent_id: &str,
@@ -100,6 +118,13 @@ fn seed_mcoda_registry_with_adapter(
     fs::create_dir_all(&mcoda_dir)?;
     let db_path = mcoda_dir.join("mcoda.db");
     let conn = Connection::open(db_path)?;
+    let config_json = if adapter.ends_with("-cli") {
+        Some(serde_json::to_string(&serde_json::json!({
+            "binary": std::env::current_exe()?.to_string_lossy().to_string()
+        }))?)
+    } else {
+        None
+    };
     conn.execute_batch(
         "CREATE TABLE agents (
             id TEXT PRIMARY KEY,
@@ -117,11 +142,12 @@ fn seed_mcoda_registry_with_adapter(
     )?;
     conn.execute(
         "INSERT INTO agents (id, slug, adapter, default_model, config_json, created_at, updated_at)
-         VALUES (?1, ?2, ?3, NULL, NULL, ?4, ?5)",
+         VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6)",
         rusqlite::params![
             agent_id,
             slug,
             adapter,
+            config_json,
             "2026-01-01T00:00:00Z",
             "2026-01-01T00:00:00Z"
         ],
@@ -200,6 +226,10 @@ fn seed_managed_cloud_mcoda_registry(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mcoda_dir = home.join(".mcoda");
     fs::create_dir_all(&mcoda_dir)?;
+    let key_path = mcoda_dir.join("mcoda.key");
+    let key = vec![7u8; 32];
+    let iv = [3u8; 12];
+    fs::write(&key_path, &key)?;
     let db_path = mcoda_dir.join("mcoda.db");
     let conn = Connection::open(db_path)?;
     conn.execute_batch(
@@ -216,6 +246,13 @@ fn seed_managed_cloud_mcoda_registry(
             agent_id TEXT PRIMARY KEY,
             status TEXT NOT NULL,
             details_json TEXT
+        );
+        CREATE TABLE agent_auth (
+            agent_id TEXT PRIMARY KEY,
+            encrypted_secret TEXT NOT NULL,
+            last_verified_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
         );",
     )?;
     let config_json = serde_json::json!({
@@ -245,6 +282,16 @@ fn seed_managed_cloud_mcoda_registry(
                 .as_ref()
                 .map(serde_json::to_string)
                 .transpose()?
+        ],
+    )?;
+    conn.execute(
+        "INSERT INTO agent_auth (agent_id, encrypted_secret, last_verified_at, created_at, updated_at)
+         VALUES (?1, ?2, NULL, ?3, ?4)",
+        rusqlite::params![
+            agent_id,
+            encrypt_secret(&key, &iv, "test-secret"),
+            "2026-01-01T00:00:00Z",
+            "2026-01-01T00:00:00Z"
         ],
     )?;
     Ok(())

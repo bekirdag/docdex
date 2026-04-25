@@ -1,10 +1,11 @@
 # Changelog
 
-## 0.2.67
+## 0.2.68
 - Harden packaged local delegation by failing fast when mcoda CLI-backed adapters point at missing binaries, routing Codex CLI prompts through stdin reliably, and retrying OpenAI-compatible `429` responses when `retry_after_ms` fits inside the request timeout.
 - Reduce repeat packaged delegation failures by sharing Ollama cooldowns across sibling aliases of the same backend model, preserving mcoda health details from registry refresh/load paths, and extending the mcoda CLI refresh timeout to 30 seconds.
 - Improve packaged mswarm setup recovery by surfacing typed paid-consent auth failures, clearing stale upload signing secrets or API keys when consent/config changes invalidate them, and making the setup wizard retry/abort flow clearer.
-- Bump packaged release metadata to 0.2.67.
+- Fix packaged CI-only delegation tests by seeding executable CLI paths for CLI adapters and encrypted auth for explicit managed-cloud fixtures so `cargo test --locked --all` passes in GitHub Actions.
+- Bump packaged release metadata to 0.2.68.
 
 ## 0.2.66
 - Update the packaged daemon lockfile to `rustls-webpki 0.103.12` so the nightly `cargo audit` gate clears RustSec `RUSTSEC-2026-0098` and `RUSTSEC-2026-0099`.

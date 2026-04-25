@@ -1,7 +1,8 @@
-use anyhow::{anyhow, Context, Result};
-use reqwest::{Client, Response};
+use anyhow::{Context, Result};
+use reqwest::{Client, Response, StatusCode};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::future::Future;
 use std::time::Duration;
 
@@ -13,6 +14,45 @@ const FREE_CLIENT_REGISTER_PATH: &str = "/v1/swarm/docdex/free-client/register";
 const CONSENT_REVOKE_PATH: &str = "/v1/swarm/consent/revoke";
 const DATA_DELETION_REQUEST_PATH: &str = "/v1/swarm/data/deletion-request";
 const DOCDEX_CONSENT_TYPES: [&str; 2] = ["anonymous", "non_anonymous"];
+
+#[derive(Debug)]
+struct MswarmApiError {
+    context_label: String,
+    status: StatusCode,
+    body: String,
+}
+
+impl MswarmApiError {
+    fn new(context_label: &str, status: StatusCode, body: String) -> Self {
+        Self {
+            context_label: context_label.to_string(),
+            status,
+            body,
+        }
+    }
+}
+
+impl fmt::Display for MswarmApiError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.body.trim().is_empty() {
+            write!(
+                f,
+                "mswarm {} failed with status {}",
+                self.context_label, self.status
+            )
+        } else {
+            write!(
+                f,
+                "mswarm {} failed with status {}: {}",
+                self.context_label,
+                self.status,
+                self.body.trim()
+            )
+        }
+    }
+}
+
+impl std::error::Error for MswarmApiError {}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ConsentIssueResponse {
@@ -275,6 +315,22 @@ pub async fn request_docdex_data_deletion_async(
     parse_response(response, "data deletion request").await
 }
 
+pub fn is_paid_consent_auth_failure(err: &anyhow::Error) -> bool {
+    if let Some(api_err) = err.downcast_ref::<MswarmApiError>() {
+        return api_err.context_label == "paid consent"
+            && matches!(
+                api_err.status,
+                StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+            );
+    }
+
+    let message = err.to_string();
+    (message.contains("mswarm paid consent failed with status 401")
+        || message.contains("mswarm paid consent failed with status 403"))
+        || (message.contains("mswarm paid consent failed")
+            && message.contains("Missing or invalid API key"))
+}
+
 fn build_client() -> Result<Client> {
     Client::builder()
         .timeout(Duration::from_secs(20))
@@ -293,15 +349,43 @@ where
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
-        return Err(anyhow!(
-            "mswarm {} failed with status {}: {}",
+        return Err(anyhow::Error::new(MswarmApiError::new(
             context_label,
             status,
-            body.trim()
-        ));
+            body,
+        )));
     }
     response
         .json::<T>()
         .await
         .with_context(|| format!("decode mswarm {} response", context_label))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_paid_consent_auth_failure_from_typed_error() {
+        let err = anyhow::Error::new(MswarmApiError::new(
+            "paid consent",
+            StatusCode::UNAUTHORIZED,
+            r#"{"code":"unauthorized"}"#.to_string(),
+        ));
+        assert!(is_paid_consent_auth_failure(&err));
+    }
+
+    #[test]
+    fn ignores_non_auth_or_non_paid_consent_failures() {
+        let forbidden_other = anyhow::Error::new(MswarmApiError::new(
+            "data deletion request",
+            StatusCode::UNAUTHORIZED,
+            r#"{"code":"unauthorized"}"#.to_string(),
+        ));
+        let generic = anyhow::anyhow!(
+            "mswarm free client registration failed with status 500 Internal Server Error"
+        );
+        assert!(!is_paid_consent_auth_failure(&forbidden_other));
+        assert!(!is_paid_consent_auth_failure(&generic));
+    }
 }

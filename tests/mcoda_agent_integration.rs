@@ -211,6 +211,7 @@ fn mcoda_registry_loads_and_decrypts() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn adapter_falls_back_to_cli_when_secret_missing() -> Result<(), Box<dyn Error>> {
+    let stub_binary = std::env::current_exe()?;
     let agent = McodaAgent {
         id: "agent-1".to_string(),
         slug: "agent-one".to_string(),
@@ -225,7 +226,8 @@ fn adapter_falls_back_to_cli_when_secret_missing() -> Result<(), Box<dyn Error>>
         best_usage: None,
         reasoning_rating: None,
         health_status: None,
-        cli_binary: None,
+        health_details: None,
+        cli_binary: Some(stub_binary.to_string_lossy().to_string()),
         capabilities: Vec::new(),
         models: Vec::new(),
         auth: None,

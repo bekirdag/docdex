@@ -26,7 +26,7 @@ const MCODA_AGENT_LIST_JSON_REFRESH_ARGS: [&str; 4] =
     ["agent", "list", "--json", "--refresh-health"];
 const MCODA_AGENT_LIST_JSON_ARGS: [&str; 3] = ["agent", "list", "--json"];
 const DOCDEX_MCODA_CLI_TIMEOUT_MS: &str = "DOCDEX_MCODA_CLI_TIMEOUT_MS";
-const DEFAULT_MCODA_CLI_TIMEOUT_MS: u64 = 5_000;
+const DEFAULT_MCODA_CLI_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_MCODA_CLI_BACKOFF_MS: u64 = 60_000;
 const MCODA_CLI_POLL_INTERVAL_MS: u64 = 50;
 const AUTH_IV_LEN: usize = 12;
@@ -54,6 +54,7 @@ pub struct McodaAgent {
     pub best_usage: Option<String>,
     pub reasoning_rating: Option<f64>,
     pub health_status: Option<String>,
+    pub health_details: Option<Value>,
     pub cli_binary: Option<String>,
     pub capabilities: Vec<String>,
     pub models: Vec<McodaAgentModel>,
@@ -200,6 +201,12 @@ struct McodaCliHealthRecord {
     details: Option<Value>,
 }
 
+#[derive(Debug, Clone)]
+struct McodaAgentHealthRecord {
+    status: String,
+    details: Option<Value>,
+}
+
 struct McodaCliOutput {
     status: ExitStatus,
     stdout: Vec<u8>,
@@ -269,7 +276,8 @@ impl McodaRegistry {
                 agent.auth = Some(value);
             }
             if let Some(value) = health.remove(&agent.id) {
-                agent.health_status = Some(value);
+                agent.health_status = Some(value.status);
+                agent.health_details = value.details;
             }
             if let Some(values) = usage_limits.remove(&agent.id) {
                 agent.usage_limits = values;
@@ -669,8 +677,12 @@ fn parse_mcoda_cli_agents(raw: &str) -> Result<Vec<McodaAgent>> {
             .as_ref()
             .and_then(|health| cli_binary_from_health_details(health.details.as_ref()))
             .or_else(|| cli_binary_from_config(config.as_ref()));
-        let health_status = trim_non_empty(record.health_status)
-            .or_else(|| health.and_then(|health| trim_non_empty(health.status)));
+        let health_status = trim_non_empty(record.health_status).or_else(|| {
+            health
+                .as_ref()
+                .and_then(|health| trim_non_empty_str(health.status.as_deref()))
+        });
+        let health_details = health.as_ref().and_then(|health| health.details.clone());
 
         agents.push(McodaAgent {
             id,
@@ -686,6 +698,7 @@ fn parse_mcoda_cli_agents(raw: &str) -> Result<Vec<McodaAgent>> {
             best_usage: trim_non_empty(record.best_usage),
             reasoning_rating: record.reasoning_rating,
             health_status,
+            health_details,
             cli_binary,
             capabilities: record.capabilities,
             models,
@@ -764,6 +777,12 @@ fn hydrate_cli_agents_from_db(agents: &mut [McodaAgent], db_path: &Path, key_pat
             }
             if agent.default_model.is_none() {
                 agent.default_model = db_agent.default_model.clone();
+            }
+            if agent.health_status.is_none() {
+                agent.health_status = db_agent.health_status.clone();
+            }
+            if agent.health_details.is_none() {
+                agent.health_details = db_agent.health_details.clone();
             }
             if agent.cli_binary.is_none() {
                 agent.cli_binary = db_agent.cli_binary.clone();
@@ -928,6 +947,7 @@ fn load_agents(conn: &Connection) -> Result<Vec<McodaAgent>> {
             auth: None,
             usage_limits: Vec::new(),
             health_status: None,
+            health_details: None,
             cli_binary,
         });
     }
@@ -1069,24 +1089,46 @@ fn load_auth(conn: &Connection, key_path: &Path) -> Result<HashMap<String, Mcoda
     Ok(map)
 }
 
-fn load_health(conn: &Connection) -> Result<HashMap<String, String>> {
+fn load_health(conn: &Connection) -> Result<HashMap<String, McodaAgentHealthRecord>> {
     if !table_exists(conn, "agent_health")? {
         return Ok(HashMap::new());
     }
-    let mut stmt = conn.prepare(
-        "SELECT agent_id, status
-         FROM agent_health
-         ORDER BY agent_id ASC",
-    )?;
+    let columns = table_columns(conn, "agent_health")?;
+    let details_sql = if columns.contains("details_json") {
+        "details_json"
+    } else {
+        "NULL"
+    };
+    let mut stmt = conn.prepare(&format!(
+        "SELECT agent_id, status, {details_sql} as details_json
+             FROM agent_health
+             ORDER BY agent_id ASC"
+    ))?;
     let rows = stmt.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
     })?;
-    let mut map: HashMap<String, String> = HashMap::new();
+    let mut map: HashMap<String, McodaAgentHealthRecord> = HashMap::new();
     for row in rows {
-        let (agent_id, status) = row?;
+        let (agent_id, status, details_raw) = row?;
         let trimmed = status.trim();
         if !trimmed.is_empty() {
-            map.insert(agent_id, trimmed.to_string());
+            let details = match details_raw {
+                Some(raw) => {
+                    Some(serde_json::from_str(&raw).context("parse agent_health.details_json")?)
+                }
+                None => None,
+            };
+            map.insert(
+                agent_id,
+                McodaAgentHealthRecord {
+                    status: trimmed.to_string(),
+                    details,
+                },
+            );
         }
     }
     Ok(map)

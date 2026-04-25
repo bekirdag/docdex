@@ -345,13 +345,11 @@ pub fn ensure_mswarm_telemetry_consent(
     config_data.integrations.mswarm.telemetry.client_id = client_id.clone();
     config_data.integrations.mswarm.telemetry.client_type = client_type.clone();
     config_data.integrations.mswarm.telemetry.registered_at_ms = registered_at_ms;
-    if let Some(secret) = upload_signing_secret {
-        config_data
-            .integrations
-            .mswarm
-            .telemetry
-            .upload_signing_secret = Some(secret);
-    }
+    config_data
+        .integrations
+        .mswarm
+        .telemetry
+        .upload_signing_secret = upload_signing_secret;
 
     config::write_config(&config_path, &config_data).context("write config")?;
 
@@ -641,6 +639,33 @@ base_url = "https://custom.mswarm.example/"
     }
 
     #[test]
+    fn set_mswarm_config_clears_api_key_when_given_empty_string() -> Result<()> {
+        let _guard = ENV_LOCK.lock();
+        let dir = TempDir::new()?;
+        let path = dir.path().join("config.toml");
+        std::env::set_var("DOCDEX_CONFIG_PATH", &path);
+        std::fs::write(
+            &path,
+            r#"[integrations.mswarm]
+base_url = "https://api.mswarm.org/"
+api_key = "revoked-key"
+"#,
+        )?;
+
+        let changed = set_mswarm_config(MswarmConfigUpdate {
+            api_key: Some(String::new()),
+            base_url: None,
+            use_for_web_search: None,
+        })?;
+        assert!(changed);
+        let contents = std::fs::read_to_string(&path)?;
+        assert!(!contents.contains("revoked-key"));
+
+        std::env::remove_var("DOCDEX_CONFIG_PATH");
+        Ok(())
+    }
+
+    #[test]
     fn set_mswarm_telemetry_config_updates_config() -> Result<()> {
         let _guard = ENV_LOCK.lock();
         let dir = TempDir::new()?;
@@ -711,6 +736,40 @@ base_url = "https://custom.mswarm.example/"
         assert!(contents.contains("client_type = \"free_docdex_client\""));
         assert!(contents.contains("registered_at_ms = 123"));
         assert!(contents.contains("upload_signing_secret = \"upload-secret-123\""));
+
+        std::env::remove_var("DOCDEX_CONFIG_PATH");
+        Ok(())
+    }
+
+    #[test]
+    fn ensure_mswarm_telemetry_consent_paid_client_clears_stale_upload_secret() -> Result<()> {
+        let _guard = ENV_LOCK.lock();
+        let dir = TempDir::new()?;
+        let path = dir.path().join("config.toml");
+        let response = serde_json::json!({
+            "consent_token": "token-paid",
+            "expires_in_seconds": 2592000,
+            "consent_types": ["anonymous", "non_anonymous"],
+            "issued_at_ms": 456_u64,
+            "client_type": "paid_docdex_client"
+        })
+        .to_string();
+        let server = MockMswarmServer::spawn(response)?;
+        std::env::set_var("DOCDEX_CONFIG_PATH", &path);
+        std::fs::write(
+            &path,
+            format!(
+                "[integrations.mswarm]\nbase_url = \"{}/\"\napi_key = \"valid-key\"\n\n[integrations.mswarm.telemetry]\nupload_signing_secret = \"stale-secret\"\n",
+                server.base_url()
+            ),
+        )?;
+
+        let status = ensure_mswarm_telemetry_consent(456)?;
+        assert_eq!(status.client_type, "paid_docdex_client");
+
+        let contents = std::fs::read_to_string(&path)?;
+        assert!(!contents.contains("stale-secret"));
+        assert!(contents.contains("consent_token = \"token-paid\""));
 
         std::env::remove_var("DOCDEX_CONFIG_PATH");
         Ok(())

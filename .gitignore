@@ -32,3 +32,4 @@ tmp/
 
 # Local agent planning/task/progress artifacts
 /docs/planning/
+.claude/

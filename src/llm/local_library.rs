@@ -818,6 +818,52 @@ fn blocking_failure_for_runtime_health(kind: &str, error: &str) -> bool {
             .contains("delegation output must not include markdown fences")
 }
 
+fn ollama_failure_model(error: &str) -> Option<&str> {
+    [
+        "ollama generate failed for model ",
+        "ollama generate request failed for model ",
+    ]
+    .iter()
+    .find_map(|prefix| {
+        error
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.split(" at ").next())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn failure_history_labels(local_target: &str, error: &str) -> Vec<String> {
+    let mut labels = Vec::new();
+    let target = local_target.trim();
+    if !target.is_empty() {
+        labels.push(target.to_string());
+        if let Some(model) = target.strip_prefix("model:") {
+            let model = model.trim();
+            if !model.is_empty() {
+                labels.push(model.to_string());
+            }
+        }
+    }
+    if let Some(model) = ollama_failure_model(error) {
+        labels.push(format!("model:{model}"));
+        labels.push(model.to_string());
+    }
+    labels.sort();
+    labels.dedup();
+    labels
+}
+
+fn update_failure_window(
+    failures: &mut HashMap<String, LocalTargetFailureWindow>,
+    label: &str,
+    failure_at_ms: u128,
+) {
+    let entry = failures.entry(label.to_string()).or_default();
+    entry.recent_failures = entry.recent_failures.saturating_add(1);
+    entry.last_failure_at_ms = entry.last_failure_at_ms.max(failure_at_ms);
+}
+
 fn local_target_failure_threshold() -> usize {
     env_u64(LOCAL_TARGET_FAILURE_THRESHOLD_ENV)
         .map(|value| value as usize)
@@ -850,6 +896,13 @@ fn agent_recent_local_failure<'a>(
         .or_else(|| recent_failures.get(&format!("agent:{}", agent.slug)))
         .or_else(|| recent_failures.get(&agent.id))
         .or_else(|| recent_failures.get(&agent.slug))
+        .or_else(|| {
+            agent.default_model.as_deref().and_then(|model| {
+                recent_failures
+                    .get(&format!("model:{}", model.trim()))
+                    .or_else(|| recent_failures.get(model.trim()))
+            })
+        })
 }
 
 fn usage_limit_window_ms(window_type: &str) -> u128 {
@@ -977,9 +1030,9 @@ fn load_recent_local_target_failures(
         if now_ms.saturating_sub(failure_at_ms) > lookback_ms {
             continue;
         }
-        let entry = failures.entry(target.to_string()).or_default();
-        entry.recent_failures = entry.recent_failures.saturating_add(1);
-        entry.last_failure_at_ms = entry.last_failure_at_ms.max(failure_at_ms);
+        for label in failure_history_labels(target, &record.error) {
+            update_failure_window(&mut failures, &label, failure_at_ms);
+        }
     }
     failures.retain(|_, window| {
         window.recent_failures >= threshold
@@ -1249,6 +1302,7 @@ mod tests {
             best_usage: Some("code_writer".to_string()),
             reasoning_rating: Some(8.5),
             health_status: Some("healthy".to_string()),
+            health_details: None,
             cli_binary: None,
             capabilities: vec![
                 "code_write".to_string(),
@@ -1297,6 +1351,7 @@ mod tests {
             best_usage: Some("code_writer".to_string()),
             reasoning_rating: Some(8.3),
             health_status: Some("healthy".to_string()),
+            health_details: None,
             cli_binary: None,
             capabilities: vec!["code_write".to_string()],
             models: Vec::new(),
@@ -1449,6 +1504,71 @@ mod tests {
         let now = chrono::Utc::now().to_rfc3339();
         let record = format!(
             "{{\"ts\":\"{now}\",\"kind\":\"local_completion_failed\",\"local_target\":\"agent:agent-1\",\"error\":\"gemini CLI timeout\"}}\n"
+        );
+        fs::write(
+            logs_dir.join("delegation_local_failures.jsonl"),
+            format!("{record}{record}"),
+        )?;
+
+        let _home = EnvVarGuard::set("HOME", dir.path());
+        let _userprofile = EnvVarGuard::set("USERPROFILE", dir.path());
+        let agents = discover_mcoda_agents(Some(dir.path()), &LlmConfig::default());
+
+        assert_eq!(agents.len(), 1);
+        let entry = &agents[0];
+        assert_eq!(entry.health_status.as_deref(), Some("degraded"));
+        assert!(entry
+            .notes
+            .as_deref()
+            .unwrap_or_default()
+            .contains("recent local delegation failures"));
+        Ok(())
+    }
+
+    #[test]
+    fn discover_mcoda_agents_marks_shared_model_failures_degraded() -> Result<()> {
+        let _guard = ENV_LOCK.lock();
+        let dir = TempDir::new()?;
+        let mcoda_dir = dir.path().join(".mcoda");
+        fs::create_dir_all(&mcoda_dir)?;
+        let db_path = mcoda_dir.join("mcoda.db");
+        let conn = Connection::open(&db_path)?;
+        conn.execute_batch(
+            "CREATE TABLE agents (
+                id TEXT PRIMARY KEY,
+                slug TEXT NOT NULL,
+                adapter TEXT NOT NULL,
+                default_model TEXT,
+                config_json TEXT,
+                created_at TEXT,
+                updated_at TEXT,
+                rating REAL,
+                cost_per_million REAL,
+                max_complexity INTEGER,
+                best_usage TEXT,
+                reasoning_rating REAL
+            );
+            CREATE TABLE agent_health (
+                agent_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL
+            );",
+        )?;
+        conn.execute(
+            "INSERT INTO agents (id, slug, adapter, default_model, config_json, created_at, updated_at, rating, cost_per_million, max_complexity, best_usage, reasoning_rating)
+             VALUES (?1, ?2, ?3, ?4, NULL, NULL, NULL, NULL, 0.0, NULL, NULL, NULL)",
+            params!["agent-1", "agent-one", "ollama", "shared-model"],
+        )?;
+        conn.execute(
+            "INSERT INTO agent_health (agent_id, status) VALUES (?1, ?2)",
+            params!["agent-1", "healthy"],
+        )?;
+        drop(conn);
+
+        let logs_dir = dir.path().join("logs").join("errors");
+        fs::create_dir_all(&logs_dir)?;
+        let now = chrono::Utc::now().to_rfc3339();
+        let record = format!(
+            "{{\"ts\":\"{now}\",\"kind\":\"local_completion_failed\",\"local_target\":\"agent:alias-agent\",\"error\":\"ollama generate failed for model shared-model at http://127.0.0.1:11434 with timeout 1000ms (500 Internal Server Error): model failed to load\"}}\n"
         );
         fs::write(
             logs_dir.join("delegation_local_failures.jsonl"),

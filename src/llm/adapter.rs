@@ -1,6 +1,7 @@
 use crate::mcoda::registry::McodaAgent;
 use anyhow::{anyhow, Context, Result};
-use reqwest::Client;
+use reqwest::header::{HeaderMap, RETRY_AFTER};
+use reqwest::{Client, StatusCode};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::future::Future;
@@ -8,7 +9,8 @@ use std::pin::Pin;
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::Command;
-use tokio::time::timeout;
+use tokio::time::{sleep, timeout, Instant};
+use which::which;
 
 const DEFAULT_CODEX_MODEL: &str = "gpt-5.1-codex-max";
 const DEFAULT_OLLAMA_CLI_MODEL: &str = "llama3";
@@ -110,22 +112,27 @@ pub fn resolve_agent_adapter(agent: &McodaAgent) -> Result<LlmAdapter> {
         }
         "ollama-cli" => {
             let command = resolve_cli_command(agent, adapter_type.as_str());
+            ensure_cli_command_available(adapter_type.as_str(), &command)?;
             LlmAdapter::OllamaCli(OllamaCliClient::new(model, adapter_type, command))
         }
         "codex-cli" => {
             let command = resolve_cli_command(agent, adapter_type.as_str());
+            ensure_cli_command_available(adapter_type.as_str(), &command)?;
             LlmAdapter::CodexCli(CodexCliClient::new(model, adapter_type, command))
         }
         "openai-cli" => {
             let command = resolve_cli_command(agent, adapter_type.as_str());
+            ensure_cli_command_available(adapter_type.as_str(), &command)?;
             LlmAdapter::OpenAiCli(CodexCliClient::new(model, adapter_type, command))
         }
         "gemini-cli" => {
             let command = resolve_cli_command(agent, adapter_type.as_str());
+            ensure_cli_command_available(adapter_type.as_str(), &command)?;
             LlmAdapter::GeminiCli(GeminiCliClient::new(model, adapter_type, command))
         }
         "claude-cli" => {
             let command = resolve_cli_command(agent, adapter_type.as_str());
+            ensure_cli_command_available(adapter_type.as_str(), &command)?;
             LlmAdapter::ClaudeCli(ClaudeCliClient::new(model, adapter_type, command))
         }
         "openai-api" => {
@@ -229,6 +236,17 @@ fn resolve_cli_command(agent: &McodaAgent, adapter_type: &str) -> String {
         .or_else(|| config_string(agent.config.as_ref(), "binary"))
         .or_else(|| config_string(agent.config.as_ref(), "cliBinary"))
         .unwrap_or_else(|| default_cli_command(adapter_type).to_string())
+}
+
+fn ensure_cli_command_available(adapter_type: &str, command: &str) -> Result<()> {
+    let command = command.trim();
+    if command.is_empty() {
+        return Err(anyhow!("configured command for {adapter_type} is empty"));
+    }
+    which(command).with_context(|| {
+        format!("configured command for {adapter_type} not found or not executable: {command}")
+    })?;
+    Ok(())
 }
 
 pub struct OllamaRemoteClient {
@@ -403,8 +421,8 @@ impl CodexCliClient {
     }
 }
 
-fn codex_cli_args(model: &str) -> [&str; 4] {
-    ["exec", "--model", model, "--json"]
+fn codex_cli_args(model: &str) -> [&str; 5] {
+    ["exec", "--model", model, "--json", "-"]
 }
 
 fn codex_cli_timeout(timeout_duration: Duration) -> Duration {
@@ -445,19 +463,12 @@ impl LlmClient for CodexCliClient {
                 .model
                 .clone()
                 .unwrap_or_else(|| DEFAULT_CODEX_MODEL.to_string());
-            let use_inline_prompt = should_inline_cli_prompt(prompt);
             let mut command = Command::new(self.command.as_str());
             command.args(codex_cli_args(model.as_str()));
-            if use_inline_prompt {
-                command.arg(prompt).stdin(Stdio::null());
-            } else {
-                command.stdin(Stdio::piped());
-            }
+            command.stdin(Stdio::piped());
             command.stdout(Stdio::piped()).stderr(Stdio::piped());
             let mut child = command.spawn().context("spawn codex CLI")?;
-            if !use_inline_prompt {
-                write_prompt_to_child_stdin(child.stdin.take(), prompt).await?;
-            }
+            write_prompt_to_child_stdin(child.stdin.take(), prompt).await?;
             let output = timeout(timeout_duration, child.wait_with_output())
                 .await
                 .context("codex CLI timeout")??;
@@ -654,6 +665,53 @@ impl OpenAiApiClient {
     }
 }
 
+fn retry_after_ms_from_headers(headers: &HeaderMap) -> Option<u64> {
+    let value = headers.get(RETRY_AFTER)?.to_str().ok()?.trim();
+    if value.is_empty() {
+        return None;
+    }
+    value
+        .parse::<u64>()
+        .ok()
+        .map(|seconds| seconds.saturating_mul(1_000))
+}
+
+fn retry_after_ms_from_value(value: &Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| {
+            value
+                .as_i64()
+                .filter(|candidate| *candidate >= 0)
+                .map(|candidate| candidate as u64)
+        })
+        .or_else(|| {
+            value
+                .as_str()
+                .and_then(|candidate| candidate.trim().parse::<u64>().ok())
+        })
+}
+
+fn retry_after_ms_from_body_json(value: &Value) -> Option<u64> {
+    value
+        .get("retry_after_ms")
+        .and_then(retry_after_ms_from_value)
+        .or_else(|| {
+            value
+                .get("retryAfterMs")
+                .and_then(retry_after_ms_from_value)
+        })
+        .or_else(|| value.get("error").and_then(retry_after_ms_from_body_json))
+        .or_else(|| value.get("details").and_then(retry_after_ms_from_body_json))
+}
+
+fn openai_rate_limit_retry_after_ms(headers: &HeaderMap, body: &str) -> Option<u64> {
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|value| retry_after_ms_from_body_json(&value))
+        .or_else(|| retry_after_ms_from_headers(headers))
+}
+
 impl LlmClient for OpenAiApiClient {
     fn generate<'a>(
         &'a self,
@@ -685,30 +743,53 @@ impl LlmClient for OpenAiApiClient {
                 body.insert("thinking".to_string(), Value::from(thinking));
             }
             merge_extra_body(&mut body, self.extra_body.as_ref());
-            let mut request = self
-                .client
-                .post(url)
-                .timeout(timeout)
-                .json(&Value::Object(body));
             let headers = build_auth_headers(&self.headers, &self.api_key);
-            request = request.headers(to_header_map(&headers)?);
-            let resp = request.send().await.context("openai chat request")?;
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let text = resp.text().await.unwrap_or_default();
-                return Err(anyhow!("openai chat failed ({status}): {text}"));
+            let request_body = Value::Object(body);
+            let deadline = Instant::now() + timeout;
+            let mut attempt = 0usize;
+            loop {
+                attempt += 1;
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(anyhow!("openai chat timeout"));
+                }
+                let mut request = self
+                    .client
+                    .post(url.as_str())
+                    .timeout(remaining)
+                    .json(&request_body);
+                request = request.headers(to_header_map(&headers)?);
+                let resp = request.send().await.context("openai chat request")?;
+                if !resp.status().is_success() {
+                    let status = resp.status();
+                    let response_headers = resp.headers().clone();
+                    let text = resp.text().await.unwrap_or_default();
+                    if status == StatusCode::TOO_MANY_REQUESTS && attempt == 1 {
+                        if let Some(retry_after_ms) =
+                            openai_rate_limit_retry_after_ms(&response_headers, &text)
+                        {
+                            let retry_after = Duration::from_millis(retry_after_ms);
+                            let remaining = deadline.saturating_duration_since(Instant::now());
+                            if retry_after > Duration::ZERO && retry_after < remaining {
+                                sleep(retry_after).await;
+                                continue;
+                            }
+                        }
+                    }
+                    return Err(anyhow!("openai chat failed ({status}): {text}"));
+                }
+                let data: Value = resp.json().await.unwrap_or_else(|_| json!({}));
+                let output = extract_chat_completion_output(&data)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                return Ok(LlmCompletion {
+                    output,
+                    adapter: self.adapter.clone(),
+                    model: Some(model.clone()),
+                    metadata: Some(data),
+                });
             }
-            let data: Value = resp.json().await.unwrap_or_else(|_| json!({}));
-            let output = extract_chat_completion_output(&data)
-                .unwrap_or_default()
-                .trim()
-                .to_string();
-            Ok(LlmCompletion {
-                output,
-                adapter: self.adapter.clone(),
-                model: Some(model.clone()),
-                metadata: Some(data),
-            })
         })
     }
 }
@@ -973,6 +1054,12 @@ fn config_headers(config: Option<&Value>) -> HashMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use axum::routing::post;
+    use axum::{Json, Router};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     #[test]
     fn codex_timeout_applies_floor() {
@@ -1106,8 +1193,89 @@ mod tests {
     #[test]
     fn codex_cli_args_do_not_enable_full_auto() {
         let args = codex_cli_args("gpt-5.1-codex-max");
-        assert_eq!(args, ["exec", "--model", "gpt-5.1-codex-max", "--json"]);
+        assert_eq!(
+            args,
+            ["exec", "--model", "gpt-5.1-codex-max", "--json", "-"]
+        );
         assert!(!args.contains(&"--full-auto"));
+    }
+
+    #[test]
+    fn ensure_cli_command_available_rejects_missing_binary() {
+        let err = ensure_cli_command_available("codex-cli", "/definitely/missing/docdex-codex")
+            .expect_err("missing binary should fail");
+        let message = err.to_string();
+        assert!(message.contains("codex-cli"));
+        assert!(message.contains("not found"));
+    }
+
+    #[test]
+    fn ensure_cli_command_available_accepts_existing_binary() {
+        let current_exe = std::env::current_exe().expect("current exe");
+        ensure_cli_command_available("codex-cli", &current_exe.to_string_lossy())
+            .expect("existing executable should pass");
+    }
+
+    #[tokio::test]
+    async fn openai_api_client_retries_rate_limited_response_when_retry_after_fits_timeout() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let app = Router::new().route(
+            "/chat/completions",
+            post({
+                let attempts = Arc::clone(&attempts);
+                move || {
+                    let attempts = Arc::clone(&attempts);
+                    async move {
+                        let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                        if attempt == 0 {
+                            (
+                                StatusCode::TOO_MANY_REQUESTS,
+                                Json(json!({
+                                    "error": "mswarm_error",
+                                    "code": "rate_limited",
+                                    "retry_after_ms": 1
+                                })),
+                            )
+                                .into_response()
+                        } else {
+                            (
+                                StatusCode::OK,
+                                Json(json!({
+                                    "choices": [{
+                                        "message": { "content": "ok" }
+                                    }]
+                                })),
+                            )
+                                .into_response()
+                        }
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
+        let address = listener.local_addr().expect("listener addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve test app");
+        });
+
+        let config = json!({ "baseUrl": format!("http://{}", address) });
+        let client = OpenAiApiClient::new(
+            Some("test-model".to_string()),
+            "openai-api".to_string(),
+            Some(&config),
+            "test-key".to_string(),
+        )
+        .expect("openai client");
+        let completion = client
+            .generate("hello", 32, Duration::from_secs(2))
+            .await
+            .expect("completion");
+
+        assert_eq!(completion.output, "ok");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        server.abort();
     }
 }
 

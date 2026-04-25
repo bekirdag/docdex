@@ -212,6 +212,12 @@ pub enum MenuAction {
     Exit,
 }
 
+enum ConsentRecoveryAction {
+    Retry,
+    Abort(String),
+    NotHandled,
+}
+
 pub fn run_wizard(context: SetupContext) -> Result<SetupSummary> {
     let mut input = TuiInput::new()?;
     let services = RealServices;
@@ -359,28 +365,97 @@ fn configure_consent_section<I: WizardInput, S: WizardServices>(
         return Ok(Some(message));
     }
 
-    match services.ensure_mswarm_consent(now_ms()) {
-        Ok(status) => {
-            let detail = format!(
-                "{} {} ({}, consent_token={})",
-                status.client_type,
-                status.client_id,
-                status.policy_version,
-                if status.consent_token_set {
-                    "set"
-                } else {
-                    "missing"
+    loop {
+        match services.ensure_mswarm_consent(now_ms()) {
+            Ok(status) => {
+                let detail = format!(
+                    "{} {} ({}, consent_token={})",
+                    status.client_type,
+                    status.client_id,
+                    status.policy_version,
+                    if status.consent_token_set {
+                        "set"
+                    } else {
+                        "missing"
+                    }
+                );
+                state.update_step(StepKey::Consent, StepStatus::Done, Some(detail));
+                return Ok(None);
+            }
+            Err(err) => match recover_mswarm_consent_failure(state, input, services, &err)? {
+                ConsentRecoveryAction::Retry => continue,
+                ConsentRecoveryAction::Abort(message) => {
+                    state.update_step(StepKey::Consent, StepStatus::Failed, Some(message.clone()));
+                    return Ok(Some(message));
                 }
-            );
-            state.update_step(StepKey::Consent, StepStatus::Done, Some(detail));
-            Ok(None)
-        }
-        Err(err) => {
-            let detail = err.to_string();
-            state.update_step(StepKey::Consent, StepStatus::Failed, Some(detail.clone()));
-            Ok(Some(detail))
+                ConsentRecoveryAction::NotHandled => {
+                    let detail = err.to_string();
+                    state.update_step(StepKey::Consent, StepStatus::Failed, Some(detail.clone()));
+                    return Ok(Some(detail));
+                }
+            },
         }
     }
+}
+
+fn recover_mswarm_consent_failure<I: WizardInput, S: WizardServices>(
+    state: &SetupState,
+    input: &mut I,
+    services: &S,
+    err: &anyhow::Error,
+) -> Result<ConsentRecoveryAction> {
+    if !crate::mswarm::is_paid_consent_auth_failure(err) {
+        return Ok(ConsentRecoveryAction::NotHandled);
+    }
+
+    let provider_status = resolve_web_provider_status(load_summary_config().as_ref());
+    if !provider_status.mswarm_api_key.configured {
+        return Ok(ConsentRecoveryAction::NotHandled);
+    }
+    if provider_status.mswarm_api_key.from_env {
+        return Ok(ConsentRecoveryAction::Abort(
+            "mswarm consent failed because `DOCDEX_MSWARM_API_KEY` from the environment was rejected. Update or unset that environment variable, then rerun `docdex setup`.".to_string(),
+        ));
+    }
+
+    let replace_prompt = format!(
+        "{}\n\nThe saved mswarm API key was rejected during setup.\nReplace it now? Choosing No lets you clear the saved key and continue as a free client.",
+        err
+    );
+    if input.confirm(state, &replace_prompt, true)? {
+        let current = current_key_display(&provider_status.mswarm_api_key, true);
+        if let Some(new_key) = input.prompt_text(
+            state,
+            "Replacement mswarm API key (x-api-key)",
+            current.as_deref(),
+            true,
+        )? {
+            services.set_mswarm_config(config::MswarmConfigUpdate {
+                api_key: Some(new_key),
+                base_url: None,
+                use_for_web_search: None,
+            })?;
+            return Ok(ConsentRecoveryAction::Retry);
+        }
+    }
+
+    let clear_prompt = format!(
+        "{}\n\nClear the saved mswarm API key and continue setup as a free client?",
+        err
+    );
+    if input.confirm(state, &clear_prompt, true)? {
+        services.set_mswarm_config(config::MswarmConfigUpdate {
+            api_key: Some(String::new()),
+            base_url: None,
+            use_for_web_search: None,
+        })?;
+        return Ok(ConsentRecoveryAction::Retry);
+    }
+
+    Ok(ConsentRecoveryAction::Abort(
+        "mswarm setup was canceled before the rejected API key was replaced or cleared."
+            .to_string(),
+    ))
 }
 
 fn build_menu_details<S: WizardServices>(
@@ -2368,8 +2443,11 @@ fn progress_bar(tick: usize, width: usize) -> String {
 mod tests {
     use super::*;
     use crate::setup::test_support::ENV_LOCK;
+    use anyhow::anyhow;
     use ratatui::backend::TestBackend;
+    use std::collections::VecDeque;
     use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
     use tempfile::TempDir;
 
     struct EnvGuard {
@@ -2588,6 +2666,112 @@ mod tests {
         }
     }
 
+    struct RecoveringFakeServices {
+        consent_results:
+            Mutex<VecDeque<std::result::Result<config::MswarmTelemetryConsentStatus, String>>>,
+        api_key_updates: Mutex<Vec<Option<String>>>,
+    }
+
+    impl RecoveringFakeServices {
+        fn new(
+            results: Vec<std::result::Result<config::MswarmTelemetryConsentStatus, String>>,
+        ) -> Self {
+            Self {
+                consent_results: Mutex::new(VecDeque::from(results)),
+                api_key_updates: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn api_key_updates(&self) -> Vec<Option<String>> {
+            self.api_key_updates.lock().unwrap().clone()
+        }
+    }
+
+    impl WizardServices for RecoveringFakeServices {
+        fn resolve_ollama_path(&self, _explicit: Option<PathBuf>) -> Option<PathBuf> {
+            None
+        }
+
+        fn install_ollama(&self) -> Result<()> {
+            Ok(())
+        }
+
+        fn ensure_ollama_service(&self, _bin: &Path) -> Result<ollama::OllamaDaemonStatus> {
+            Ok(ollama::OllamaDaemonStatus {
+                running: true,
+                service: Some("test".to_string()),
+                service_enabled: true,
+            })
+        }
+
+        fn list_models(&self, _bin: &Path) -> Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        fn list_models_if_running(&self, _bin: &Path) -> Result<Option<Vec<String>>> {
+            Ok(Some(Vec::new()))
+        }
+
+        fn pull_model(&self, _bin: &Path, _model: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn set_default_model(&self, _model: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn set_embedding_model(&self, _model: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn chromium_install_status(&self) -> browser_install::ChromiumInstallStatus {
+            browser_install::ChromiumInstallStatus {
+                installed: false,
+                version: None,
+                path: None,
+            }
+        }
+
+        fn install_chromium(&self) -> Result<browser_install::BrowserInstallResult> {
+            Ok(browser_install::BrowserInstallResult {
+                path: PathBuf::from("/tmp/chromium"),
+                version: "test".to_string(),
+            })
+        }
+
+        fn set_browser_path(&self, _path: &Path, _kind: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn set_web_provider_keys(&self, _update: config::WebProviderKeysUpdate) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn set_mswarm_config(&self, update: config::MswarmConfigUpdate) -> Result<bool> {
+            self.api_key_updates
+                .lock()
+                .unwrap()
+                .push(update.api_key.clone());
+            config::set_mswarm_config(update)
+        }
+
+        fn ensure_mswarm_consent(
+            &self,
+            _accepted_at_ms: u128,
+        ) -> Result<config::MswarmTelemetryConsentStatus> {
+            match self.consent_results.lock().unwrap().pop_front() {
+                Some(Ok(status)) => Ok(status),
+                Some(Err(message)) => Err(anyhow!(message)),
+                None => Ok(config::MswarmTelemetryConsentStatus {
+                    client_id: "client-1".to_string(),
+                    client_type: "free_docdex_client".to_string(),
+                    policy_version: "2026-03-18".to_string(),
+                    consent_token_set: true,
+                }),
+            }
+        }
+    }
+
     #[test]
     fn scripted_input_prompt_text_returns_value() -> Result<()> {
         let mut input = ScriptedInput::new(vec![ScriptedAnswer::Text(Some("hello".to_string()))]);
@@ -2717,6 +2901,128 @@ mod tests {
         let summary = run_wizard_with_input(context, &mut input, &services)?;
         assert_eq!(summary.status, "complete");
         assert_eq!(summary.default_model.as_deref(), Some(CHAT_MODEL));
+        Ok(())
+    }
+
+    #[test]
+    fn wizard_replaces_rejected_mswarm_api_key_during_consent() -> Result<()> {
+        let _guard = ENV_LOCK.lock();
+        let temp = TempDir::new()?;
+        let temp_home = temp.path().to_string_lossy();
+        let _home = EnvGuard::set("HOME", &temp_home);
+        let _user = EnvGuard::set("USERPROFILE", &temp_home);
+        let _appdata = EnvGuard::set(
+            "APPDATA",
+            &temp
+                .path()
+                .join("AppData")
+                .join("Roaming")
+                .to_string_lossy(),
+        );
+        let config_path = temp.path().join("config.toml");
+        let _config = EnvGuard::set("DOCDEX_CONFIG_PATH", &config_path.to_string_lossy());
+        std::fs::write(
+            &config_path,
+            r#"[integrations.mswarm]
+base_url = "https://api.mswarm.org/"
+api_key = "revoked-key"
+"#,
+        )?;
+        let mut input = ScriptedInput::new(vec![
+            ScriptedAnswer::Confirm(true),
+            ScriptedAnswer::Confirm(true),
+            ScriptedAnswer::Text(Some("replacement-key".to_string())),
+            ScriptedAnswer::Menu(None),
+        ]);
+        let services = RecoveringFakeServices::new(vec![
+            Err(
+                "mswarm paid consent failed with status 401 Unauthorized: {\"message\":\"Missing or invalid API key\"}"
+                    .to_string(),
+            ),
+            Ok(config::MswarmTelemetryConsentStatus {
+                client_id: "paid-client-1".to_string(),
+                client_type: "paid_docdex_client".to_string(),
+                policy_version: "2026-03-18".to_string(),
+                consent_token_set: true,
+            }),
+        ]);
+        let context = SetupContext {
+            hardware: super::super::hardware::SetupHardware {
+                total_memory_gb: 16.0,
+                free_disk_bytes: 10 * 1024 * 1024 * 1024,
+                cpu_count: 8,
+            },
+            ollama_path: None,
+        };
+
+        let summary = run_wizard_with_input(context, &mut input, &services)?;
+        assert_eq!(summary.status, "complete");
+        assert_eq!(
+            services.api_key_updates(),
+            vec![Some("replacement-key".to_string())]
+        );
+        let contents = std::fs::read_to_string(&config_path)?;
+        assert!(contents.contains("replacement-key"));
+        assert!(!contents.contains("revoked-key"));
+        Ok(())
+    }
+
+    #[test]
+    fn wizard_can_clear_rejected_mswarm_api_key_and_continue_as_free_client() -> Result<()> {
+        let _guard = ENV_LOCK.lock();
+        let temp = TempDir::new()?;
+        let temp_home = temp.path().to_string_lossy();
+        let _home = EnvGuard::set("HOME", &temp_home);
+        let _user = EnvGuard::set("USERPROFILE", &temp_home);
+        let _appdata = EnvGuard::set(
+            "APPDATA",
+            &temp
+                .path()
+                .join("AppData")
+                .join("Roaming")
+                .to_string_lossy(),
+        );
+        let config_path = temp.path().join("config.toml");
+        let _config = EnvGuard::set("DOCDEX_CONFIG_PATH", &config_path.to_string_lossy());
+        std::fs::write(
+            &config_path,
+            r#"[integrations.mswarm]
+base_url = "https://api.mswarm.org/"
+api_key = "revoked-key"
+"#,
+        )?;
+        let mut input = ScriptedInput::new(vec![
+            ScriptedAnswer::Confirm(true),
+            ScriptedAnswer::Confirm(false),
+            ScriptedAnswer::Confirm(true),
+            ScriptedAnswer::Menu(None),
+        ]);
+        let services = RecoveringFakeServices::new(vec![
+            Err(
+                "mswarm paid consent failed with status 401 Unauthorized: {\"message\":\"Missing or invalid API key\"}"
+                    .to_string(),
+            ),
+            Ok(config::MswarmTelemetryConsentStatus {
+                client_id: "free-client-1".to_string(),
+                client_type: "free_docdex_client".to_string(),
+                policy_version: "2026-03-18".to_string(),
+                consent_token_set: true,
+            }),
+        ]);
+        let context = SetupContext {
+            hardware: super::super::hardware::SetupHardware {
+                total_memory_gb: 16.0,
+                free_disk_bytes: 10 * 1024 * 1024 * 1024,
+                cpu_count: 8,
+            },
+            ollama_path: None,
+        };
+
+        let summary = run_wizard_with_input(context, &mut input, &services)?;
+        assert_eq!(summary.status, "complete");
+        assert_eq!(services.api_key_updates(), vec![Some(String::new())]);
+        let contents = std::fs::read_to_string(&config_path)?;
+        assert!(!contents.contains("revoked-key"));
         Ok(())
     }
 

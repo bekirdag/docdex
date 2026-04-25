@@ -191,6 +191,65 @@ fn seed_mcoda_registry_priced_agent(
     Ok(())
 }
 
+fn seed_managed_cloud_mcoda_registry(
+    home: &Path,
+    agent_id: &str,
+    slug: &str,
+    status: &str,
+    health_details: Option<serde_json::Value>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mcoda_dir = home.join(".mcoda");
+    fs::create_dir_all(&mcoda_dir)?;
+    let db_path = mcoda_dir.join("mcoda.db");
+    let conn = Connection::open(db_path)?;
+    conn.execute_batch(
+        "CREATE TABLE agents (
+            id TEXT PRIMARY KEY,
+            slug TEXT NOT NULL,
+            adapter TEXT NOT NULL,
+            default_model TEXT,
+            config_json TEXT,
+            created_at TEXT,
+            updated_at TEXT
+        );
+        CREATE TABLE agent_health (
+            agent_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            details_json TEXT
+        );",
+    )?;
+    let config_json = serde_json::json!({
+        "mswarmCloud": {
+            "managed": true,
+            "remoteSlug": "openrouter-qwen-qwen3-6-plus"
+        }
+    });
+    conn.execute(
+        "INSERT INTO agents (id, slug, adapter, default_model, config_json, created_at, updated_at)
+         VALUES (?1, ?2, 'openai-api', ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            agent_id,
+            slug,
+            "openrouter/qwen/qwen3-6-plus",
+            serde_json::to_string(&config_json)?,
+            "2026-01-01T00:00:00Z",
+            "2026-01-01T00:00:00Z"
+        ],
+    )?;
+    conn.execute(
+        "INSERT INTO agent_health (agent_id, status, details_json) VALUES (?1, ?2, ?3)",
+        rusqlite::params![
+            agent_id,
+            status,
+            health_details
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?
+        ],
+    )?;
+    Ok(())
+}
+
 fn make_local_agent(
     agent_id: &str,
     agent_slug: &str,
@@ -818,6 +877,58 @@ fn resolve_delegation_client_rejects_unhealthy_mcoda_agent(
     let message = err.to_string();
     assert!(message.contains("mcoda agent unavailable"));
     assert!(message.contains("health status: unhealthy"));
+    Ok(())
+}
+
+#[test]
+fn resolve_delegation_client_allows_explicit_degraded_managed_cloud_agent(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
+    let _profile = EnvGuard::set("USERPROFILE", temp.path().to_string_lossy().as_ref());
+    let _disable_cli = EnvGuard::set("DOCDEX_DISABLE_MCODA_CLI", "1");
+    seed_managed_cloud_mcoda_registry(
+        temp.path(),
+        "agent-3",
+        "mswarm-cloud-openrouter-qwen-qwen3-6-plus",
+        "degraded",
+        Some(serde_json::json!({
+            "source": "openai_probe",
+            "reason": "rate_limited",
+            "transient": true,
+            "rateLimited": true,
+            "httpStatus": 429,
+            "retryAfterMs": 1200
+        })),
+    )?;
+
+    let mut config = LlmConfig::default();
+    config.delegation = DelegationConfig::default();
+    let result = resolve_delegation_client(
+        &config,
+        Some("mswarm-cloud-openrouter-qwen-qwen3-6-plus"),
+        None,
+    );
+    assert!(result.is_ok());
+    Ok(())
+}
+
+#[test]
+fn resolve_delegation_client_prefers_local_target_over_configured_default_agent(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp = TempDir::new()?;
+    let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
+    let _profile = EnvGuard::set("USERPROFILE", temp.path().to_string_lossy().as_ref());
+    let _disable_cli = EnvGuard::set("DOCDEX_DISABLE_MCODA_CLI", "1");
+    seed_mcoda_registry(temp.path(), "agent-4", "healthy-agent", "healthy")?;
+
+    let mut config = LlmConfig::default();
+    config.delegation = DelegationConfig::default();
+    config.delegation.local_agent_id = "local-agent".to_string();
+    let target = LocalTarget::McodaAgent("agent-4".to_string());
+    let result = resolve_delegation_client(&config, None, Some(&target));
+
+    assert!(result.is_ok());
     Ok(())
 }
 
@@ -1629,6 +1740,75 @@ fn delegation_selects_local_skips_recently_failing_targets() {
         Some("healthy"),
         &["code_writer"],
     ));
+
+    let selected = select_local_target(TaskType::GenerateTests, &library).expect("selection");
+    match selected {
+        LocalTarget::McodaAgent(id) => assert_eq!(id, "agent-2"),
+        _ => panic!("unexpected local selection"),
+    }
+}
+
+#[test]
+fn delegation_selects_local_skips_agents_with_recent_model_failures() {
+    let temp = TempDir::new().expect("temp dir");
+    let _state_dir = EnvGuard::set(
+        "DOCDEX_STATE_DIR",
+        temp.path().to_str().expect("temp path utf-8"),
+    );
+    write_recent_local_failures(
+        temp.path(),
+        &[
+            (
+                "agent:alias-agent",
+                "local_completion_failed",
+                "ollama generate failed for model shared-model at http://127.0.0.1:11434 with timeout 1000ms (500 Internal Server Error): model failed to load",
+            ),
+            (
+                "agent:alias-agent",
+                "local_completion_failed",
+                "ollama generate failed for model shared-model at http://127.0.0.1:11434 with timeout 1000ms (500 Internal Server Error): model failed to load",
+            ),
+        ],
+    );
+
+    let mut library = LocalModelLibrary::default();
+    library.agents.push(make_local_agent(
+        "agent-0",
+        "agent-zero",
+        None,
+        None,
+        Some(6.0),
+        Some(6.0),
+        None,
+        Some("limited"),
+        &["code_writer"],
+    ));
+    let mut first = make_local_agent(
+        "agent-1",
+        "agent-one",
+        None,
+        None,
+        Some(9.0),
+        Some(8.0),
+        None,
+        Some("healthy"),
+        &["code_writer"],
+    );
+    first.default_model = Some("shared-model".to_string());
+    library.agents.push(first);
+    let mut second = make_local_agent(
+        "agent-2",
+        "agent-two",
+        None,
+        None,
+        Some(7.0),
+        Some(7.0),
+        None,
+        Some("healthy"),
+        &["code_writer"],
+    );
+    second.default_model = Some("fallback-model".to_string());
+    library.agents.push(second);
 
     let selected = select_local_target(TaskType::GenerateTests, &library).expect("selection");
     match selected {

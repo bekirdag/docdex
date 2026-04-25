@@ -1284,6 +1284,52 @@ fn blocking_failure_for_cooldown(kind: &str, error: &str) -> bool {
             .contains("delegation output must not include markdown fences")
 }
 
+fn ollama_failure_model(error: &str) -> Option<&str> {
+    [
+        "ollama generate failed for model ",
+        "ollama generate request failed for model ",
+    ]
+    .iter()
+    .find_map(|prefix| {
+        error
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.split(" at ").next())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn failure_history_labels(local_target: &str, error: &str) -> Vec<String> {
+    let mut labels = Vec::new();
+    let target = local_target.trim();
+    if !target.is_empty() {
+        labels.push(target.to_string());
+        if let Some(model) = target.strip_prefix("model:") {
+            let model = model.trim();
+            if !model.is_empty() {
+                labels.push(model.to_string());
+            }
+        }
+    }
+    if let Some(model) = ollama_failure_model(error) {
+        labels.push(format!("model:{model}"));
+        labels.push(model.to_string());
+    }
+    labels.sort();
+    labels.dedup();
+    labels
+}
+
+fn update_failure_window(
+    failures: &mut HashMap<String, LocalTargetFailureWindow>,
+    label: &str,
+    failure_at_ms: u128,
+) {
+    let entry = failures.entry(label.to_string()).or_default();
+    entry.recent_failures = entry.recent_failures.saturating_add(1);
+    entry.last_failure_at_ms = entry.last_failure_at_ms.max(failure_at_ms);
+}
+
 fn load_recent_local_target_failures(
     state_dir_override: Option<&Path>,
 ) -> HashMap<String, LocalTargetFailureWindow> {
@@ -1339,9 +1385,9 @@ fn load_recent_local_target_failures(
         if now_ms.saturating_sub(failure_at_ms) > lookback_ms {
             continue;
         }
-        let entry = failures.entry(target.to_string()).or_default();
-        entry.recent_failures = entry.recent_failures.saturating_add(1);
-        entry.last_failure_at_ms = entry.last_failure_at_ms.max(failure_at_ms);
+        for label in failure_history_labels(target, &record.error) {
+            update_failure_window(&mut failures, &label, failure_at_ms);
+        }
     }
     failures.retain(|_, window| {
         window.recent_failures >= threshold
@@ -1366,6 +1412,11 @@ fn agent_has_recent_local_failure(
         || recent_failures_contain(recent_failures, &format!("agent:{}", agent.agent_slug))
         || recent_failures_contain(recent_failures, &agent.agent_id)
         || recent_failures_contain(recent_failures, &agent.agent_slug)
+        || agent
+            .default_model
+            .as_deref()
+            .map(|model| model_has_recent_local_failure(model, recent_failures))
+            .unwrap_or(false)
 }
 
 fn model_has_recent_local_failure(
@@ -2088,6 +2139,43 @@ fn mcoda_agent_health_allows(status: Option<&str>) -> bool {
         || status == "-"
 }
 
+fn managed_mswarm_cloud_agent(agent: &McodaAgent) -> bool {
+    agent.slug.trim().starts_with("mswarm-cloud-")
+        || agent
+            .config
+            .as_ref()
+            .and_then(|config| config.pointer("/mswarmCloud/managed"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+}
+
+fn mcoda_agent_health_retry_after_ms(agent: &McodaAgent) -> Option<u64> {
+    agent.health_details.as_ref().and_then(|details| {
+        details
+            .get("retryAfterMs")
+            .and_then(u64_from_value)
+            .or_else(|| details.get("retry_after_ms").and_then(u64_from_value))
+    })
+}
+
+fn mcoda_agent_has_transient_rate_limit_health(agent: &McodaAgent) -> bool {
+    let Some(details) = agent.health_details.as_ref().and_then(Value::as_object) else {
+        return false;
+    };
+    let reason = details.get("reason").and_then(Value::as_str);
+    let transient = details
+        .get("transient")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let rate_limited = details
+        .get("rateLimited")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let http_status = details.get("httpStatus").and_then(u64_from_value);
+    matches!(reason, Some("rate_limited"))
+        && (transient || rate_limited || http_status == Some(429))
+}
+
 fn available_mcoda_agent_examples(registry: &McodaRegistry) -> String {
     let mut slugs: Vec<String> = registry
         .agents
@@ -2104,7 +2192,11 @@ fn available_mcoda_agent_examples(registry: &McodaRegistry) -> String {
     format!(" Available mcoda agents: {}", shown.join(", "))
 }
 
-fn ensure_mcoda_agent_available(agent: &McodaAgent, requested_id: &str) -> Result<()> {
+fn ensure_mcoda_agent_available(
+    agent: &McodaAgent,
+    requested_id: &str,
+    explicit_override: bool,
+) -> Result<()> {
     if mcoda_agent_health_allows(agent.health_status.as_deref()) {
         return Ok(());
     }
@@ -2114,6 +2206,20 @@ fn ensure_mcoda_agent_available(agent: &McodaAgent, requested_id: &str) -> Resul
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or("unknown");
+    if explicit_override
+        && managed_mswarm_cloud_agent(agent)
+        && (status.eq_ignore_ascii_case("degraded")
+            || mcoda_agent_has_transient_rate_limit_health(agent))
+    {
+        warn!(
+            target: "docdexd",
+            requested_id = %requested_id,
+            status = %status,
+            retry_after_ms = mcoda_agent_health_retry_after_ms(agent),
+            "allowing explicit managed cloud agent override despite transient/degraded health"
+        );
+        return Ok(());
+    }
     Err(anyhow!(
         "mcoda agent unavailable: {requested_id} (health status: {status})"
     ))
@@ -2122,6 +2228,7 @@ fn ensure_mcoda_agent_available(agent: &McodaAgent, requested_id: &str) -> Resul
 fn resolve_mcoda_agent<'a>(
     registry: &'a McodaRegistry,
     requested_id: &str,
+    explicit_override: bool,
 ) -> Result<&'a McodaAgent> {
     let agent = registry
         .agent_by_id(requested_id)
@@ -2132,7 +2239,7 @@ fn resolve_mcoda_agent<'a>(
                 available_mcoda_agent_examples(registry)
             )
         })?;
-    ensure_mcoda_agent_available(agent, requested_id)?;
+    ensure_mcoda_agent_available(agent, requested_id, explicit_override)?;
     Ok(agent)
 }
 
@@ -2141,19 +2248,11 @@ pub fn resolve_delegation_client(
     local_agent_override: Option<&str>,
     local_target: Option<&LocalTarget>,
 ) -> Result<Arc<dyn LlmClient>> {
-    let agent_id = local_agent_override
+    let explicit_agent_id = local_agent_override
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            let trimmed = llm_config.delegation.local_agent_id.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed)
-            }
-        });
+        .filter(|value| !value.is_empty());
 
-    if let Some(agent_id) = agent_id {
+    if let Some(agent_id) = explicit_agent_id {
         if let Some(model) = parse_model_override(agent_id) {
             let base_url = resolve_local_ollama_base_url(llm_config)
                 .ok_or_else(|| anyhow!("ollama base_url missing for local delegation"))?;
@@ -2162,7 +2261,7 @@ pub fn resolve_delegation_client(
         let registry = McodaRegistry::load_default_db_only()
             .context("load mcoda registry")?
             .ok_or_else(|| anyhow!("mcoda registry not found"))?;
-        let agent = resolve_mcoda_agent(&registry, agent_id)?;
+        let agent = resolve_mcoda_agent(&registry, agent_id, true)?;
         let adapter = resolve_agent_adapter(agent)
             .with_context(|| format!("resolve mcoda agent adapter {agent_id}"))?;
         return Ok(Arc::new(adapter));
@@ -2174,7 +2273,7 @@ pub fn resolve_delegation_client(
                 let registry = McodaRegistry::load_default_db_only()
                     .context("load mcoda registry")?
                     .ok_or_else(|| anyhow!("mcoda registry not found"))?;
-                let agent = resolve_mcoda_agent(&registry, agent_id)?;
+                let agent = resolve_mcoda_agent(&registry, agent_id, false)?;
                 let adapter = resolve_agent_adapter(agent)
                     .with_context(|| format!("resolve mcoda agent adapter {agent_id}"))?;
                 return Ok(Arc::new(adapter));
@@ -2185,6 +2284,22 @@ pub fn resolve_delegation_client(
                 return resolve_ollama_adapter(&base_url, model);
             }
         }
+    }
+
+    let configured_agent_id = llm_config.delegation.local_agent_id.trim();
+    if !configured_agent_id.is_empty() {
+        if let Some(model) = parse_model_override(configured_agent_id) {
+            let base_url = resolve_local_ollama_base_url(llm_config)
+                .ok_or_else(|| anyhow!("ollama base_url missing for local delegation"))?;
+            return resolve_ollama_adapter(&base_url, &model);
+        }
+        let registry = McodaRegistry::load_default_db_only()
+            .context("load mcoda registry")?
+            .ok_or_else(|| anyhow!("mcoda registry not found"))?;
+        let agent = resolve_mcoda_agent(&registry, configured_agent_id, true)?;
+        let adapter = resolve_agent_adapter(agent)
+            .with_context(|| format!("resolve mcoda agent adapter {configured_agent_id}"))?;
+        return Ok(Arc::new(adapter));
     }
 
     if !llm_config.provider.trim().eq_ignore_ascii_case("ollama") {
@@ -2313,7 +2428,7 @@ pub fn resolve_primary_client(
         }
     };
 
-    let agent = match resolve_mcoda_agent(&registry, agent_id) {
+    let agent = match resolve_mcoda_agent(&registry, agent_id, true) {
         Ok(agent) => agent,
         Err(err) => {
             warn!(

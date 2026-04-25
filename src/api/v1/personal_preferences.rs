@@ -72,6 +72,10 @@ pub(crate) struct PersonalPreferencesReviewLogQuery {
 pub(crate) struct PersonalPreferencesProcessRequest {
     #[serde(default)]
     limit: Option<usize>,
+    #[serde(default)]
+    retry_failed: bool,
+    #[serde(default)]
+    retry_stale_processing_ms: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -826,6 +830,15 @@ pub(crate) async fn personal_preferences_process_handler(
             );
         }
     }
+    if let Some(stale_ms) = payload.retry_stale_processing_ms {
+        if stale_ms < 0 {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                ERR_INVALID_ARGUMENT,
+                "retry_stale_processing_ms must be >= 0",
+            );
+        }
+    }
     if !personal_preferences.config.digest_enabled {
         return json_error(
             StatusCode::CONFLICT,
@@ -833,6 +846,20 @@ pub(crate) async fn personal_preferences_process_handler(
             personal_preferences_digest_disabled_message(),
         );
     }
+    let requeued = match personal_preferences.store.requeue_captures_for_processing(
+        payload.retry_failed,
+        payload.retry_stale_processing_ms,
+        payload.limit,
+    ) {
+        Ok(count) => count,
+        Err(err) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_INTERNAL_ERROR,
+                err.to_string(),
+            );
+        }
+    };
     match crate::personal_preferences::process_pending_with_local_agents(
         &personal_preferences.store,
         state.global_state_dir.as_deref(),
@@ -843,6 +870,7 @@ pub(crate) async fn personal_preferences_process_handler(
     .await
     {
         Ok(mut summary) => {
+            summary.requeued_captures = requeued;
             if let Some(profile_state) = state.profile_state.as_ref() {
                 match crate::personal_preferences::project_safe_preferences_to_profile(
                     &personal_preferences.store,

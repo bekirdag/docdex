@@ -31,7 +31,11 @@ pub(crate) async fn run(command: crate::cli::PersonalPreferencesCommand) -> Resu
             verdict,
             notes,
         } => run_review(record_id, verdict, notes).await,
-        crate::cli::PersonalPreferencesCommand::Process { limit } => run_process(limit).await,
+        crate::cli::PersonalPreferencesCommand::Process {
+            limit,
+            retry_failed,
+            retry_stale_processing_ms,
+        } => run_process(limit, retry_failed, retry_stale_processing_ms).await,
         crate::cli::PersonalPreferencesCommand::Scan { limit } => run_scan(limit).await,
         crate::cli::PersonalPreferencesCommand::Prune {
             raw_retention_days,
@@ -144,11 +148,24 @@ async fn run_review(record_id: String, verdict: String, notes: Option<String>) -
     emit_json_or_error(resp, "personal preferences review").await
 }
 
-async fn run_process(limit: Option<usize>) -> Result<()> {
+async fn run_process(
+    limit: Option<usize>,
+    retry_failed: bool,
+    retry_stale_processing_ms: Option<i64>,
+) -> Result<()> {
+    if let Some(stale_ms) = retry_stale_processing_ms {
+        if stale_ms < 0 {
+            return Err(anyhow!("retry_stale_processing_ms must be >= 0"));
+        }
+    }
     let client = CliHttpClient::new()?;
     let resp = client
         .request(Method::POST, "/v1/personal-preferences/process")
-        .json(&json!({ "limit": limit }))
+        .json(&json!({
+            "limit": limit,
+            "retry_failed": retry_failed,
+            "retry_stale_processing_ms": retry_stale_processing_ms,
+        }))
         .send()
         .await?;
     emit_json_or_error(resp, "personal preferences process").await

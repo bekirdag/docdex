@@ -1224,6 +1224,10 @@ pub(crate) enum PersonalPreferencesCommand {
     Process {
         #[arg(long)]
         limit: Option<usize>,
+        #[arg(long, default_value_t = false)]
+        retry_failed: bool,
+        #[arg(long)]
+        retry_stale_processing_ms: Option<i64>,
     },
     /// Scan supported local AI-client transcript roots and queue new captures.
     Scan {

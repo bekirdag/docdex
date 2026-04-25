@@ -749,6 +749,10 @@ pub(super) struct PersonalPreferencesReviewArgs {
 pub(super) struct PersonalPreferencesProcessArgs {
     #[serde(default)]
     pub(super) limit: Option<usize>,
+    #[serde(default)]
+    pub(super) retry_failed: bool,
+    #[serde(default)]
+    pub(super) retry_stale_processing_ms: Option<i64>,
 }
 
 #[derive(Deserialize)]

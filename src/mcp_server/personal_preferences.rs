@@ -107,6 +107,20 @@ impl McpServer {
             )
             .into());
         }
+        if let Some(stale_ms) = args.retry_stale_processing_ms {
+            if stale_ms < 0 {
+                return Err(AppError::new(
+                    ERR_INVALID_ARGUMENT,
+                    "retry_stale_processing_ms must be >= 0",
+                )
+                .into());
+            }
+        }
+        let requeued = personal_preferences.store.requeue_captures_for_processing(
+            args.retry_failed,
+            args.retry_stale_processing_ms,
+            args.limit,
+        )?;
         let mut summary = crate::personal_preferences::process_pending_with_local_agents(
             &personal_preferences.store,
             self.global_state_dir.as_deref(),
@@ -115,6 +129,7 @@ impl McpServer {
             args.limit,
         )
         .await?;
+        summary.requeued_captures = requeued;
         if let Some(profile_state) = self.profile_state.as_ref() {
             summary.projected_profile_preferences =
                 crate::personal_preferences::project_safe_preferences_to_profile(

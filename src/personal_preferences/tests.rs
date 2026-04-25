@@ -106,6 +106,47 @@ async fn process_pending_with_runner_writes_derived_records() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn requeue_failed_and_stale_processing_captures() -> Result<()> {
+    let temp = TempDir::new()?;
+    let store = PersonalPreferencesStore::new(temp.path())?;
+    let failed = store.capture_conversation(sample_capture_request(), true, true)?;
+    let mut stale_request = sample_capture_request();
+    stale_request.source_session_id = Some("session-2".to_string());
+    stale_request.title = Some("Docdex planning follow-up".to_string());
+    let stale = store.capture_conversation(stale_request, true, true)?;
+
+    store.mark_capture_status(
+        &failed.id,
+        DIGEST_STATUS_FAILED,
+        Some("local delegation failed"),
+    )?;
+    store.mark_capture_status(&stale.id, DIGEST_STATUS_PROCESSING, None)?;
+
+    assert_eq!(
+        store.requeue_captures_for_processing(true, Some(0), Some(0))?,
+        0
+    );
+
+    let requeued = store.requeue_captures_for_processing(true, Some(0), Some(10))?;
+    assert_eq!(requeued, 2);
+    for capture_id in [&failed.id, &stale.id] {
+        let capture = store.read_capture(capture_id)?.expect("capture");
+        assert_eq!(capture.digest_status, DIGEST_STATUS_PENDING);
+        assert!(capture.last_digest_error.is_none());
+        assert!(store.queue_dir.join(format!("{capture_id}.json")).exists());
+    }
+
+    let summary = store
+        .process_pending_with_runner(10, |_input| async {
+            Ok(Some(PersonalPreferenceDigestOutput::default()))
+        })
+        .await?;
+    assert_eq!(summary.completed_captures, 2);
+    assert_eq!(summary.failed_captures, 0);
+    Ok(())
+}
+
 #[test]
 fn build_context_limits_records_budget_and_sections() -> Result<()> {
     let temp = TempDir::new()?;
@@ -178,6 +219,17 @@ fn parse_digest_output_accepts_fenced_json() -> Result<()> {
     let parsed = extract_digest_output(
             "```json\n{\"records\":[{\"record_type\":\"preference\",\"category\":\"coding_preference\",\"subject\":\"user\",\"attribute\":\"prefers\",\"value\":\"Rust\"}]}\n```",
         )?;
+    assert_eq!(parsed.records.len(), 1);
+    assert_eq!(parsed.records[0].value, "Rust");
+    Ok(())
+}
+
+#[test]
+fn parse_digest_output_prefers_last_balanced_records_json() -> Result<()> {
+    let parsed = extract_digest_output(
+        "Reasoning may mention {\"records\":[{\"record_type\":\"preference\",\"category\":\"coding_preference\",\"subject\":\"user\",\"attribute\":\"prefers\",\"value\":\"Wrong\"}]} before the final answer.\n\
+{\"records\":[{\"record_type\":\"preference\",\"category\":\"coding_preference\",\"subject\":\"user\",\"attribute\":\"prefers\",\"value\":\"Rust\"}]}",
+    )?;
     assert_eq!(parsed.records.len(), 1);
     assert_eq!(parsed.records[0].value, "Rust");
     Ok(())

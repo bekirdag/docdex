@@ -94,6 +94,7 @@ const FEEDBACK_EVENT_REWRITE_OUTPUT: &str = "rewrite_output";
 const FEEDBACK_EVENT_OVERRIDE_PREFERENCE: &str = "override_preference";
 const FEEDBACK_EVENT_DOWNGRADE_INFERENCE: &str = "downgrade_inference";
 const FEEDBACK_EVENT_CONFIRM_INFERENCE: &str = "confirm_inference";
+const PERSONAL_PREFERENCES_DIGEST_TIMEOUT_CAP_MS: u64 = 600_000;
 
 static TRANSCRIPT_SECRET_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
     vec![
@@ -778,6 +779,7 @@ pub struct PersonalPreferenceDigestOutput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PersonalPreferencesProcessingSummary {
+    pub requeued_captures: usize,
     pub processed_captures: usize,
     pub completed_captures: usize,
     pub deferred_captures: usize,
@@ -2678,6 +2680,83 @@ impl PersonalPreferencesStore {
             }
         }
         Ok(summary)
+    }
+
+    pub fn requeue_captures_for_processing(
+        &self,
+        retry_failed: bool,
+        retry_stale_processing_ms: Option<i64>,
+        limit: Option<usize>,
+    ) -> Result<usize> {
+        if !retry_failed && retry_stale_processing_ms.is_none() {
+            return Ok(0);
+        }
+        let limit = limit.unwrap_or(usize::MAX);
+        if limit == 0 {
+            return Ok(0);
+        }
+        let now = now_ms();
+        let stale_before_ms =
+            retry_stale_processing_ms.map(|value| now.saturating_sub(value.max(0)));
+        let mut capture_ids = Vec::new();
+        {
+            let conn = open_db(&self.db_path)?;
+            if retry_failed {
+                let remaining = limit.saturating_sub(capture_ids.len());
+                if remaining > 0 {
+                    let mut stmt = conn.prepare(
+                        "SELECT id
+                         FROM captured_conversations
+                         WHERE digest_status = ?1
+                         ORDER BY updated_at_ms ASC, created_at_ms ASC
+                         LIMIT ?2",
+                    )?;
+                    let mut rows = stmt.query(params![DIGEST_STATUS_FAILED, remaining as i64])?;
+                    while let Some(row) = rows.next()? {
+                        capture_ids.push(row.get::<_, String>(0)?);
+                    }
+                }
+            }
+            if let Some(stale_before_ms) = stale_before_ms {
+                let remaining = limit.saturating_sub(capture_ids.len());
+                if remaining > 0 {
+                    let mut stmt = conn.prepare(
+                        "SELECT id
+                         FROM captured_conversations
+                         WHERE digest_status = ?1 AND updated_at_ms <= ?2
+                         ORDER BY updated_at_ms ASC, created_at_ms ASC
+                         LIMIT ?3",
+                    )?;
+                    let mut rows = stmt.query(params![
+                        DIGEST_STATUS_PROCESSING,
+                        stale_before_ms,
+                        remaining as i64
+                    ])?;
+                    while let Some(row) = rows.next()? {
+                        capture_ids.push(row.get::<_, String>(0)?);
+                    }
+                }
+            }
+            for capture_id in &capture_ids {
+                conn.execute(
+                    "UPDATE captured_conversations
+                     SET digest_status = ?2, updated_at_ms = ?3, last_digest_error = NULL
+                     WHERE id = ?1
+                       AND digest_status IN (?4, ?5)",
+                    params![
+                        capture_id,
+                        DIGEST_STATUS_PENDING,
+                        now,
+                        DIGEST_STATUS_FAILED,
+                        DIGEST_STATUS_PROCESSING
+                    ],
+                )?;
+            }
+        }
+        for capture_id in &capture_ids {
+            self.sync_queue_marker(capture_id, DIGEST_STATUS_PENDING)?;
+        }
+        Ok(capture_ids.len())
     }
 
     pub fn list_projectable_records(&self, limit: usize) -> Result<Vec<PersonalPreferenceRecord>> {
@@ -4854,17 +4933,74 @@ pub async fn process_pending_with_local_agents(
                     &build_digest_context(&input.capture, &effective_config),
                     llm_config.delegation.max_context_chars.min(64_000),
                     None,
-                    Some(llm_config.delegation.timeout_ms.min(120_000)),
+                    Some(
+                        llm_config
+                            .delegation
+                            .timeout_ms
+                            .min(PERSONAL_PREFERENCES_DIGEST_TIMEOUT_CAP_MS),
+                    ),
                     DelegationMode::DraftOnly,
                     Some(DelegationFailureHistoryContext {
-                        global_state_dir: state_dir,
+                        global_state_dir: state_dir.clone(),
                         repo_id: input.capture.repo_id.clone(),
                         repo_root: input.capture.repo_root.clone(),
                         source: Some("personal_preferences".to_string()),
                     }),
                 )
                 .await?;
-                Ok(Some(parse_digest_output(&completion.completion.output)?))
+                match parse_digest_output(&completion.completion.output) {
+                    Ok(output) => Ok(Some(output)),
+                    Err(parse_err) => {
+                        let parse_err_text = parse_err.to_string();
+                        warn!(
+                            target: "docdexd",
+                            capture_id = %input.capture.id,
+                            error = %parse_err_text,
+                            "personal preferences digest output failed JSON parse; attempting local repair"
+                        );
+                        let repair_instruction = build_digest_repair_instruction(&input.capture);
+                        let repair_context =
+                            build_digest_repair_context(&completion.completion.output);
+                        let repair_completion = run_delegation_flow_with_failure_history(
+                            &llm_config,
+                            None,
+                            local_targets.as_ref(),
+                            &[],
+                            TaskType::GeneralQuestion,
+                            &repair_instruction,
+                            &repair_context,
+                            llm_config.delegation.max_context_chars.min(64_000),
+                            None,
+                            Some(
+                                llm_config
+                                    .delegation
+                                    .timeout_ms
+                                    .min(PERSONAL_PREFERENCES_DIGEST_TIMEOUT_CAP_MS),
+                            ),
+                            DelegationMode::DraftOnly,
+                            Some(DelegationFailureHistoryContext {
+                                global_state_dir: state_dir,
+                                repo_id: input.capture.repo_id.clone(),
+                                repo_root: input.capture.repo_root.clone(),
+                                source: Some("personal_preferences_repair".to_string()),
+                            }),
+                        )
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "digest output was not valid JSON and repair delegation failed: {parse_err_text}"
+                            )
+                        })?;
+                        let repaired =
+                            parse_digest_output(&repair_completion.completion.output)
+                                .with_context(|| {
+                                    format!(
+                                        "digest output was not valid JSON and repair output was also invalid: {parse_err_text}"
+                                    )
+                                })?;
+                        Ok(Some(repaired))
+                    }
+                }
             }
         })
         .await
@@ -5015,32 +5151,61 @@ fn build_digest_context(
     parts.join("\n")
 }
 
+fn build_digest_repair_instruction(capture: &PersonalPreferencesCaptureRecord) -> String {
+    format!(
+        "Repair a malformed personal-preferences digest for capture {}.\n\
+Return JSON only with this exact shape: {{\"records\":[...]}}.\n\
+Use only durable records already present in the malformed output. Do not add new facts from memory, do not infer missing facts, and do not include markdown, reasoning, comments, or prose.\n\
+If the malformed output contains no usable durable records, return {{\"records\":[]}}.\n\
+Each record must preserve the personal-preferences schema fields when available: record_type, category, subcategory, subject, attribute, value, confidence, sensitivity, evidence, metadata.",
+        capture.id
+    )
+}
+
+fn build_digest_repair_context(malformed_output: &str) -> String {
+    format!(
+        "malformed_digest_output:\n{}",
+        truncate_chars(malformed_output, 60_000)
+    )
+}
+
 fn parse_digest_output(text: &str) -> Result<PersonalPreferenceDigestOutput> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return Ok(PersonalPreferenceDigestOutput::default());
     }
-    let candidates = [
-        trimmed,
+    let mut candidates = Vec::new();
+    candidates.push(trimmed);
+    candidates.push(
         trimmed
             .strip_prefix("```json")
             .and_then(|value| value.strip_suffix("```"))
             .map(str::trim)
             .unwrap_or(trimmed),
+    );
+    candidates.push(
         trimmed
             .strip_prefix("```")
             .and_then(|value| value.strip_suffix("```"))
             .map(str::trim)
             .unwrap_or(trimmed),
-        extract_first_json_object(trimmed).unwrap_or(trimmed),
-    ];
+    );
+    candidates.extend(extract_balanced_json_candidates(trimmed).into_iter().rev());
+
+    let mut shape_error = None;
     for candidate in candidates {
         if candidate.trim().is_empty() {
             continue;
         }
         if let Ok(value) = serde_json::from_str::<Value>(candidate) {
-            return parse_digest_value(&value);
+            match parse_digest_value(&value) {
+                Ok(output) => return Ok(output),
+                Err(err) => shape_error = Some(err.to_string()),
+            }
         }
+    }
+    if let Some(err) = shape_error {
+        return Err(anyhow!(err));
     }
     Err(anyhow!("digest output was not valid JSON"))
 }
@@ -7841,14 +8006,49 @@ fn parse_json_value(text: &str) -> Value {
     serde_json::from_str(text).unwrap_or_else(|_| Value::Object(Default::default()))
 }
 
-fn extract_first_json_object(text: &str) -> Option<&str> {
-    let start = text.find('{')?;
-    let end = text.rfind('}')?;
-    if end <= start {
-        None
-    } else {
-        Some(&text[start..=end])
+fn extract_balanced_json_candidates(text: &str) -> Vec<&str> {
+    let mut candidates = Vec::new();
+    let mut stack: Vec<(char, usize)> = Vec::new();
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (idx, ch) in text.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        if ch == '"' {
+            in_string = true;
+            continue;
+        }
+
+        match ch {
+            '{' | '[' => stack.push((ch, idx)),
+            '}' | ']' => {
+                let Some((open, start)) = stack.pop() else {
+                    continue;
+                };
+                let matched = matches!((open, ch), ('{', '}') | ('[', ']'));
+                if !matched {
+                    stack.clear();
+                    continue;
+                }
+                if stack.is_empty() {
+                    candidates.push(&text[start..idx + ch.len_utf8()]);
+                }
+            }
+            _ => {}
+        }
     }
+
+    candidates
 }
 
 fn truncate_chars(text: &str, max_chars: usize) -> String {

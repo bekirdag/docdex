@@ -5109,7 +5109,9 @@ impl McpServer {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "limit": { "type": "integer", "minimum": 1 }
+                        "limit": { "type": "integer", "minimum": 1 },
+                        "retry_failed": { "type": "boolean" },
+                        "retry_stale_processing_ms": { "type": "integer", "minimum": 0 }
                     }
                 }),
             },

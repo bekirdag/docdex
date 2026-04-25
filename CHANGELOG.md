@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.69
+- Add explicit personal-preferences digest retry controls across HTTP, CLI, and MCP so failed captures and stale processing captures can be requeued without direct database edits.
+- Raise the personal-preferences local digest timeout cap to 10 minutes, matching larger remote-Ollama mcoda agents such as qwen3.5:35b.
+- Harden personal-preferences digest parsing by preferring the final balanced JSON payload, preserving strict `records` validation, and adding a one-shot local JSON repair pass for malformed local-model output.
+- Bump release metadata to 0.2.69.
+
 ## 0.2.68
 - Harden local delegation by failing fast when mcoda CLI-backed adapters point at missing binaries, routing Codex CLI prompts through stdin reliably, and retrying OpenAI-compatible `429` responses when `retry_after_ms` fits inside the request timeout.
 - Reduce repeat delegation failures by sharing Ollama cooldowns across sibling aliases of the same backend model, preserving mcoda health details from registry refresh/load paths, and extending the mcoda CLI refresh timeout to 30 seconds.

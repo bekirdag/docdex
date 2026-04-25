@@ -114,16 +114,6 @@ jobs:
           tar -czf ${{ matrix.archive }}.tar.gz -C dist "${BIN_NAME}"
           python -c "import hashlib, pathlib; p=pathlib.Path('${{ matrix.archive }}.tar.gz'); h=hashlib.sha256(p.read_bytes()).hexdigest(); pathlib.Path(f'{p}.sha256').write_bytes(f'{h}  {p.name}\n'.encode())"
 
-      - name: Upload GitHub release assets
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ github.ref_name }}
-          files: |
-            ${{ matrix.archive }}.tar.gz
-            ${{ matrix.archive }}.tar.gz.sha256
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Upload artifacts for npm packaging
         uses: actions/upload-artifact@v4
         with:
@@ -223,6 +213,8 @@ jobs:
           tag_name: ${{ github.ref_name }}
           fail_on_unmatched_files: true
           files: |
+            artifacts/docdexd-*.tar.gz
+            artifacts/docdexd-*.tar.gz.sha256
             artifacts/docdex-release-manifest.json
             artifacts/docdex-release-manifest.json.sha256
             artifacts/SHA256SUMS

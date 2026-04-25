@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.70
+- Serialize GitHub Release asset upload after matrix artifacts are collected so parallel release builds cannot race to create the same tag release.
+- Bump release metadata to 0.2.70.
+
 ## 0.2.69
 - Add explicit personal-preferences digest retry controls across HTTP, CLI, and MCP so failed captures and stale processing captures can be requeued without direct database edits.
 - Raise the personal-preferences local digest timeout cap to 10 minutes, matching larger remote-Ollama mcoda agents such as qwen3.5:35b.

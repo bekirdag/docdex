@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${EUID}" -ne 0 ]]; then
+  echo "docdex-apply-release must run as root" >&2
+  exit 1
+fi
+
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+  echo "usage: docdex-apply-release /path/to/docdexd [revision]" >&2
+  exit 2
+fi
+
+SOURCE_BIN="$1"
+REVISION="${2:-manual}"
+SAFE_REVISION="$(printf '%s' "${REVISION}" | tr -c 'A-Za-z0-9._-' '_')"
+RELEASE_BIN="/opt/docdex/releases/docdexd-${SAFE_REVISION}"
+
+if [[ ! -f "${SOURCE_BIN}" ]]; then
+  echo "source binary not found: ${SOURCE_BIN}" >&2
+  exit 1
+fi
+
+install -d -m 0755 -o root -g root /opt/docdex /opt/docdex/bin /opt/docdex/releases
+install -d -m 0750 -o docdex -g docdex /mnt/docdex/.docdex /mnt/docdex/state /mnt/docdex/repos /mnt/docdex/logs
+install -m 0755 -o root -g root "${SOURCE_BIN}" "${RELEASE_BIN}"
+ln -sfn "${RELEASE_BIN}" /opt/docdex/bin/docdexd
+
+if ! /opt/docdex/bin/docdexd --version >/dev/null 2>&1; then
+  echo "installed binary failed --version smoke check" >&2
+  exit 1
+fi
+
+systemctl daemon-reload
+systemctl enable docdex.service
+systemctl restart docdex.service
+systemctl --no-pager --full status docdex.service
+for _ in {1..30}; do
+  if curl -fsS http://127.0.0.1:28491/healthz >/dev/null 2>&1; then
+    echo "Docdex release ${SAFE_REVISION} is active."
+    exit 0
+  fi
+  sleep 1
+done
+
+journalctl -u docdex.service -n 80 --no-pager >&2 || true
+echo "docdex.service did not become healthy within 30 seconds" >&2
+exit 1

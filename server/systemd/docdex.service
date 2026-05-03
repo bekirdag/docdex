@@ -1,0 +1,23 @@
+[Unit]
+Description=Docdex HTTP daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=docdex
+Group=docdex
+EnvironmentFile=/etc/docdex/docdex.env
+WorkingDirectory=/mnt/docdex
+ExecStart=/opt/docdex/bin/docdexd daemon --host 127.0.0.1 --port 28491 --enable-mcp true --enable-memory true
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/mnt/docdex /run /tmp
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,65 @@
+name: Deploy Docdex Server
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docdex-server-deploy
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  deploy:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run tests
+        run: cargo test --locked --all
+
+      - name: Build release binary
+        run: cargo build --release --locked --bin docdexd
+
+      - name: Configure SSH
+        env:
+          DOCDEX_DEPLOY_HOST: ${{ secrets.DOCDEX_DEPLOY_HOST }}
+          DOCDEX_DEPLOY_PORT: ${{ secrets.DOCDEX_DEPLOY_PORT }}
+          DOCDEX_DEPLOY_SSH_KEY: ${{ secrets.DOCDEX_DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${DOCDEX_DEPLOY_HOST}"
+          test -n "${DOCDEX_DEPLOY_PORT}"
+          test -n "${DOCDEX_DEPLOY_SSH_KEY}"
+          install -d -m 0700 ~/.ssh
+          printf '%s\n' "${DOCDEX_DEPLOY_SSH_KEY}" > ~/.ssh/docdex_deploy_key
+          chmod 0600 ~/.ssh/docdex_deploy_key
+          ssh-keyscan -p "${DOCDEX_DEPLOY_PORT}" "${DOCDEX_DEPLOY_HOST}" >> ~/.ssh/known_hosts
+
+      - name: Upload and activate release
+        env:
+          DOCDEX_DEPLOY_HOST: ${{ secrets.DOCDEX_DEPLOY_HOST }}
+          DOCDEX_DEPLOY_PORT: ${{ secrets.DOCDEX_DEPLOY_PORT }}
+          DOCDEX_DEPLOY_USER: ${{ secrets.DOCDEX_DEPLOY_USER }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test -n "${DOCDEX_DEPLOY_USER}"
+          RELEASE_DIR="/home/${DOCDEX_DEPLOY_USER}/docdex-releases/${RELEASE_SHA}"
+          SSH_OPTS=(-i ~/.ssh/docdex_deploy_key -p "${DOCDEX_DEPLOY_PORT}" -o BatchMode=yes)
+          SCP_OPTS=(-i ~/.ssh/docdex_deploy_key -P "${DOCDEX_DEPLOY_PORT}" -o BatchMode=yes)
+          ssh "${SSH_OPTS[@]}" "${DOCDEX_DEPLOY_USER}@${DOCDEX_DEPLOY_HOST}" "install -d -m 0700 '${RELEASE_DIR}'"
+          scp "${SCP_OPTS[@]}" target/release/docdexd "${DOCDEX_DEPLOY_USER}@${DOCDEX_DEPLOY_HOST}:${RELEASE_DIR}/docdexd"
+          ssh "${SSH_OPTS[@]}" "${DOCDEX_DEPLOY_USER}@${DOCDEX_DEPLOY_HOST}" \
+            "chmod 0755 '${RELEASE_DIR}/docdexd' && sudo /usr/local/sbin/docdex-apply-release '${RELEASE_DIR}/docdexd' '${RELEASE_SHA}'"

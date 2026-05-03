@@ -268,7 +268,7 @@ jobs:
       # MCP Registry publishing
       - name: Install MCP Publisher
         run: |
-          curl -L "https://github.com/modelcontextprotocol/registry/releases/download/v1.4.0/mcp-publisher_linux_amd64.tar.gz" \
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/download/v1.7.6/mcp-publisher_linux_amd64.tar.gz" \
             | tar xz mcp-publisher
           chmod +x mcp-publisher
 

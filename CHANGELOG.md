@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.72
+- Update the MCP Registry publisher used by the release workflow so GitHub OIDC login requests the registry URL audience expected by the current registry service.
+- Bump release metadata to 0.2.72.
+
 ## 0.2.71
 - Add generic encrypted-repository external API-key authorization with `AuthContext`, external introspection, service-token admin auth, and SQLite repository access bindings.
 - Gate encrypted repository search, batch search, snippet, chat-context, and MCP data paths behind repository access policy while preserving default local/static-token compatibility for non-encrypted deployments.

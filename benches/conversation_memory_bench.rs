@@ -1,4 +1,5 @@
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
+use docdexd::config::MemoryConversationConfig;
 use docdexd::conversations::{
     assemble_wakeup_bundle, extract_session_artifacts, ConversationCaptureKind, ConversationImport,
     ConversationImportOptions, ConversationMessage, ConversationRole, ConversationStore,
@@ -67,10 +68,10 @@ fn seed_archive(session_count: usize) -> SeededArchive {
             imported.summary.last_message_at_ms,
         );
         knowledge
-            .store_candidates(
+            .store_graph_candidates(
                 &imported.session_id,
                 imported.summary.last_message_at_ms,
-                &extracted.knowledge_facts,
+                &extracted.knowledge_graph_candidates,
             )
             .expect("store knowledge");
     }
@@ -94,6 +95,7 @@ fn bench_conversation_memory(c: &mut Criterion) {
                 let bundle = assemble_wakeup_bundle(
                     &seeded.store,
                     &seeded.knowledge,
+                    &MemoryConversationConfig::default(),
                     Some("codex"),
                     Some(query.as_str()),
                     6,

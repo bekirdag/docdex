@@ -143,12 +143,11 @@ impl Drop for MockOllamaGuard {
 }
 
 fn handle_mock_ollama_request(mut stream: TcpStream) -> std::io::Result<()> {
-    let mut buffer = [0u8; 4096];
-    let read = stream.read(&mut buffer)?;
-    if read == 0 {
+    let request_bytes = read_http_request(&mut stream)?;
+    if request_bytes.is_empty() {
         return Ok(());
     }
-    let request = String::from_utf8_lossy(&buffer[..read]);
+    let request = String::from_utf8_lossy(&request_bytes);
     let request_line = request.lines().next().unwrap_or("");
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("");
@@ -160,6 +159,41 @@ fn handle_mock_ollama_request(mut stream: TcpStream) -> std::io::Result<()> {
         ("POST", "/api/generate") => write_http_response(&mut stream, 200, r#"{"response":"ok"}"#),
         _ => write_http_response(&mut stream, 404, r#"{"error":"not found"}"#),
     }
+}
+
+fn read_http_request(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
+    let mut buffer = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let mut expected_len = None;
+    loop {
+        let read = stream.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+        if expected_len.is_none() {
+            if let Some(header_end) = find_header_end(&buffer) {
+                let headers = String::from_utf8_lossy(&buffer[..header_end]);
+                let content_length = headers.lines().find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    if name.trim().eq_ignore_ascii_case("content-length") {
+                        value.trim().parse::<usize>().ok()
+                    } else {
+                        None
+                    }
+                });
+                expected_len = Some(header_end + 4 + content_length.unwrap_or(0));
+            }
+        }
+        if expected_len.is_some_and(|len| buffer.len() >= len) {
+            break;
+        }
+    }
+    Ok(buffer)
+}
+
+fn find_header_end(buffer: &[u8]) -> Option<usize> {
+    buffer.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
 fn write_http_response(stream: &mut TcpStream, status: u16, body: &str) -> std::io::Result<()> {

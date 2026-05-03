@@ -11,7 +11,7 @@ pub async fn run_index(repo: RepoArgs, libs_sources: Option<PathBuf>) -> Result<
     if !crate::cli::cli_local_mode() {
         return run_index_via_http(repo, libs_sources).await;
     }
-    let _ = config::AppConfig::load_default()?;
+    let app_config = config::AppConfig::load_default()?;
     let repo_root = repo.repo_root();
     let index_config = index::IndexConfig::with_overrides(
         &repo_root,
@@ -19,7 +19,8 @@ pub async fn run_index(repo: RepoArgs, libs_sources: Option<PathBuf>) -> Result<
         repo.exclude_dir_overrides(),
         repo.exclude_prefix_overrides(),
         repo.symbols_enabled(),
-    )?;
+    )?
+    .with_repo_encryption(app_config.repo_encryption);
     util::init_logging("warn")?;
     let options = match libs_sources.as_ref() {
         Some(path) => indexer::IndexingOptions::from_sources_path(path)?,
@@ -33,7 +34,7 @@ pub async fn run_ingest(repo: RepoArgs, file: PathBuf) -> Result<()> {
     if !crate::cli::cli_local_mode() {
         return run_ingest_via_http(repo, file).await;
     }
-    let _ = config::AppConfig::load_default()?;
+    let app_config = config::AppConfig::load_default()?;
     let repo_root = repo.repo_root();
     let index_config = index::IndexConfig::with_overrides(
         &repo_root,
@@ -41,7 +42,8 @@ pub async fn run_ingest(repo: RepoArgs, file: PathBuf) -> Result<()> {
         repo.exclude_dir_overrides(),
         repo.exclude_prefix_overrides(),
         repo.symbols_enabled(),
-    )?;
+    )?
+    .with_repo_encryption(app_config.repo_encryption);
     util::init_logging("warn")?;
     let _ = indexer::ingest_file(repo_root, index_config, file).await?;
     Ok(())

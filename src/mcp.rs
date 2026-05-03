@@ -463,13 +463,18 @@ async fn spawn_mcp_proxy(options: McpSpawnOptions) -> Result<Arc<McpProxy>> {
 
 fn build_mcp_service(options: &McpSpawnOptions) -> Result<crate::mcp_server::McpService> {
     let repo_root = options.repo.repo_root();
+    let repo_encryption = crate::config::AppConfig::load_default()
+        .ok()
+        .map(|config| config.repo_encryption)
+        .unwrap_or_default();
     let index_config = crate::index::IndexConfig::with_overrides(
         &repo_root,
         options.repo.state_dir_override(),
         options.repo.exclude_dir_overrides(),
         options.repo.exclude_prefix_overrides(),
         options.repo.symbols_enabled(),
-    )?;
+    )?
+    .with_repo_encryption(repo_encryption);
     crate::mcp_server::McpService::new(
         repo_root,
         index_config,

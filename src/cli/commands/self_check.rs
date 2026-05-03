@@ -30,13 +30,18 @@ pub async fn run(
     );
     println!("hardware recommendation: {}", profile.recommended_tier());
     let repo_root = repo.repo_root();
+    let repo_encryption = crate::config::AppConfig::load_default()
+        .ok()
+        .map(|config| config.repo_encryption)
+        .unwrap_or_default();
     let index_config = index::IndexConfig::with_overrides(
         &repo_root,
         repo.state_dir_override(),
         repo.exclude_dir_overrides(),
         repo.exclude_prefix_overrides(),
         repo.symbols_enabled(),
-    )?;
+    )?
+    .with_repo_encryption(repo_encryption);
     util::init_logging("warn")?;
     let indexer = index::Indexer::with_config_read_only(repo_root.clone(), index_config.clone())?;
     let mut findings = Vec::new();

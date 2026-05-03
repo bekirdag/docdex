@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::warn;
 
-use crate::error::{status_for_app_error, AppError};
+use crate::error::{status_for_app_error, AppError, ERR_REPO_ENCRYPTION_UNSUPPORTED};
 use crate::http_api::json_error;
 use crate::search::AppState;
 
@@ -230,6 +230,14 @@ pub(crate) async fn impact_graph_handler(
         Err(response) => return response,
     };
 
+    if repo.indexer.config().repo_encryption().is_enabled() {
+        return json_error(
+            status_for_app_error(ERR_REPO_ENCRYPTION_UNSUPPORTED),
+            ERR_REPO_ENCRYPTION_UNSUPPORTED,
+            "impact graph access is disabled when repository encryption is enabled",
+        )
+        .into_response();
+    }
     let repo_id = match crate::symbols::repo_id_for_root(repo.indexer.repo_root()) {
         Ok(value) => value,
         Err(err) => {
@@ -307,6 +315,14 @@ pub(crate) async fn impact_diagnostics_handler(
         Err(response) => return response,
     };
 
+    if repo.indexer.config().repo_encryption().is_enabled() {
+        return json_error(
+            status_for_app_error(ERR_REPO_ENCRYPTION_UNSUPPORTED),
+            ERR_REPO_ENCRYPTION_UNSUPPORTED,
+            "impact graph access is disabled when repository encryption is enabled",
+        )
+        .into_response();
+    }
     let repo_id = match crate::symbols::repo_id_for_root(repo.indexer.repo_root()) {
         Ok(value) => value,
         Err(err) => {

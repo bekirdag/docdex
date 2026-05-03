@@ -1,3 +1,5 @@
+use crate::auth::{AuthCapabilities, AuthConfig};
+use crate::repo_encryption::{RepoEncryptionCapabilities, RepoEncryptionConfig};
 use serde::Serialize;
 
 pub const CAPABILITY_CONTRACT_VERSION: &str = "2026-03-03";
@@ -11,6 +13,8 @@ pub struct DocdexCapabilities {
     pub retrieval: RetrievalCapabilities,
     pub mcp: McpCapabilities,
     pub http: HttpCapabilities,
+    pub auth: AuthCapabilities,
+    pub repo_encryption: RepoEncryptionCapabilities,
     pub limits: CapabilityLimits,
 }
 
@@ -45,6 +49,19 @@ pub struct CapabilityLimits {
 }
 
 pub fn current_capabilities() -> DocdexCapabilities {
+    current_capabilities_with_config(&RepoEncryptionConfig::default(), &AuthConfig::default())
+}
+
+pub fn current_capabilities_with_repo_encryption_config(
+    repo_encryption_config: &RepoEncryptionConfig,
+) -> DocdexCapabilities {
+    current_capabilities_with_config(repo_encryption_config, &AuthConfig::default())
+}
+
+pub fn current_capabilities_with_config(
+    repo_encryption_config: &RepoEncryptionConfig,
+    auth_config: &AuthConfig,
+) -> DocdexCapabilities {
     DocdexCapabilities {
         contract_version: CAPABILITY_CONTRACT_VERSION,
         retrieval: RetrievalCapabilities {
@@ -64,6 +81,8 @@ pub fn current_capabilities() -> DocdexCapabilities {
             rerank_endpoint: true,
             batch_search_endpoint: true,
         },
+        auth: AuthCapabilities::from_config(auth_config),
+        repo_encryption: RepoEncryptionCapabilities::from_config(repo_encryption_config),
         limits: CapabilityLimits {
             rerank_max_candidates: RERANK_MAX_CANDIDATES,
             batch_search_max_queries: BATCH_SEARCH_MAX_QUERIES,
@@ -91,11 +110,70 @@ mod tests {
         assert!(caps.http.capabilities_endpoint);
         assert!(caps.http.rerank_endpoint);
         assert!(caps.http.batch_search_endpoint);
+        assert!(caps.auth.static_token_enabled);
+        assert!(!caps.auth.external_introspection_enabled);
+        assert!(caps.auth.repo_access_policy_enabled);
+        assert!(!caps.repo_encryption.enabled);
+        assert_eq!(
+            caps.repo_encryption.encryption_mode,
+            crate::repo_encryption::RepoEncryptionMode::Disabled
+        );
         assert_eq!(caps.limits.rerank_max_candidates, RERANK_MAX_CANDIDATES);
         assert_eq!(
             caps.limits.batch_search_max_queries,
             BATCH_SEARCH_MAX_QUERIES
         );
         assert_eq!(caps.limits.explanation_max_chars, EXPLANATION_MAX_CHARS);
+    }
+
+    #[test]
+    fn repo_encryption_capabilities_reflect_enabled_config() {
+        let mut config = RepoEncryptionConfig {
+            encryption_mode:
+                crate::repo_encryption::RepoEncryptionMode::ApplicationManagedEncryption,
+            shared_bearer_token_sufficient: true,
+            semantic_search_enabled: false,
+            web_discovery_enabled: false,
+            full_file_open_enabled: false,
+            ..RepoEncryptionConfig::default()
+        };
+        config.apply_defaults();
+
+        let caps = current_capabilities_with_config(&config, &AuthConfig::default());
+        assert!(caps.repo_encryption.enabled);
+        assert_eq!(
+            caps.repo_encryption.encryption_mode,
+            crate::repo_encryption::RepoEncryptionMode::ApplicationManagedEncryption
+        );
+        assert!(caps.repo_encryption.access_checks_required);
+        assert!(caps.repo_encryption.audit_required);
+        assert!(caps.repo_encryption.repository_isolation_required);
+        assert!(!caps.repo_encryption.shared_bearer_token_sufficient);
+        assert!(!caps.repo_encryption.semantic_search_enabled);
+        assert!(!caps.repo_encryption.web_discovery_enabled);
+    }
+
+    #[test]
+    fn auth_capabilities_reflect_external_provider_config() {
+        let auth = AuthConfig {
+            external_api_key_introspection: crate::auth::ExternalApiKeyIntrospectionConfig {
+                enabled: true,
+                ..Default::default()
+            },
+            service_token: crate::auth::ServiceTokenAuthConfig {
+                enabled: true,
+                ..Default::default()
+            },
+            ..AuthConfig::default()
+        };
+
+        let caps = current_capabilities_with_config(&RepoEncryptionConfig::default(), &auth);
+        assert!(caps.auth.static_token_enabled);
+        assert!(caps.auth.external_introspection_enabled);
+        assert!(caps.auth.service_token_enabled);
+        assert!(caps
+            .auth
+            .providers
+            .contains(&"external_api_key_introspection"));
     }
 }

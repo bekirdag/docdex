@@ -3,6 +3,7 @@ use crate::cli::CliDiffMode;
 use crate::config::{self, RepoArgs};
 use crate::dag::logging as dag_logging;
 use crate::diff;
+use crate::error::{AppError, ERR_REPO_ENCRYPTION_UNSUPPORTED};
 use crate::index;
 use crate::index::Hit;
 use crate::libs;
@@ -166,13 +167,26 @@ async fn run_single(
         )
         .await;
     }
+    let config = config::AppConfig::load_default().ok();
+    let repo_encryption = config
+        .as_ref()
+        .map(|cfg| cfg.repo_encryption.clone())
+        .unwrap_or_default();
+    if repo_encryption.is_enabled() && !repo_encryption.web_discovery_enabled && skip_local_search {
+        return Err(AppError::new(
+            ERR_REPO_ENCRYPTION_UNSUPPORTED,
+            "web discovery is disabled by repository encryption policy",
+        )
+        .into());
+    }
     let index_config = index::IndexConfig::with_overrides(
         &repo_root,
         repo.state_dir_override(),
         repo.exclude_dir_overrides(),
         repo.exclude_prefix_overrides(),
         repo.symbols_enabled(),
-    )?;
+    )?
+    .with_repo_encryption(repo_encryption.clone());
     util::init_logging("warn")?;
     let server = Arc::new(index::Indexer::with_config_read_only(
         repo_root,
@@ -188,7 +202,6 @@ async fn run_single(
             .map(Arc::new)
     };
     let web_gate = WebGateConfig::from_env();
-    let config = config::AppConfig::load_default().ok();
     let max_answer_tokens = config
         .as_ref()
         .map(|cfg| cfg.llm.max_answer_tokens)
@@ -197,7 +210,11 @@ async fn run_single(
         resolve_memory_state(config.as_ref(), server.state_dir(), server.repo_root())?;
     let plan = WaterfallPlan::new(
         web_gate,
-        Tier2Config::enabled(),
+        if repo_encryption.is_enabled() && !repo_encryption.web_discovery_enabled {
+            Tier2Config::default()
+        } else {
+            Tier2Config::enabled()
+        },
         memory_budget_from_max_answer_tokens(max_answer_tokens),
         ProfileBudget::default(),
     );

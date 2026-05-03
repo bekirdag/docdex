@@ -7,8 +7,8 @@ use serde::Deserialize;
 use tracing::warn;
 
 use crate::error::{
-    ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX,
-    ERR_STALE_INDEX,
+    status_for_app_error, AppError, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
+    ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_REPO_ENCRYPTION_UNSUPPORTED, ERR_STALE_INDEX,
 };
 use crate::http_api::json_error;
 use crate::search::AppState;
@@ -45,6 +45,13 @@ pub async fn symbols_handler(
         Err(response) => return response,
     };
 
+    if repo.indexer.config().repo_encryption().is_enabled() {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_REPO_ENCRYPTION_UNSUPPORTED,
+            "symbol extraction is disabled when repository encryption is enabled",
+        );
+    }
     if !repo.indexer.config().symbols_enabled() {
         return json_error(
             StatusCode::CONFLICT,
@@ -91,6 +98,13 @@ pub async fn symbols_handler(
         ),
         Err(err) => {
             state.metrics.inc_error();
+            if let Some(app) = err.downcast_ref::<AppError>() {
+                return json_error(
+                    status_for_app_error(app.code),
+                    app.code,
+                    app.message.clone(),
+                );
+            }
             warn!(
                 target: "docdexd",
                 error = ?err,
@@ -122,6 +136,13 @@ pub async fn symbols_status_handler(
         Err(response) => return response,
     };
 
+    if repo.indexer.config().repo_encryption().is_enabled() {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_REPO_ENCRYPTION_UNSUPPORTED,
+            "symbol extraction is disabled when repository encryption is enabled",
+        );
+    }
     if !repo.indexer.config().symbols_enabled() {
         return json_error(
             StatusCode::CONFLICT,
@@ -134,6 +155,13 @@ pub async fn symbols_status_handler(
         Ok(payload) => Json(payload).into_response(),
         Err(err) => {
             state.metrics.inc_error();
+            if let Some(app) = err.downcast_ref::<AppError>() {
+                return json_error(
+                    status_for_app_error(app.code),
+                    app.code,
+                    app.message.clone(),
+                );
+            }
             warn!(
                 target: "docdexd",
                 error = ?err,

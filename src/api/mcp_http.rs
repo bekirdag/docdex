@@ -1,4 +1,5 @@
 use crate::api::v1::initialize::{parse_root_uri, resolve_initialize};
+use crate::auth::RepoOperation;
 use crate::error::status_for_app_error;
 use crate::error::{
     repo_resolution_details, AppError, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
@@ -27,6 +28,7 @@ pub struct McpSessionQuery {
 
 pub async fn mcp_request_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(payload): Json<Value>,
 ) -> Response {
     let Some(router) = state.mcp_router.as_ref() else {
@@ -37,8 +39,8 @@ pub async fn mcp_request_handler(
         );
     };
     match payload {
-        Value::Array(batch) => handle_mcp_batch(&state, router, batch).await,
-        payload => match handle_mcp_single(&state, router, payload).await {
+        Value::Array(batch) => handle_mcp_batch(&state, router, &headers, batch).await,
+        payload => match handle_mcp_single(&state, router, &headers, payload).await {
             Ok(Some(response)) => Json(response).into_response(),
             Ok(None) => StatusCode::NO_CONTENT.into_response(),
             Err(response) => response,
@@ -123,9 +125,11 @@ pub async fn mcp_message_handler(
         }
     } else {
         let bound_root = router.session_repo_root(&session_id).await;
+        let mut mcp_repo_root_for_auth = bound_root.clone();
         if let Some(root_uri) = extract_project_root(&payload) {
             match resolve_repo_for_mcp(&state, Some(root_uri)) {
                 Ok(repo_root) => {
+                    mcp_repo_root_for_auth = Some(repo_root.clone());
                     let should_init = bound_root
                         .as_ref()
                         .map(|root| root != &repo_root)
@@ -160,6 +164,16 @@ pub async fn mcp_message_handler(
                 ERR_INVALID_ARGUMENT,
                 "missing initialize (call initialize with rootUri before MCP requests)",
             );
+        }
+        if let Err(response) = authorize_mcp_encrypted_repo(
+            &state,
+            &headers,
+            &payload,
+            mcp_repo_root_for_auth.as_ref(),
+        )
+        .await
+        {
+            return response;
         }
     }
     match router.enqueue_for_session(&session_id, payload).await {
@@ -213,6 +227,7 @@ fn extract_project_root(payload: &Value) -> Option<String> {
 async fn handle_mcp_batch(
     state: &AppState,
     router: &crate::mcp::McpProxyRouter,
+    headers: &HeaderMap,
     batch: Vec<Value>,
 ) -> Response {
     if batch.is_empty() {
@@ -224,7 +239,7 @@ async fn handle_mcp_batch(
     }
     let mut responses = Vec::new();
     for payload in batch {
-        match handle_mcp_single(state, router, payload).await {
+        match handle_mcp_single(state, router, headers, payload).await {
             Ok(Some(response)) => responses.push(response),
             Ok(None) => {}
             Err(response) => return response,
@@ -240,6 +255,7 @@ async fn handle_mcp_batch(
 async fn handle_mcp_single(
     state: &AppState,
     router: &crate::mcp::McpProxyRouter,
+    headers: &HeaderMap,
     mut payload: Value,
 ) -> Result<Option<Value>, Response> {
     if !payload.is_object() {
@@ -281,6 +297,7 @@ async fn handle_mcp_single(
             Err(err) => return Err(app_error_response(&err)),
         }
     };
+    authorize_mcp_encrypted_repo(state, headers, &payload, repo_root.as_ref()).await?;
     match router.call(repo_root.as_deref(), payload).await {
         Ok(response) => Ok(Some(response)),
         Err(err) => Err(json_error(
@@ -288,6 +305,59 @@ async fn handle_mcp_single(
             ERR_INTERNAL_ERROR,
             format!("mcp proxy failed: {err}"),
         )),
+    }
+}
+
+async fn authorize_mcp_encrypted_repo(
+    state: &AppState,
+    headers: &HeaderMap,
+    payload: &Value,
+    repo_root: Option<&PathBuf>,
+) -> Result<(), Response> {
+    if !state.repo_encryption.is_enabled() || extract_method(payload) == Some("initialize") {
+        return Ok(());
+    }
+    let Some(repo_root) = repo_root else {
+        return Ok(());
+    };
+    let repo_id = match crate::repo_manager::repo_fingerprint_sha256(repo_root) {
+        Ok(repo_id) => repo_id,
+        Err(err) => {
+            return Err(json_error(
+                StatusCode::BAD_REQUEST,
+                ERR_INVALID_ARGUMENT,
+                format!("failed to resolve MCP repository id: {err}"),
+            ));
+        }
+    };
+    match state
+        .auth
+        .authorize_repo_access(headers, &repo_id, mcp_operation(payload))
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(err) => Err(app_error_response(&err)),
+    }
+}
+
+fn mcp_operation(payload: &Value) -> RepoOperation {
+    let tool_name = payload
+        .pointer("/params/name")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    if tool_name.contains("capabilities") {
+        RepoOperation::Capabilities
+    } else if tool_name.contains("snippet") {
+        RepoOperation::Snippet
+    } else if tool_name.contains("open")
+        || tool_name.contains("symbols")
+        || tool_name.contains("ast")
+        || tool_name.contains("impact")
+        || tool_name.contains("dag")
+    {
+        RepoOperation::Open
+    } else {
+        RepoOperation::Search
     }
 }
 
@@ -476,6 +546,11 @@ mod tests {
             personal_preferences: None,
             profile_state: None,
             features: crate::config::FeatureFlagsConfig::default(),
+            auth: crate::auth::AuthRuntime::new_for_tests(
+                crate::auth::AuthConfig::default(),
+                temp.path(),
+            ),
+            repo_encryption: crate::repo_encryption::RepoEncryptionConfig::default(),
             default_agent_id: None,
             max_answer_tokens: 256,
             llm_config: crate::config::LlmConfig {
@@ -627,7 +702,8 @@ mod tests {
             "method": "initialize",
             "params": {}
         });
-        let init_response = mcp_request_handler(State(state.clone()), Json(init_payload)).await;
+        let init_response =
+            mcp_request_handler(State(state.clone()), HeaderMap::new(), Json(init_payload)).await;
         let init_status = init_response.status();
         let init_body = init_response.into_body().collect().await?.to_bytes();
         assert!(
@@ -644,7 +720,8 @@ mod tests {
             "method": "tools/list",
             "params": {}
         });
-        let tools_response = mcp_request_handler(State(state), Json(tools_payload)).await;
+        let tools_response =
+            mcp_request_handler(State(state), HeaderMap::new(), Json(tools_payload)).await;
         assert!(tools_response.status().is_success());
         let tools_body = tools_response.into_body().collect().await?.to_bytes();
         let tools_value: serde_json::Value = serde_json::from_slice(&tools_body)?;

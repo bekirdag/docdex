@@ -14,10 +14,12 @@ pub use env_overrides::write_config;
 use env_overrides::{apply_env_overrides, default_state_dir, expand_config_path};
 pub use runtime::*;
 
+use crate::auth::AuthConfig;
 use crate::impact::{
     apply_impact_settings, ImpactSettings, DEFAULT_DYNAMIC_IMPORT_SCAN_LIMIT,
     DEFAULT_IMPORT_TRACES_ENABLED,
 };
+use crate::repo_encryption::RepoEncryptionConfig;
 
 const DEFAULT_CONFIG_FILE: &str = "config.toml";
 const DEFAULT_HTTP_BIND_ADDR: &str = "127.0.0.1:28491";
@@ -76,6 +78,10 @@ pub struct AppConfig {
     pub features: FeatureFlagsConfig,
     #[serde(default)]
     pub server: ServerConfig,
+    #[serde(default)]
+    pub auth: AuthConfig,
+    #[serde(default)]
+    pub repo_encryption: RepoEncryptionConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -97,6 +103,8 @@ struct AppConfigWrite<'a> {
     memory: MemoryConfigWrite<'a>,
     features: &'a FeatureFlagsConfig,
     server: &'a ServerConfig,
+    auth: &'a AuthConfig,
+    repo_encryption: &'a RepoEncryptionConfig,
     personal_preferences: &'a MemoryPersonalPreferencesConfig,
 }
 
@@ -123,6 +131,8 @@ impl<'a> From<&'a AppConfig> for AppConfigWrite<'a> {
             },
             features: &config.features,
             server: &config.server,
+            auth: &config.auth,
+            repo_encryption: &config.repo_encryption,
             personal_preferences: &config.memory.personal_preferences,
         }
     }
@@ -149,6 +159,8 @@ impl Default for AppConfig {
             memory: MemoryConfig::default(),
             features: FeatureFlagsConfig::default(),
             server: ServerConfig::default(),
+            auth: AuthConfig::default(),
+            repo_encryption: RepoEncryptionConfig::default(),
         }
     }
 }
@@ -188,6 +200,8 @@ impl AppConfig {
         if self.integrations.mswarm.base_url.trim().is_empty() {
             self.integrations.mswarm.base_url = default_mswarm_base_url();
         }
+        self.auth.apply_defaults();
+        self.repo_encryption.apply_defaults();
         if self.web.scraper.engine.trim().is_empty() {
             self.web.scraper.engine = DEFAULT_WEB_ENGINE.to_string();
         }
@@ -1591,4 +1605,232 @@ fn default_web_min_spacing_ms() -> u64 {
 
 fn default_web_cache_ttl_secs() -> u64 {
     2_592_000
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repo_encryption_config_defaults_are_disabled() {
+        let mut config = AppConfig::default();
+        config.apply_defaults().expect("apply defaults");
+
+        assert_eq!(config.auth.mode, crate::auth::AuthMode::LocalOrExternal);
+        assert!(config.auth.static_token.enabled);
+        assert!(!config.auth.static_token.encrypted_repo_data_access);
+        assert!(!config.auth.external_api_key_introspection.enabled);
+        assert!(!config.auth.service_token.enabled);
+        assert!(!config.repo_encryption.is_enabled());
+        assert_eq!(
+            config.repo_encryption.encryption_mode,
+            crate::repo_encryption::RepoEncryptionMode::Disabled
+        );
+        assert!(!config.repo_encryption.semantic_search_enabled);
+        assert!(!config.repo_encryption.web_discovery_enabled);
+        assert!(!config.repo_encryption.full_file_open_enabled);
+        assert!(!config.repo_encryption.shared_bearer_token_sufficient);
+    }
+
+    #[test]
+    fn repo_encryption_config_parses_explicit_enabled_policy() {
+        let text = r#"
+[repo_encryption]
+encryption_mode = "application_managed_encryption"
+key_env = "DOCDEX_TEST_REPO_KEY"
+key_id = "test-key"
+semantic_search_enabled = false
+web_discovery_enabled = false
+full_file_open_enabled = false
+plaintext_term_index_enabled = true
+max_results_per_query = 7
+max_snippet_chars = 144
+"#;
+        let mut config = parse_config_text(text).expect("parse config");
+        config.apply_defaults().expect("apply defaults");
+
+        assert!(config.repo_encryption.is_enabled());
+        assert_eq!(
+            config.repo_encryption.encryption_mode,
+            crate::repo_encryption::RepoEncryptionMode::ApplicationManagedEncryption
+        );
+        assert_eq!(config.repo_encryption.max_results_per_query, 7);
+        assert_eq!(config.repo_encryption.max_snippet_chars, 144);
+        assert_eq!(
+            config.repo_encryption.key_env.as_deref(),
+            Some("DOCDEX_TEST_REPO_KEY")
+        );
+        assert_eq!(config.repo_encryption.key_id.as_deref(), Some("test-key"));
+        assert!(config.repo_encryption.plaintext_term_index_enabled);
+        assert!(!config.repo_encryption.semantic_search_enabled);
+        assert!(!config.repo_encryption.web_discovery_enabled);
+        assert!(!config.repo_encryption.full_file_open_enabled);
+        assert!(!config.repo_encryption.shared_bearer_token_sufficient);
+    }
+
+    #[test]
+    fn repo_encryption_env_enabled_sanitizes_shared_bearer_flag() {
+        let _guard = crate::setup::test_support::ENV_LOCK.lock();
+        std::env::set_var("DOCDEX_REPO_ENCRYPTION_ENABLED", "true");
+        std::env::remove_var("DOCDEX_REPO_ENCRYPTION_MODE");
+        std::env::remove_var("DOCDEX_REPO_ENCRYPTION_KEY_ENV");
+        std::env::remove_var("DOCDEX_REPO_ENCRYPTION_KEY_ID");
+        std::env::remove_var("DOCDEX_REPO_ENCRYPTION_PLAINTEXT_TERM_INDEX_ENABLED");
+
+        let mut config = AppConfig {
+            repo_encryption: RepoEncryptionConfig {
+                shared_bearer_token_sufficient: true,
+                ..RepoEncryptionConfig::default()
+            },
+            ..AppConfig::default()
+        };
+        apply_env_overrides(&mut config);
+
+        assert!(config.repo_encryption.is_enabled());
+        assert_eq!(
+            config.repo_encryption.encryption_mode,
+            crate::repo_encryption::RepoEncryptionMode::ApplicationManagedEncryption
+        );
+        assert!(!config.repo_encryption.shared_bearer_token_sufficient);
+
+        std::env::remove_var("DOCDEX_REPO_ENCRYPTION_ENABLED");
+    }
+
+    #[test]
+    fn repo_encryption_env_sets_key_metadata_and_term_index_policy() {
+        let _guard = crate::setup::test_support::ENV_LOCK.lock();
+        std::env::set_var("DOCDEX_REPO_ENCRYPTION_ENABLED", "true");
+        std::env::set_var("DOCDEX_REPO_ENCRYPTION_KEY_ENV", "DOCDEX_TEST_KEY");
+        std::env::set_var("DOCDEX_REPO_ENCRYPTION_KEY_ID", "test-key-id");
+        std::env::set_var(
+            "DOCDEX_REPO_ENCRYPTION_PLAINTEXT_TERM_INDEX_ENABLED",
+            "false",
+        );
+
+        let mut config = AppConfig::default();
+        apply_env_overrides(&mut config);
+
+        assert!(config.repo_encryption.is_enabled());
+        assert_eq!(
+            config.repo_encryption.key_env.as_deref(),
+            Some("DOCDEX_TEST_KEY")
+        );
+        assert_eq!(
+            config.repo_encryption.key_id.as_deref(),
+            Some("test-key-id")
+        );
+        assert!(!config.repo_encryption.plaintext_term_index_enabled);
+
+        std::env::remove_var("DOCDEX_REPO_ENCRYPTION_ENABLED");
+        std::env::remove_var("DOCDEX_REPO_ENCRYPTION_KEY_ENV");
+        std::env::remove_var("DOCDEX_REPO_ENCRYPTION_KEY_ID");
+        std::env::remove_var("DOCDEX_REPO_ENCRYPTION_PLAINTEXT_TERM_INDEX_ENABLED");
+    }
+
+    #[test]
+    fn repo_encryption_env_mode_takes_precedence_over_enabled_toggle() {
+        let _guard = crate::setup::test_support::ENV_LOCK.lock();
+        std::env::set_var("DOCDEX_REPO_ENCRYPTION_ENABLED", "true");
+        std::env::set_var("DOCDEX_REPO_ENCRYPTION_MODE", "disabled");
+        std::env::remove_var("DOCDEX_REPO_ENCRYPTION_KEY_ENV");
+        std::env::remove_var("DOCDEX_REPO_ENCRYPTION_KEY_ID");
+        std::env::remove_var("DOCDEX_REPO_ENCRYPTION_PLAINTEXT_TERM_INDEX_ENABLED");
+
+        let mut config = AppConfig::default();
+        apply_env_overrides(&mut config);
+
+        assert!(!config.repo_encryption.is_enabled());
+        assert_eq!(
+            config.repo_encryption.encryption_mode,
+            crate::repo_encryption::RepoEncryptionMode::Disabled
+        );
+
+        std::env::remove_var("DOCDEX_REPO_ENCRYPTION_ENABLED");
+        std::env::remove_var("DOCDEX_REPO_ENCRYPTION_MODE");
+    }
+
+    #[test]
+    fn auth_config_parses_external_and_service_providers() {
+        let text = r#"
+[auth]
+mode = "external_only"
+reject_ambiguous_credentials = true
+
+[auth.static_token]
+enabled = true
+token_env = "DOCDEX_STATIC_FOR_TEST"
+encrypted_repo_data_access = false
+
+[auth.external_api_key_introspection]
+enabled = true
+issuer = "external-test"
+url = "https://authority.example/introspect"
+service_token_env = "DOCDEX_INTROSPECTION_TOKEN_FOR_TEST"
+cache_ttl_seconds = 45
+negative_cache_ttl_seconds = 5
+timeout_ms = 2500
+fail_closed = true
+accepted_headers = ["x-api-key", "authorization"]
+required_status = "active"
+
+[auth.service_token]
+enabled = true
+token_env = "DOCDEX_SERVICE_FOR_TEST"
+"#;
+        let mut config = parse_config_text(text).expect("parse config");
+        config.apply_defaults().expect("apply defaults");
+
+        assert_eq!(config.auth.mode, crate::auth::AuthMode::ExternalOnly);
+        assert!(config.auth.external_api_key_introspection.enabled);
+        assert_eq!(
+            config.auth.external_api_key_introspection.issuer,
+            "external-test"
+        );
+        assert_eq!(config.auth.external_api_key_introspection.timeout_ms, 2500);
+        assert!(config.auth.service_token.enabled);
+        assert_eq!(
+            config.auth.service_token.token_env.as_str(),
+            "DOCDEX_SERVICE_FOR_TEST"
+        );
+    }
+
+    #[test]
+    fn auth_env_overrides_enable_external_and_service_auth() {
+        let _guard = crate::setup::test_support::ENV_LOCK.lock();
+        std::env::set_var("DOCDEX_AUTH_MODE", "local_or_external");
+        std::env::set_var("DOCDEX_AUTH_EXTERNAL_API_KEY_INTROSPECTION_ENABLED", "true");
+        std::env::set_var(
+            "DOCDEX_AUTH_EXTERNAL_API_KEY_INTROSPECTION_URL",
+            "https://authority.example/introspect",
+        );
+        std::env::set_var("DOCDEX_AUTH_EXTERNAL_API_KEY_INTROSPECTION_TOKEN", "secret");
+        std::env::set_var("DOCDEX_AUTH_SERVICE_TOKEN_ENABLED", "true");
+        std::env::set_var("DOCDEX_AUTH_SERVICE_TOKEN", "admin-secret");
+
+        let mut config = AppConfig::default();
+        apply_env_overrides(&mut config);
+
+        assert_eq!(config.auth.mode, crate::auth::AuthMode::LocalOrExternal);
+        assert!(config.auth.external_api_key_introspection.enabled);
+        assert_eq!(
+            config.auth.external_api_key_introspection.url,
+            "https://authority.example/introspect"
+        );
+        assert_eq!(
+            config.auth.external_api_key_introspection.service_token_env,
+            "DOCDEX_AUTH_EXTERNAL_API_KEY_INTROSPECTION_TOKEN"
+        );
+        assert!(config.auth.service_token.enabled);
+        assert_eq!(
+            config.auth.service_token.token_env,
+            "DOCDEX_AUTH_SERVICE_TOKEN"
+        );
+
+        std::env::remove_var("DOCDEX_AUTH_MODE");
+        std::env::remove_var("DOCDEX_AUTH_EXTERNAL_API_KEY_INTROSPECTION_ENABLED");
+        std::env::remove_var("DOCDEX_AUTH_EXTERNAL_API_KEY_INTROSPECTION_URL");
+        std::env::remove_var("DOCDEX_AUTH_EXTERNAL_API_KEY_INTROSPECTION_TOKEN");
+        std::env::remove_var("DOCDEX_AUTH_SERVICE_TOKEN_ENABLED");
+        std::env::remove_var("DOCDEX_AUTH_SERVICE_TOKEN");
+    }
 }

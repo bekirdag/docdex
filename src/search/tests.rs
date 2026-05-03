@@ -34,6 +34,7 @@ mod repo_context_tests {
                 None,
                 false,
                 crate::config::MemoryConversationConfig::default(),
+                crate::repo_encryption::RepoEncryptionConfig::default(),
             )))
         } else {
             None
@@ -124,6 +125,11 @@ mod repo_context_tests {
             personal_preferences: None,
             profile_state: None,
             features: crate::config::FeatureFlagsConfig::default(),
+            auth: crate::auth::AuthRuntime::new_for_tests(
+                crate::auth::AuthConfig::default(),
+                temp.path(),
+            ),
+            repo_encryption: crate::repo_encryption::RepoEncryptionConfig::default(),
             default_agent_id: None,
             max_answer_tokens: 256,
             llm_config: config::LlmConfig {

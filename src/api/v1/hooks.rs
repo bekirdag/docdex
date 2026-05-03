@@ -12,6 +12,7 @@ use tracing::warn;
 use crate::error::status_for_app_error;
 use crate::error::{
     AppError, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED, ERR_PROFILE_DISABLED,
+    ERR_REPO_ENCRYPTION_UNSUPPORTED,
 };
 use crate::http_api::{
     json_error, repo_error_response, resolve_conversation_context, resolve_repo_context,
@@ -182,6 +183,16 @@ pub async fn hook_validate_handler(
     }
 
     if rules.contains(&ConstraintRule::NoCircularDependencies) {
+        if repo.indexer.config().repo_encryption().is_enabled() {
+            return finalize(
+                json_error(
+                    status_for_app_error(ERR_REPO_ENCRYPTION_UNSUPPORTED),
+                    ERR_REPO_ENCRYPTION_UNSUPPORTED,
+                    "circular dependency validation is disabled when repository encryption is enabled",
+                ),
+                true,
+            );
+        }
         let store = crate::impact::ImpactGraphStore::new(repo.indexer.state_dir());
         match store.read_edges() {
             Ok(edges) => {

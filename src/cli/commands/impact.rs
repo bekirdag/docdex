@@ -1,10 +1,12 @@
 use crate::cli::http_client::CliHttpClient;
 use crate::config::RepoArgs;
+use crate::error::{AppError, ERR_REPO_ENCRYPTION_UNSUPPORTED};
 use crate::impact::{
     build_impact_diagnostics_response, ImpactDiagnosticsEntry, ImpactGraphStore,
     ImpactQueryControlsRaw,
 };
 use crate::index;
+use crate::repo_encryption::RepoEncryptionConfig;
 use crate::symbols;
 use crate::util;
 use anyhow::Result;
@@ -23,6 +25,11 @@ pub async fn run_diagnostics(
         return run_diagnostics_via_http(repo, file, limit, offset).await;
     }
     let repo_root = repo.repo_root();
+    let repo_encryption = crate::config::AppConfig::load_default()
+        .ok()
+        .map(|config| config.repo_encryption)
+        .unwrap_or_default();
+    ensure_impact_allowed(&repo_encryption)?;
     let index_config = index::IndexConfig::with_overrides(
         &repo_root,
         repo.state_dir_override(),
@@ -107,6 +114,11 @@ pub async fn run_graph(
     }
 
     let repo_root = repo.repo_root();
+    let repo_encryption = crate::config::AppConfig::load_default()
+        .ok()
+        .map(|config| config.repo_encryption)
+        .unwrap_or_default();
+    ensure_impact_allowed(&repo_encryption)?;
     let index_config = index::IndexConfig::with_overrides(
         &repo_root,
         repo.state_dir_override(),
@@ -137,6 +149,17 @@ pub async fn run_graph(
     let response =
         crate::impact::build_impact_response(&repo_id, &file, traversal, &controls, diagnostics);
     println!("{}", serde_json::to_string_pretty(&response)?);
+    Ok(())
+}
+
+fn ensure_impact_allowed(repo_encryption: &RepoEncryptionConfig) -> Result<()> {
+    if repo_encryption.is_enabled() {
+        return Err(AppError::new(
+            ERR_REPO_ENCRYPTION_UNSUPPORTED,
+            "impact graph access is disabled when repository encryption is enabled",
+        )
+        .into());
+    }
     Ok(())
 }
 

@@ -173,7 +173,9 @@ impl McpServer {
         &self,
         _args: CapabilitiesArgs,
     ) -> Result<serde_json::Value> {
-        Ok(serde_json::to_value(capabilities::current_capabilities())?)
+        Ok(serde_json::to_value(
+            capabilities::current_capabilities_with_repo_encryption_config(&self.repo_encryption),
+        )?)
     }
 
     pub(super) async fn handle_rerank(&self, args: RerankArgs) -> Result<serde_json::Value> {

@@ -8,6 +8,7 @@ use std::time::Instant;
 
 use crate::config;
 use crate::config::RepoArgs;
+use crate::error::{AppError, ERR_REPO_ENCRYPTION_UNSUPPORTED};
 use crate::index;
 use crate::libs;
 use crate::max_size::truncate_utf8_chars;
@@ -131,13 +132,26 @@ pub async fn run_eval(options: EvalOptions) -> Result<()> {
     }
 
     let repo_root = options.repo.repo_root();
+    let loaded_config = config::AppConfig::load_default().ok();
+    let repo_encryption = loaded_config
+        .as_ref()
+        .map(|cfg| cfg.repo_encryption.clone())
+        .unwrap_or_default();
+    if repo_encryption.is_enabled() && !repo_encryption.web_discovery_enabled && options.web_only {
+        return Err(AppError::new(
+            ERR_REPO_ENCRYPTION_UNSUPPORTED,
+            "web discovery is disabled by repository encryption policy",
+        )
+        .into());
+    }
     let index_config = index::IndexConfig::with_overrides(
         &repo_root,
         options.repo.state_dir_override(),
         options.repo.exclude_dir_overrides(),
         options.repo.exclude_prefix_overrides(),
         options.repo.symbols_enabled(),
-    )?;
+    )?
+    .with_repo_encryption(repo_encryption.clone());
     util::init_logging("warn")?;
     let indexer = Arc::new(index::Indexer::with_config_read_only(
         repo_root,
@@ -154,7 +168,6 @@ pub async fn run_eval(options: EvalOptions) -> Result<()> {
     };
 
     let queries = eval_queries(options.max_queries);
-    let loaded_config = config::AppConfig::load_default().ok();
     let max_answer_tokens = loaded_config
         .as_ref()
         .map(|cfg| cfg.llm.max_answer_tokens)
@@ -171,7 +184,11 @@ pub async fn run_eval(options: EvalOptions) -> Result<()> {
             let agent_key = agent_lookup_key(agent);
             let plan = WaterfallPlan::new(
                 WebGateConfig::from_env(),
-                Tier2Config::enabled(),
+                if repo_encryption.is_enabled() && !repo_encryption.web_discovery_enabled {
+                    Tier2Config::default()
+                } else {
+                    Tier2Config::enabled()
+                },
                 memory_budget_from_max_answer_tokens(max_answer_tokens),
                 ProfileBudget::default(),
             );

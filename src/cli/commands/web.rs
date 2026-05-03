@@ -2,7 +2,9 @@ use crate::cli::commands::query;
 use crate::cli::http_client::CliHttpClient;
 use crate::config::RepoArgs;
 use crate::dag::logging as dag_logging;
-use crate::error::{AppError, ERR_INVALID_ARGUMENT, ERR_MISSING_DEPENDENCY};
+use crate::error::{
+    AppError, ERR_INVALID_ARGUMENT, ERR_MISSING_DEPENDENCY, ERR_REPO_ENCRYPTION_UNSUPPORTED,
+};
 use crate::index;
 use crate::libs;
 use crate::memory::repo_state_root_from_state_dir;
@@ -184,13 +186,26 @@ pub async fn run_rag(
         println!("{}", serde_json::to_string_pretty(&payload)?);
         return Ok(());
     }
+    let config = crate::config::AppConfig::load_default().ok();
+    let repo_encryption = config
+        .as_ref()
+        .map(|cfg| cfg.repo_encryption.clone())
+        .unwrap_or_default();
+    if repo_encryption.is_enabled() && !repo_encryption.web_discovery_enabled {
+        return Err(AppError::new(
+            ERR_REPO_ENCRYPTION_UNSUPPORTED,
+            "web discovery is disabled by repository encryption policy",
+        )
+        .into());
+    }
     let index_config = index::IndexConfig::with_overrides(
         &repo_root,
         repo.state_dir_override(),
         repo.exclude_dir_overrides(),
         repo.exclude_prefix_overrides(),
         repo.symbols_enabled(),
-    )?;
+    )?
+    .with_repo_encryption(repo_encryption.clone());
     util::init_logging("warn")?;
     let server = Arc::new(index::Indexer::with_config_read_only(
         repo_root,
@@ -206,7 +221,6 @@ pub async fn run_rag(
             .map(Arc::new)
     };
     let web_gate = WebGateConfig::from_env();
-    let config = crate::config::AppConfig::load_default().ok();
     let max_answer_tokens = config
         .as_ref()
         .map(|cfg| cfg.llm.max_answer_tokens)

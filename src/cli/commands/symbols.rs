@@ -1,6 +1,8 @@
 use crate::cli::http_client::CliHttpClient;
 use crate::config::RepoArgs;
+use crate::error::{AppError, ERR_REPO_ENCRYPTION_UNSUPPORTED};
 use crate::index;
+use crate::repo_encryption::RepoEncryptionConfig;
 use crate::symbols::SymbolsStore;
 use crate::util;
 use anyhow::Result;
@@ -11,6 +13,11 @@ pub async fn run_status(repo: RepoArgs) -> Result<()> {
         return run_status_via_http(repo).await;
     }
     let repo_root = repo.repo_root();
+    let repo_encryption = crate::config::AppConfig::load_default()
+        .ok()
+        .map(|config| config.repo_encryption)
+        .unwrap_or_default();
+    ensure_symbols_allowed(&repo_encryption)?;
     let index_config = index::IndexConfig::with_overrides(
         &repo_root,
         repo.state_dir_override(),
@@ -24,6 +31,17 @@ pub async fn run_status(repo: RepoArgs) -> Result<()> {
     let store = SymbolsStore::new(&repo_root, index_config.state_dir())?;
     let status = store.parser_status()?;
     println!("{}", serde_json::to_string_pretty(&status)?);
+    Ok(())
+}
+
+fn ensure_symbols_allowed(repo_encryption: &RepoEncryptionConfig) -> Result<()> {
+    if repo_encryption.is_enabled() {
+        return Err(AppError::new(
+            ERR_REPO_ENCRYPTION_UNSUPPORTED,
+            "symbol extraction is disabled when repository encryption is enabled",
+        )
+        .into());
+    }
     Ok(())
 }
 

@@ -309,6 +309,8 @@ pub async fn serve(
     hook_socket_path: Option<PathBuf>,
     mcp_ipc_config: crate::ipc::mcp_ipc::McpIpcConfig,
     feature_flags: crate::config::FeatureFlagsConfig,
+    auth_config: crate::auth::AuthConfig,
+    repo_encryption_config: crate::repo_encryption::RepoEncryptionConfig,
     conversation_config: crate::config::MemoryConversationConfig,
     personal_preferences_config: crate::config::MemoryPersonalPreferencesConfig,
     default_agent_id: Option<String>,
@@ -450,6 +452,7 @@ pub async fn serve(
         .with_hint("On non-Unix platforms, remove --run-as-uid/--run-as-gid/--unshare-net.")
     })?;
 
+    let config = config.with_repo_encryption(repo_encryption_config.clone());
     let indexer = Arc::new(Indexer::with_config(repo, config).map_err(|err| {
         if err.downcast_ref::<crate::error::AppError>().is_some() {
             return err;
@@ -638,12 +641,24 @@ pub async fn serve(
     };
     let shared_state_dir =
         repo_manager::split_scoped_state_dir(indexer.state_dir()).map(|(base_dir, _, _)| base_dir);
+    let auth_state_dir = global_state_dir
+        .clone()
+        .or_else(|| shared_state_dir.clone())
+        .unwrap_or_else(|| indexer.state_dir().to_path_buf());
+    let auth = crate::auth::AuthRuntime::new(auth_config, &auth_state_dir).map_err(|err| {
+        StartupError::new(
+            "startup_state_invalid",
+            format!("failed to initialize auth state: {err}"),
+        )
+        .with_hint("Verify global/state directory permissions for auth policy storage.")
+    })?;
     let (repo_manager, delegation_metrics) = if daemon_mode {
         let manager = Arc::new(crate::daemon::multi_repo::RepoManager::new(
             memory_embedder.clone(),
             shared_state_dir,
             conversation_config.enabled,
             conversation_config.clone(),
+            repo_encryption_config.clone(),
         ));
         let delegation_metrics = manager.delegation_metrics_for_repo_id(&repo_id);
         if let Err(err) = delegation_telemetry::restore_repo_metrics_if_empty(
@@ -766,6 +781,8 @@ pub async fn serve(
         personal_preferences: personal_preferences.clone(),
         profile_state,
         features: feature_flags.clone(),
+        auth,
+        repo_encryption: repo_encryption_config,
         default_agent_id,
         max_answer_tokens,
         llm_config,

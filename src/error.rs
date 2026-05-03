@@ -26,7 +26,17 @@ pub const ERR_RATE_LIMITED: &str = "rate_limited";
 pub const ERR_BACKOFF_REQUIRED: &str = "backoff_required";
 pub const ERR_REPO_STATE_MISMATCH: &str = "repo_state_mismatch";
 pub const ERR_UNAUTHORIZED: &str = "unauthorized";
+pub const ERR_MISSING_CREDENTIALS: &str = "missing_credentials";
+pub const ERR_AMBIGUOUS_CREDENTIALS: &str = "ambiguous_credentials";
+pub const ERR_INTROSPECTION_UNAVAILABLE: &str = "introspection_unavailable";
+pub const ERR_INVALID_CREDENTIALS: &str = "invalid_credentials";
+pub const ERR_REPO_ACCESS_DENIED: &str = "repo_access_denied";
+pub const ERR_SCOPE_DENIED: &str = "scope_denied";
 pub const ERR_DELEGATION_LOCAL_REQUIRED: &str = "delegation_local_required";
+pub const ERR_REPO_ENCRYPTION_KEY_UNAVAILABLE: &str = "repo_encryption_key_unavailable";
+pub const ERR_REPO_ENCRYPTION_KEY_INVALID: &str = "repo_encryption_key_invalid";
+pub const ERR_REPO_ENCRYPTION_UNSUPPORTED: &str = "repo_encryption_unsupported";
+pub const ERR_ENCRYPTED_OPERATION_DISABLED: &str = "encrypted_operation_disabled";
 pub const ERR_INTERNAL_ERROR: &str = "internal_error";
 
 #[derive(Debug, Clone)]
@@ -110,6 +120,16 @@ pub fn status_for_app_error(code: &str) -> StatusCode {
         ERR_MISSING_REPO_PATH => StatusCode::NOT_FOUND,
         ERR_UNKNOWN_REPO => StatusCode::NOT_FOUND,
         ERR_UNAUTHORIZED => StatusCode::UNAUTHORIZED,
+        ERR_MISSING_CREDENTIALS => StatusCode::UNAUTHORIZED,
+        ERR_AMBIGUOUS_CREDENTIALS => StatusCode::BAD_REQUEST,
+        ERR_INTROSPECTION_UNAVAILABLE => StatusCode::SERVICE_UNAVAILABLE,
+        ERR_INVALID_CREDENTIALS => StatusCode::UNAUTHORIZED,
+        ERR_REPO_ACCESS_DENIED => StatusCode::FORBIDDEN,
+        ERR_SCOPE_DENIED => StatusCode::FORBIDDEN,
+        ERR_REPO_ENCRYPTION_KEY_UNAVAILABLE => StatusCode::CONFLICT,
+        ERR_REPO_ENCRYPTION_KEY_INVALID => StatusCode::FORBIDDEN,
+        ERR_REPO_ENCRYPTION_UNSUPPORTED => StatusCode::CONFLICT,
+        ERR_ENCRYPTED_OPERATION_DISABLED => StatusCode::CONFLICT,
         ERR_RATE_LIMITED => StatusCode::TOO_MANY_REQUESTS,
         ERR_BACKOFF_REQUIRED => StatusCode::TOO_MANY_REQUESTS,
         ERR_DELEGATION_LOCAL_REQUIRED => StatusCode::CONFLICT,
@@ -234,6 +254,18 @@ mod tests {
         );
         assert_eq!(
             status_for_app_error(ERR_DELEGATION_LOCAL_REQUIRED),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            status_for_app_error(ERR_REPO_ENCRYPTION_KEY_UNAVAILABLE),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            status_for_app_error(ERR_REPO_ENCRYPTION_KEY_INVALID),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            status_for_app_error(ERR_REPO_ENCRYPTION_UNSUPPORTED),
             StatusCode::CONFLICT
         );
     }

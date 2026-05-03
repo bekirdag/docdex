@@ -14,6 +14,18 @@ pub(crate) fn run(
     clamp: bool,
 ) -> Result<()> {
     let repo_root = repo.repo_root();
+    let repo_encryption = crate::config::AppConfig::load_default()
+        .ok()
+        .map(|config| config.repo_encryption)
+        .unwrap_or_default();
+    if repo_encryption.is_enabled() {
+        if !repo_encryption.full_file_open_enabled {
+            anyhow::bail!(
+                "repository encryption full-file open is disabled by policy; use snippet/search access instead"
+            );
+        }
+        let _key = repo_encryption.require_key()?;
+    }
     let canonical_root = repo_root
         .canonicalize()
         .with_context(|| format!("resolve repo root {}", repo_root.display()))?;

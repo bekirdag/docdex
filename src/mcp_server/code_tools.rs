@@ -5,6 +5,7 @@ impl McpServer {
         let project_root = self.resolve_project_root_arg(args.project_root, args.repo_path)?;
         self.ensure_project_root(project_root.as_deref())?;
         self.ensure_index_ready().await?;
+        self.ensure_code_intelligence_allowed("symbol extraction")?;
         if !self.indexer.config().symbols_enabled() {
             return Err(MissingSymbolsDependencyError.into());
         }
@@ -27,6 +28,7 @@ impl McpServer {
         let project_root = self.resolve_project_root_arg(args.project_root, args.repo_path)?;
         self.ensure_project_root(project_root.as_deref())?;
         self.ensure_index_ready().await?;
+        self.ensure_code_intelligence_allowed("ast extraction")?;
         if !self.indexer.config().symbols_enabled() {
             return Err(MissingSymbolsDependencyError.into());
         }
@@ -56,6 +58,7 @@ impl McpServer {
         let project_root = self.resolve_project_root_arg(args.project_root, args.repo_path)?;
         self.ensure_project_root(project_root.as_deref())?;
         self.ensure_index_ready().await?;
+        self.ensure_code_intelligence_allowed("impact diagnostics")?;
         let repo_id = crate::symbols::repo_id_for_root(self.indexer.repo_root())?;
         let store = ImpactGraphStore::new(self.indexer.state_dir());
         let diagnostics_map = store.read_diagnostics_map()?;
@@ -115,6 +118,7 @@ impl McpServer {
         let project_root = self.resolve_project_root_arg(args.project_root, args.repo_path)?;
         self.ensure_project_root(project_root.as_deref())?;
         self.ensure_index_ready().await?;
+        self.ensure_code_intelligence_allowed("impact graph access")?;
 
         let file = args.file.trim();
         if file.is_empty() {
@@ -159,6 +163,17 @@ impl McpServer {
             diagnostics,
         );
         Ok(serde_json::to_value(response).context("serialize impact graph")?)
+    }
+
+    fn ensure_code_intelligence_allowed(&self, surface: &str) -> Result<()> {
+        if self.indexer.config().repo_encryption().is_enabled() {
+            return Err(AppError::new(
+                ERR_REPO_ENCRYPTION_UNSUPPORTED,
+                format!("{surface} is disabled when repository encryption is enabled"),
+            )
+            .into());
+        }
+        Ok(())
     }
 
     pub(super) async fn handle_dag_export(&self, args: DagExportArgs) -> Result<serde_json::Value> {

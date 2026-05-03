@@ -1,3 +1,4 @@
+use crate::auth::{AuthRuntime, RepoOperation};
 use crate::capabilities::{self, BATCH_SEARCH_MAX_QUERIES, RERANK_MAX_CANDIDATES};
 use crate::config;
 use crate::diff;
@@ -255,6 +256,8 @@ pub struct AppState {
     pub personal_preferences: Option<PersonalPreferencesState>,
     pub profile_state: Option<ProfileState>,
     pub features: crate::config::FeatureFlagsConfig,
+    pub auth: AuthRuntime,
+    pub repo_encryption: crate::repo_encryption::RepoEncryptionConfig,
     pub default_agent_id: Option<String>,
     pub max_answer_tokens: u32,
     pub llm_config: config::LlmConfig,
@@ -381,6 +384,18 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/search", get(search_handler))
         .route("/v1/capabilities", get(capabilities_handler))
+        .route(
+            "/v1/admin/repos/provision",
+            post(crate::api::v1::admin::admin_repo_provision_handler),
+        )
+        .route(
+            "/v1/admin/repos/:repo_id/access-bindings",
+            axum::routing::put(crate::api::v1::admin::admin_repo_access_bindings_handler),
+        )
+        .route(
+            "/v1/admin/auth/cache/invalidate",
+            post(crate::api::v1::admin::admin_auth_cache_invalidate_handler),
+        )
         .route("/v1/search/rerank", post(rerank_handler))
         .route("/v1/search/batch", post(batch_search_handler))
         .route("/snippet/*doc_id", get(snippet_handler))
@@ -2844,8 +2859,67 @@ pub(crate) fn build_search_meta(
     })
 }
 
-async fn capabilities_handler() -> impl IntoResponse {
-    Json(capabilities::current_capabilities())
+async fn capabilities_handler(State(state): State<AppState>) -> impl IntoResponse {
+    Json(capabilities::current_capabilities_with_config(
+        &state.repo_encryption,
+        state.auth.config(),
+    ))
+}
+
+async fn authorize_encrypted_repo_http(
+    state: &AppState,
+    headers: &HeaderMap,
+    repo: &RepoContext,
+    operation: RepoOperation,
+    request_id: Option<&str>,
+    path: &str,
+) -> Result<(), Response> {
+    if !repo.indexer.config().repo_encryption().is_enabled() {
+        return Ok(());
+    }
+    match state
+        .auth
+        .authorize_repo_access(headers, &repo.repo_id, operation)
+        .await
+    {
+        Ok(_) => {
+            if let Some(audit) = state.audit.as_ref() {
+                audit.log(
+                    "encrypted_repo_auth",
+                    "allow",
+                    request_id,
+                    Some(path),
+                    None,
+                    Some(StatusCode::OK.as_u16()),
+                    None,
+                    None,
+                );
+            }
+            Ok(())
+        }
+        Err(err) => {
+            state.metrics.inc_auth_deny();
+            if let Some(audit) = state.audit.as_ref() {
+                audit.log(
+                    "encrypted_repo_auth",
+                    "deny",
+                    request_id,
+                    Some(path),
+                    None,
+                    Some(status_for_app_error(err.code).as_u16()),
+                    None,
+                    None,
+                );
+            }
+            let status = status_for_app_error(err.code);
+            let response = if let Some(details) = err.details {
+                json_error_with_details(status, err.code, err.message, details)
+            } else {
+                json_error(status, err.code, err.message)
+            };
+            Err(response)
+        }
+    }
 }
 
 async fn rerank_handler(
@@ -2924,6 +2998,18 @@ async fn batch_search_handler(
         Ok(repo) => repo,
         Err(err) => return repo_error_response(err),
     };
+    if let Err(response) = authorize_encrypted_repo_http(
+        &state,
+        &headers,
+        &repo,
+        RepoOperation::Search,
+        None,
+        "/v1/search/batch",
+    )
+    .await
+    {
+        return response;
+    }
 
     if queries.is_empty() {
         return (
@@ -3020,6 +3106,18 @@ async fn search_handler(
             return repo_error_response(err);
         }
     };
+    if let Err(response) = authorize_encrypted_repo_http(
+        &state,
+        &headers,
+        &repo,
+        RepoOperation::Search,
+        Some(&request_id.0),
+        "/search",
+    )
+    .await
+    {
+        return response;
+    }
     let limit = params.limit.unwrap_or(8).min(state.security.max_limit);
     let raw = match params.q.as_deref() {
         Some(value) => value,
@@ -3045,6 +3143,17 @@ async fn search_handler(
     }
 
     let skip_local_search = params.skip_local_search.unwrap_or(false);
+    if state.repo_encryption.is_enabled()
+        && !state.repo_encryption.web_discovery_enabled
+        && (params.force_web.unwrap_or(false) || skip_local_search)
+    {
+        return json_error(
+            status_for_app_error(crate::error::ERR_REPO_ENCRYPTION_UNSUPPORTED),
+            crate::error::ERR_REPO_ENCRYPTION_UNSUPPORTED,
+            "web discovery is disabled by repository encryption policy",
+        )
+        .into_response();
+    }
     if !skip_local_search {
         if !repo.indexer.index_ready() {
             let indexing_in_progress = match repo.indexer.indexing_in_progress() {
@@ -3114,7 +3223,7 @@ async fn search_handler(
         }
     }
 
-    if !skip_local_search {
+    if !skip_local_search && !state.repo_encryption.is_enabled() {
         match path_hit_for_query(&repo.indexer, query, DEFAULT_SNIPPET_WINDOW) {
             Ok(Some(hit)) => {
                 let mut hits = vec![hit];
@@ -3265,7 +3374,11 @@ async fn search_handler(
         .unwrap_or(request_id_str);
     let plan = WaterfallPlan::new(
         WebGateConfig::from_env(),
-        Tier2Config::enabled(),
+        if state.repo_encryption.is_enabled() && !state.repo_encryption.web_discovery_enabled {
+            Tier2Config::default()
+        } else {
+            Tier2Config::enabled()
+        },
         memory_budget_from_max_answer_tokens(state.max_answer_tokens),
         ProfileBudget::default(),
     );
@@ -3465,6 +3578,18 @@ async fn snippet_handler(
             return repo_error_response(err);
         }
     };
+    if let Err(response) = authorize_encrypted_repo_http(
+        &state,
+        &headers,
+        &repo,
+        RepoOperation::Snippet,
+        Some(&request_id.0),
+        "/snippet",
+    )
+    .await
+    {
+        return response;
+    }
     let window = params
         .window
         .unwrap_or(DEFAULT_SNIPPET_WINDOW)
@@ -3519,6 +3644,14 @@ async fn snippet_handler(
         })
         .into_response(),
         Err(err) => {
+            if let Some(app) = err.downcast_ref::<AppError>() {
+                let status = status_for_app_error(app.code);
+                if let Some(details) = app.details.clone() {
+                    return json_error_with_details(status, app.code, app.message.clone(), details)
+                        .into_response();
+                }
+                return json_error(status, app.code, app.message.clone()).into_response();
+            }
             state.metrics.inc_error();
             warn!(
                 target: "docdexd",
@@ -3662,7 +3795,12 @@ async fn security_middleware(
                 }
             }
         }
-        if !state.security.auth_matches(request.headers()) {
+        let defer_auth_to_route = state.auth.may_defer_route_auth(
+            request.headers(),
+            &path,
+            state.repo_encryption.is_enabled(),
+        );
+        if !state.security.auth_matches(request.headers()) && !defer_auth_to_route {
             state.metrics.inc_auth_deny();
             if let Some(audit) = state.audit.as_ref() {
                 audit.log(

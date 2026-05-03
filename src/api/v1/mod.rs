@@ -1,3 +1,4 @@
+pub mod admin;
 pub mod ast;
 pub mod chat;
 pub mod conversations;

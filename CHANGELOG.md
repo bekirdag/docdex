@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.71
+- Add generic encrypted-repository external API-key authorization with `AuthContext`, external introspection, service-token admin auth, and SQLite repository access bindings.
+- Gate encrypted repository search, batch search, snippet, chat-context, and MCP data paths behind repository access policy while preserving default local/static-token compatibility for non-encrypted deployments.
+- Add service-only encrypted repository provisioning, binding update, and auth-cache invalidation endpoints, plus auth/encryption capability reporting.
+- Harden stale-index cleanup retries during automatic reindexing.
+- Bump release metadata to 0.2.71.
+
 ## 0.2.70
 - Serialize GitHub Release asset upload after matrix artifacts are collected so parallel release builds cannot race to create the same tag release.
 - Bump release metadata to 0.2.70.

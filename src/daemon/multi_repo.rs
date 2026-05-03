@@ -64,6 +64,7 @@ pub struct RepoManager {
     memory_embedder: Option<OllamaEmbedder>,
     conversations_enabled: bool,
     conversation_config: crate::config::MemoryConversationConfig,
+    repo_encryption_config: crate::repo_encryption::RepoEncryptionConfig,
     shared_state_dir: Option<PathBuf>,
     pinned_repo_id: RwLock<Option<String>>,
     idle_timeout: Duration,
@@ -77,6 +78,7 @@ impl RepoManager {
         shared_state_dir: Option<PathBuf>,
         conversations_enabled: bool,
         conversation_config: crate::config::MemoryConversationConfig,
+        repo_encryption_config: crate::repo_encryption::RepoEncryptionConfig,
     ) -> Self {
         fn duration_from_env(var: &str, default: Duration) -> Duration {
             let Ok(value) = std::env::var(var) else {
@@ -111,6 +113,7 @@ impl RepoManager {
             memory_embedder,
             conversations_enabled,
             conversation_config,
+            repo_encryption_config,
             shared_state_dir,
             pinned_repo_id: RwLock::new(None),
             idle_timeout,
@@ -136,6 +139,7 @@ impl RepoManager {
             memory_embedder,
             conversations_enabled,
             conversation_config,
+            repo_encryption_config: crate::repo_encryption::RepoEncryptionConfig::default(),
             shared_state_dir,
             pinned_repo_id: RwLock::new(None),
             idle_timeout,
@@ -471,7 +475,8 @@ impl RepoManager {
                 IndexConfig::with_overrides(&repo_root, Some(base), Vec::new(), Vec::new(), true)?
             }
             None => IndexConfig::for_repo(&repo_root)?,
-        };
+        }
+        .with_repo_encryption(self.repo_encryption_config.clone());
         let (indexer, read_only) = match Indexer::with_config(repo_root.clone(), config.clone()) {
             Ok(indexer) => (Arc::new(indexer), false),
             Err(err) if is_lock_busy_error(&err) => {

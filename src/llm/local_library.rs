@@ -1177,9 +1177,7 @@ mod tests {
 
     #[test]
     fn local_library_roundtrip() -> Result<()> {
-        let _guard = ENV_LOCK.lock();
         let dir = TempDir::new()?;
-        std::env::set_var("DOCDEX_STATE_DIR", dir.path());
         let library = LocalModelLibrary {
             updated_at_ms: 42,
             models: vec![LocalModelEntry {
@@ -1218,9 +1216,8 @@ mod tests {
             }),
             ..LocalModelLibrary::default()
         };
-        save_local_library(None, &library)?;
-        let loaded = load_local_library(None)?;
-        std::env::remove_var("DOCDEX_STATE_DIR");
+        save_local_library(Some(dir.path()), &library)?;
+        let loaded = load_local_library(Some(dir.path()))?;
         assert_eq!(loaded.updated_at_ms, 42);
         assert_eq!(loaded.models.len(), 1);
         assert_eq!(loaded.agents.len(), 1);
@@ -1235,16 +1232,13 @@ mod tests {
 
     #[test]
     fn local_library_corrupt_falls_back() -> Result<()> {
-        let _guard = ENV_LOCK.lock();
         let dir = TempDir::new()?;
-        std::env::set_var("DOCDEX_STATE_DIR", dir.path());
-        let path = library_path(None)?;
+        let path = library_path(Some(dir.path()))?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
         fs::write(&path, "{not json")?;
-        let loaded = load_local_library(None)?;
-        std::env::remove_var("DOCDEX_STATE_DIR");
+        let loaded = load_local_library(Some(dir.path()))?;
         assert!(loaded.models.is_empty());
         assert!(loaded.agents.is_empty());
         Ok(())
@@ -1635,8 +1629,7 @@ mod tests {
     async fn local_library_refresh_ttl() -> Result<()> {
         let _guard = ENV_LOCK.lock();
         let dir = TempDir::new()?;
-        std::env::set_var("DOCDEX_STATE_DIR", dir.path());
-        std::env::set_var("DOCDEX_LOCAL_LIBRARY_TTL_SECS", "99999");
+        let _ttl = EnvVarGuard::set("DOCDEX_LOCAL_LIBRARY_TTL_SECS", "99999");
         let mut library = LocalModelLibrary::default();
         library.updated_at_ms = now_ms();
         library.models.push(LocalModelEntry {
@@ -1648,10 +1641,9 @@ mod tests {
             last_seen_at_ms: library.updated_at_ms,
             last_classified_at_ms: None,
         });
-        save_local_library(None, &library)?;
-        let refreshed = refresh_local_library_if_stale(None, &LlmConfig::default(), false).await?;
-        std::env::remove_var("DOCDEX_LOCAL_LIBRARY_TTL_SECS");
-        std::env::remove_var("DOCDEX_STATE_DIR");
+        save_local_library(Some(dir.path()), &library)?;
+        let refreshed =
+            refresh_local_library_if_stale(Some(dir.path()), &LlmConfig::default(), false).await?;
         assert_eq!(refreshed.updated_at_ms, library.updated_at_ms);
         assert_eq!(refreshed.models.len(), 1);
         Ok(())

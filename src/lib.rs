@@ -1,5 +1,6 @@
 pub mod api;
 pub mod audit;
+pub mod auth;
 pub mod browser_session;
 pub mod capabilities;
 pub mod cli;
@@ -37,6 +38,7 @@ pub mod personal_preferences;
 pub mod profiles;
 pub mod project_map;
 pub mod ratelimit;
+pub mod repo_encryption;
 pub mod repo_manager;
 pub mod search;
 pub mod setup;

@@ -16,6 +16,7 @@ use std::path::Path;
 use std::time::Duration;
 use uuid::Uuid;
 
+use crate::auth::RepoOperation;
 use crate::dag::logging as dag_logging;
 use crate::diff;
 use crate::error::{status_for_app_error, AppError, ERR_INTERNAL_ERROR};
@@ -269,6 +270,20 @@ pub(crate) async fn chat_completions_handler(
             return error_response(err.status, "invalid_request_error", err.code, &err.message);
         }
     };
+    if repo.indexer.config().repo_encryption().is_enabled() {
+        if let Err(err) = state
+            .auth
+            .authorize_repo_access(&headers, &repo.repo_id, RepoOperation::ChatContext)
+            .await
+        {
+            return error_response(
+                status_for_app_error(err.code),
+                "invalid_request_error",
+                err.code,
+                &err.message,
+            );
+        }
+    }
     if let Err(err) = crate::index::ensure_indexed(repo.indexer.clone()).await {
         state.metrics.inc_error();
         if let Some(app) = err.downcast_ref::<AppError>() {

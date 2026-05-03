@@ -118,6 +118,7 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
     if use_gateway_repo {
         mcp_repo_args.repo = repo_root.clone();
     }
+    let repo_encryption_config = config.repo_encryption.clone();
     let index_config = index::IndexConfig::with_overrides(
         &repo_root,
         state_dir_override,
@@ -125,6 +126,7 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
         repo.exclude_prefix_overrides(),
         repo.symbols_enabled(),
     )
+    .map(|index_config| index_config.with_repo_encryption(repo_encryption_config.clone()))
     .map_err(|err| {
         StartupError::new(
             "startup_state_invalid",
@@ -308,6 +310,8 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
         hook_socket_path,
         mcp_ipc_config,
         config.features.clone(),
+        config.auth.clone(),
+        config.repo_encryption.clone(),
         config.memory.conversations.clone(),
         config.memory.personal_preferences.clone(),
         default_agent_id,

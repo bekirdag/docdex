@@ -195,6 +195,16 @@ impl McpServer {
     pub(super) async fn handle_open(&self, args: OpenArgs) -> Result<serde_json::Value> {
         let project_root = self.resolve_project_root_arg(args.project_root, args.repo_path)?;
         self.ensure_project_root(project_root.as_deref())?;
+        if self.repo_encryption.is_enabled() {
+            if !self.repo_encryption.full_file_open_enabled {
+                return Err(crate::error::AppError::new(
+                    crate::error::ERR_REPO_ENCRYPTION_UNSUPPORTED,
+                    "repository encryption full-file open is disabled by policy; use snippet/search access instead",
+                )
+                .into());
+            }
+            let _key = self.repo_encryption.require_key()?;
+        }
         let rel_path = normalize_rel_path(&args.path).ok_or(InvalidPathError)?;
         let abs_path = self.repo_root.join(&rel_path);
         let canonical = abs_path

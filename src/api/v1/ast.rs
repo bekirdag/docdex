@@ -9,8 +9,8 @@ use std::collections::HashSet;
 use tracing::warn;
 
 use crate::error::{
-    ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX,
-    ERR_STALE_INDEX,
+    status_for_app_error, AppError, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
+    ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_REPO_ENCRYPTION_UNSUPPORTED, ERR_STALE_INDEX,
 };
 use crate::http_api::json_error;
 use crate::search::AppState;
@@ -156,6 +156,13 @@ pub async fn ast_handler(
         Err(response) => return response,
     };
 
+    if repo.indexer.config().repo_encryption().is_enabled() {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_REPO_ENCRYPTION_UNSUPPORTED,
+            "ast extraction is disabled when repository encryption is enabled",
+        );
+    }
     if !repo.indexer.config().symbols_enabled() {
         return json_error(
             StatusCode::CONFLICT,
@@ -208,6 +215,13 @@ pub async fn ast_handler(
         ),
         Err(err) => {
             state.metrics.inc_error();
+            if let Some(app) = err.downcast_ref::<AppError>() {
+                return json_error(
+                    status_for_app_error(app.code),
+                    app.code,
+                    app.message.clone(),
+                );
+            }
             warn!(
                 target: "docdexd",
                 error = ?err,
@@ -241,6 +255,13 @@ pub async fn ast_search_handler(
         Err(response) => return response,
     };
 
+    if repo.indexer.config().repo_encryption().is_enabled() {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_REPO_ENCRYPTION_UNSUPPORTED,
+            "ast extraction is disabled when repository encryption is enabled",
+        );
+    }
     if !repo.indexer.config().symbols_enabled() {
         return json_error(
             StatusCode::CONFLICT,
@@ -288,6 +309,13 @@ pub async fn ast_search_handler(
         Ok(matches) => matches,
         Err(err) => {
             state.metrics.inc_error();
+            if let Some(app) = err.downcast_ref::<AppError>() {
+                return json_error(
+                    status_for_app_error(app.code),
+                    app.code,
+                    app.message.clone(),
+                );
+            }
             warn!(
                 target: "docdexd",
                 error = ?err,
@@ -362,6 +390,13 @@ pub async fn ast_query_handler(
         Err(response) => return response,
     };
 
+    if repo.indexer.config().repo_encryption().is_enabled() {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_REPO_ENCRYPTION_UNSUPPORTED,
+            "ast extraction is disabled when repository encryption is enabled",
+        );
+    }
     if !repo.indexer.config().symbols_enabled() {
         return json_error(
             StatusCode::CONFLICT,
@@ -449,6 +484,13 @@ pub async fn ast_query_handler(
         Ok(matches) => matches,
         Err(err) => {
             state.metrics.inc_error();
+            if let Some(app) = err.downcast_ref::<AppError>() {
+                return json_error(
+                    status_for_app_error(app.code),
+                    app.code,
+                    app.message.clone(),
+                );
+            }
             warn!(target: "docdexd", error = ?err, "ast query failed");
             return json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,

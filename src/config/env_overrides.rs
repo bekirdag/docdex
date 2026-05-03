@@ -138,6 +138,109 @@ pub(crate) fn apply_env_overrides(config: &mut AppConfig) {
     if let Some(value) = env_trimmed("DOCDEX_MCP_PIPE_NAME") {
         config.server.mcp_pipe_name = value;
     }
+    if let Some(value) = env_trimmed("DOCDEX_AUTH_MODE") {
+        match value.to_ascii_lowercase().as_str() {
+            "local_only" => config.auth.mode = crate::auth::AuthMode::LocalOnly,
+            "local_or_external" => config.auth.mode = crate::auth::AuthMode::LocalOrExternal,
+            "external_only" => config.auth.mode = crate::auth::AuthMode::ExternalOnly,
+            _ => warn!(
+                target: "docdexd",
+                value = %value,
+                "invalid DOCDEX_AUTH_MODE; expected local_only, local_or_external, or external_only"
+            ),
+        }
+    }
+    if let Some(value) = env_bool("DOCDEX_AUTH_REJECT_AMBIGUOUS_CREDENTIALS") {
+        config.auth.reject_ambiguous_credentials = value;
+    }
+    if let Some(value) = env_bool("DOCDEX_AUTH_STATIC_TOKEN_ENABLED") {
+        config.auth.static_token.enabled = value;
+    }
+    if let Some(value) = env_trimmed("DOCDEX_AUTH_STATIC_TOKEN_ENV") {
+        config.auth.static_token.token_env = value;
+    }
+    if let Some(value) = env_bool("DOCDEX_AUTH_STATIC_TOKEN_ENCRYPTED_REPO_DATA_ACCESS") {
+        config.auth.static_token.encrypted_repo_data_access = value;
+    }
+    if let Some(value) = env_bool("DOCDEX_AUTH_EXTERNAL_API_KEY_INTROSPECTION_ENABLED") {
+        config.auth.external_api_key_introspection.enabled = value;
+    }
+    if let Some(value) = env_trimmed("DOCDEX_AUTH_EXTERNAL_API_KEY_INTROSPECTION_ISSUER") {
+        config.auth.external_api_key_introspection.issuer = value;
+    }
+    if let Some(value) = env_trimmed("DOCDEX_AUTH_EXTERNAL_API_KEY_INTROSPECTION_URL") {
+        config.auth.external_api_key_introspection.url = value;
+    }
+    if let Some(value) = env_trimmed("DOCDEX_AUTH_EXTERNAL_API_KEY_INTROSPECTION_TOKEN_ENV") {
+        config.auth.external_api_key_introspection.service_token_env = value;
+    } else if env_trimmed("DOCDEX_AUTH_EXTERNAL_API_KEY_INTROSPECTION_TOKEN").is_some() {
+        config.auth.external_api_key_introspection.service_token_env =
+            "DOCDEX_AUTH_EXTERNAL_API_KEY_INTROSPECTION_TOKEN".to_string();
+    }
+    if let Some(value) = env_u64("DOCDEX_AUTH_EXTERNAL_API_KEY_INTROSPECTION_CACHE_TTL_SECONDS") {
+        config.auth.external_api_key_introspection.cache_ttl_seconds = value;
+    }
+    if let Some(value) =
+        env_u64("DOCDEX_AUTH_EXTERNAL_API_KEY_INTROSPECTION_NEGATIVE_CACHE_TTL_SECONDS")
+    {
+        config
+            .auth
+            .external_api_key_introspection
+            .negative_cache_ttl_seconds = value;
+    }
+    if let Some(value) = env_u64("DOCDEX_AUTH_EXTERNAL_API_KEY_INTROSPECTION_TIMEOUT_MS") {
+        config.auth.external_api_key_introspection.timeout_ms = value;
+    }
+    if let Some(value) = env_bool("DOCDEX_AUTH_EXTERNAL_API_KEY_INTROSPECTION_FAIL_CLOSED") {
+        config.auth.external_api_key_introspection.fail_closed = value;
+    }
+    if let Some(value) = env_trimmed("DOCDEX_AUTH_EXTERNAL_API_KEY_INTROSPECTION_HEADERS") {
+        config.auth.external_api_key_introspection.accepted_headers = value
+            .split(',')
+            .map(|item| item.trim().to_string())
+            .filter(|item| !item.is_empty())
+            .collect();
+    }
+    if let Some(value) = env_trimmed("DOCDEX_AUTH_EXTERNAL_API_KEY_INTROSPECTION_REQUIRED_STATUS") {
+        config.auth.external_api_key_introspection.required_status = value;
+    }
+    if let Some(value) = env_bool("DOCDEX_AUTH_SERVICE_TOKEN_ENABLED") {
+        config.auth.service_token.enabled = value;
+    }
+    if let Some(value) = env_trimmed("DOCDEX_AUTH_SERVICE_TOKEN_ENV") {
+        config.auth.service_token.token_env = value;
+    } else if env_trimmed("DOCDEX_AUTH_SERVICE_TOKEN").is_some() {
+        config.auth.service_token.token_env = "DOCDEX_AUTH_SERVICE_TOKEN".to_string();
+    }
+    config.auth.apply_defaults();
+    if let Some(value) = env_bool("DOCDEX_REPO_ENCRYPTION_ENABLED") {
+        config.repo_encryption.encryption_mode = if value {
+            crate::repo_encryption::RepoEncryptionMode::ApplicationManagedEncryption
+        } else {
+            crate::repo_encryption::RepoEncryptionMode::Disabled
+        };
+    }
+    if let Some(value) = env_trimmed("DOCDEX_REPO_ENCRYPTION_MODE") {
+        if let Some(mode) = crate::repo_encryption::parse_repo_encryption_mode(&value) {
+            config.repo_encryption.encryption_mode = mode;
+        } else {
+            warn!(
+                target: "docdexd",
+                value = %value,
+                "invalid DOCDEX_REPO_ENCRYPTION_MODE; expected disabled or application_managed_encryption"
+            );
+        }
+    }
+    if let Some(value) = env_trimmed("DOCDEX_REPO_ENCRYPTION_KEY_ENV") {
+        config.repo_encryption.key_env = Some(value);
+    }
+    if let Some(value) = env_trimmed("DOCDEX_REPO_ENCRYPTION_KEY_ID") {
+        config.repo_encryption.key_id = Some(value);
+    }
+    if let Some(value) = env_bool("DOCDEX_REPO_ENCRYPTION_PLAINTEXT_TERM_INDEX_ENABLED") {
+        config.repo_encryption.plaintext_term_index_enabled = value;
+    }
+    config.repo_encryption.apply_defaults();
 }
 
 pub fn write_config(path: &Path, config: &AppConfig) -> Result<()> {

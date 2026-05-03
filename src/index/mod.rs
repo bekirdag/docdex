@@ -5,10 +5,11 @@ mod symbols;
 
 use crate::error::{
     repo_resolution_details, AppError, ERR_BACKOFF_REQUIRED, ERR_INTERNAL_ERROR,
-    ERR_INVALID_ARGUMENT, ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH, ERR_REPO_STATE_MISMATCH,
-    ERR_STALE_INDEX,
+    ERR_INVALID_ARGUMENT, ERR_MISSING_INDEX, ERR_MISSING_REPO_PATH,
+    ERR_REPO_ENCRYPTION_UNSUPPORTED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
 };
-use crate::impact::{extract_import_edges, ImpactGraphEdge};
+use crate::impact::{extract_import_edges, impact_graph_path, ImpactGraphEdge};
+use crate::repo_encryption::{repo_encryption_domain_id, RepoEncryptionConfig};
 use crate::symbols::{
     AstQuery, AstQueryMatch, AstResponseV1, AstSearchMatch, AstSearchMode, SymbolSearchMatch,
     SymbolsParserStatus, SymbolsResponseV1, SymbolsStore,
@@ -24,9 +25,10 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex as StdMutex, Once};
+use std::time::Duration;
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
-use tantivy::schema::{Schema, FAST, STORED, STRING, TEXT};
+use tantivy::schema::{Schema, TextOptions, FAST, STORED, STRING, TEXT};
 use tantivy::DocAddress;
 use tantivy::{
     doc, Document, Index, IndexReader, IndexWriter, ReloadPolicy, SnippetGenerator, Term,
@@ -246,6 +248,7 @@ pub struct IndexConfig {
     excluded_relative_prefixes: Vec<String>,
     symbols_enabled: bool,
     ignore_matcher: Option<Arc<IgnoreMatcher>>,
+    repo_encryption: RepoEncryptionConfig,
 }
 
 #[derive(Clone)]
@@ -258,6 +261,11 @@ pub struct Indexer {
     path_field: tantivy::schema::Field,
     body_field: tantivy::schema::Field,
     summary_field: tantivy::schema::Field,
+    body_index_field: Option<tantivy::schema::Field>,
+    summary_index_field: Option<tantivy::schema::Field>,
+    protected_body_field: Option<tantivy::schema::Field>,
+    protected_summary_field: Option<tantivy::schema::Field>,
+    protection_key_id_field: Option<tantivy::schema::Field>,
     token_field: tantivy::schema::Field,
     kind_field: Option<tantivy::schema::Field>,
     writer: Option<Arc<Mutex<IndexWriter>>>,
@@ -566,7 +574,14 @@ impl IndexConfig {
             excluded_relative_prefixes,
             symbols_enabled: true,
             ignore_matcher,
+            repo_encryption: RepoEncryptionConfig::default(),
         })
+    }
+
+    pub fn with_repo_encryption(mut self, mut repo_encryption: RepoEncryptionConfig) -> Self {
+        repo_encryption.apply_defaults();
+        self.repo_encryption = repo_encryption;
+        self
     }
 
     pub fn state_dir(&self) -> &Path {
@@ -587,6 +602,10 @@ impl IndexConfig {
 
     pub fn ignore_matcher(&self) -> Option<&IgnoreMatcher> {
         self.ignore_matcher.as_deref()
+    }
+
+    pub fn repo_encryption(&self) -> &RepoEncryptionConfig {
+        &self.repo_encryption
     }
 }
 
@@ -661,7 +680,7 @@ impl Indexer {
         if created_state_dir {
             ensure_state_dir_secure(config.state_dir())?;
         }
-        let (schema, _, _, _, _, _, _) = build_schema();
+        let (schema, _, _, _, _, _, _, _, _, _, _, _) = build_schema();
         let index = if config.state_dir().join("meta.json").exists() {
             Index::open_in_dir(config.state_dir())
                 .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?
@@ -689,6 +708,20 @@ impl Indexer {
         let summary_field = schema
             .get_field("summary")
             .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
+        let body_index_field = schema.get_field("body_index").ok();
+        let summary_index_field = schema.get_field("summary_index").ok();
+        let protected_body_field = schema.get_field("protected_body").ok();
+        let protected_summary_field = schema.get_field("protected_summary").ok();
+        let protection_key_id_field = schema.get_field("protection_key_id").ok();
+        if config.repo_encryption().is_enabled()
+            && (body_index_field.is_none()
+                || summary_index_field.is_none()
+                || protected_body_field.is_none()
+                || protected_summary_field.is_none()
+                || protection_key_id_field.is_none())
+        {
+            return Err(stale_index_error(config.state_dir(), Some(&repo_root)).into());
+        }
         let token_field = schema
             .get_field("token_estimate")
             .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?;
@@ -698,8 +731,11 @@ impl Indexer {
         } else {
             Some(index.writer(MAX_INDEX_RAM_BYTES)?)
         };
+        if config.repo_encryption().is_enabled() && !read_only {
+            purge_unprotected_code_intelligence_state(config.state_dir());
+        }
         let warn_on_error = !read_only;
-        let symbols_store = if config.symbols_enabled() {
+        let symbols_store = if config.symbols_enabled() && !config.repo_encryption().is_enabled() {
             symbols::open_symbols_store(&repo_root, config.state_dir(), warn_on_error)
         } else {
             None
@@ -741,6 +777,11 @@ impl Indexer {
             path_field,
             body_field,
             summary_field,
+            body_index_field,
+            summary_index_field,
+            protected_body_field,
+            protected_summary_field,
+            protection_key_id_field,
             token_field,
             kind_field,
             writer: writer.map(|writer| Arc::new(Mutex::new(writer))),
@@ -752,11 +793,32 @@ impl Indexer {
     fn reindex_stale_index(repo_root: &Path, config: &IndexConfig) -> Result<()> {
         let state_dir = config.state_dir();
         if state_dir.exists() {
-            fs::remove_dir_all(state_dir)
+            Self::remove_dir_all_with_retries(state_dir)
                 .with_context(|| format!("remove stale index {}", state_dir.display()))?;
         }
         let indexer = Self::open_indexer(repo_root.to_path_buf(), config.clone(), false)?;
         indexer.reindex_all_blocking()?;
+        Ok(())
+    }
+
+    fn remove_dir_all_with_retries(path: &Path) -> io::Result<()> {
+        const ATTEMPTS: usize = 5;
+        for attempt in 0..ATTEMPTS {
+            match fs::remove_dir_all(path) {
+                Ok(()) => return Ok(()),
+                Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+                Err(_) if attempt + 1 < ATTEMPTS => {
+                    std::thread::sleep(Duration::from_millis(20 * (attempt as u64 + 1)));
+                    if !path.exists() {
+                        return Ok(());
+                    }
+                    if attempt + 2 == ATTEMPTS {
+                        fs::remove_dir_all(path)?;
+                    }
+                }
+                Err(err) => return Err(err),
+            }
+        }
         Ok(())
     }
 
@@ -1008,6 +1070,27 @@ impl Indexer {
         Ok(hits)
     }
 
+    fn searchable_fields(&self) -> Result<Vec<tantivy::schema::Field>> {
+        if !self.config.repo_encryption().is_enabled() {
+            return Ok(vec![self.body_field, self.summary_field, self.path_field]);
+        }
+        let _key = self.config.repo_encryption().require_key()?;
+        if !self.config.repo_encryption().plaintext_term_index_enabled {
+            return Err(AppError::new(
+                ERR_REPO_ENCRYPTION_UNSUPPORTED,
+                "repository encryption search is disabled because plaintext term indexing is disabled",
+            )
+            .into());
+        }
+        let Some(body_index_field) = self.body_index_field else {
+            return Err(stale_index_error(self.config.state_dir(), Some(&self.repo_root)).into());
+        };
+        let Some(summary_index_field) = self.summary_index_field else {
+            return Err(stale_index_error(self.config.state_dir(), Some(&self.repo_root)).into());
+        };
+        Ok(vec![body_index_field, summary_index_field, self.path_field])
+    }
+
     pub fn search_with_query_meta(
         &self,
         query: &str,
@@ -1030,10 +1113,7 @@ impl Indexer {
             .into());
         }
         let searcher = self.reader.searcher();
-        let parser = QueryParser::for_index(
-            &self.index,
-            vec![self.body_field, self.summary_field, self.path_field],
-        );
+        let parser = QueryParser::for_index(&self.index, self.searchable_fields()?);
         let (tantivy_query, query_meta) = match parser.parse_query(raw) {
             Ok(q) => (
                 q,
@@ -1071,8 +1151,11 @@ impl Indexer {
                 }
             }
         };
-        let mut snippet_generator =
-            SnippetGenerator::create(&searcher, tantivy_query.as_ref(), self.body_field).ok();
+        let mut snippet_generator = if self.config.repo_encryption().is_enabled() {
+            None
+        } else {
+            SnippetGenerator::create(&searcher, tantivy_query.as_ref(), self.body_field).ok()
+        };
         if let Some(generator) = snippet_generator.as_mut() {
             generator.set_max_num_chars(MAX_SNIPPET_CHARS);
         }
@@ -1091,11 +1174,6 @@ impl Indexer {
                     continue;
                 }
             };
-            let body_text = retrieved
-                .get_first(self.body_field)
-                .and_then(|v| v.as_text())
-                .unwrap_or_default()
-                .to_string();
             let doc_id = retrieved
                 .get_first(self.doc_id_field)
                 .and_then(|v| v.as_text().map(|s| s.to_string()))
@@ -1105,10 +1183,8 @@ impl Indexer {
                 .and_then(|v| v.as_text().map(|s| s.to_string()))
                 .unwrap_or_default();
             let path = rel_path.clone();
-            let summary = retrieved
-                .get_first(self.summary_field)
-                .and_then(|v| v.as_text().map(|s| s.to_string()))
-                .unwrap_or_default();
+            let body_text = self.document_body_text(&retrieved, &rel_path)?;
+            let summary = self.document_summary_text(&retrieved, &rel_path)?;
             let kind = self.document_kind_from_doc(&retrieved, &rel_path);
             let doc_type = document_type_for_path(&rel_path, kind);
             let token_estimate = retrieved
@@ -1116,43 +1192,69 @@ impl Indexer {
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
             let (snippet, snippet_origin, snippet_truncated, line_start, line_end) =
-                snippet_generator
-                .as_ref()
-                .and_then(|gen| {
-                    let snippet = gen.snippet_from_doc(&retrieved);
-                    let fragment = snippet.fragment().trim();
-                    if fragment.is_empty() {
-                        None
-                    } else {
-                        let inferred_truncated =
-                            fragment.chars().count() >= MAX_SNIPPET_CHARS.saturating_sub(1);
-                        line_safe_snippet_for_fragment(&body_text, fragment, MAX_SNIPPET_CHARS)
-                            .map(|(text, snippet_truncated, start_line, end_line)| {
+                if self.config.repo_encryption().is_enabled() {
+                    line_safe_snippet_for_query(&body_text, raw, MAX_SNIPPET_CHARS).map(
+                        |(text, snippet_truncated, start_line, end_line)| {
+                            (
+                                text,
+                                SearchSnippetOrigin::Query,
+                                snippet_truncated,
+                                Some(start_line),
+                                Some(end_line),
+                            )
+                        },
+                    )
+                } else {
+                    snippet_generator.as_ref().and_then(|gen| {
+                        let snippet = gen.snippet_from_doc(&retrieved);
+                        let fragment = snippet.fragment().trim();
+                        if fragment.is_empty() {
+                            None
+                        } else {
+                            let inferred_truncated =
+                                fragment.chars().count() >= MAX_SNIPPET_CHARS.saturating_sub(1);
+                            line_safe_snippet_for_fragment(&body_text, fragment, MAX_SNIPPET_CHARS)
+                                .map(|(text, snippet_truncated, start_line, end_line)| {
+                                    (
+                                        text,
+                                        SearchSnippetOrigin::Query,
+                                        snippet_truncated || inferred_truncated,
+                                        Some(start_line),
+                                        Some(end_line),
+                                    )
+                                })
+                        }
+                    })
+                }
+                .or_else(|| {
+                    if self.config.repo_encryption().is_enabled() {
+                        line_safe_snippet_preview_from_text(&body_text, MAX_SNIPPET_CHARS).map(
+                            |(text, truncated, start_line, end_line)| {
                                 (
                                     text,
-                                    SearchSnippetOrigin::Query,
-                                    snippet_truncated || inferred_truncated,
+                                    SearchSnippetOrigin::Preview,
+                                    truncated,
                                     Some(start_line),
                                     Some(end_line),
                                 )
-                            })
-                    }
-                })
-                .or_else(|| {
-                    match self.preview_snippet(&rel_path, FALLBACK_PREVIEW_LINES) {
-                        Ok(Some((text, truncated, start_line, end_line))) => {
-                            Some((
-                                text,
-                                SearchSnippetOrigin::Preview,
-                                truncated,
-                                Some(start_line),
-                                Some(end_line),
-                            ))
-                        }
-                        Ok(None) => None,
-                        Err(err) => {
-                            warn!(target: "docdexd", error = ?err, %rel_path, "failed to build fallback snippet");
-                            None
+                            },
+                        )
+                    } else {
+                        match self.preview_snippet(&rel_path, FALLBACK_PREVIEW_LINES) {
+                            Ok(Some((text, truncated, start_line, end_line))) => {
+                                Some((
+                                    text,
+                                    SearchSnippetOrigin::Preview,
+                                    truncated,
+                                    Some(start_line),
+                                    Some(end_line),
+                                ))
+                            }
+                            Ok(None) => None,
+                            Err(err) => {
+                                warn!(target: "docdexd", error = ?err, %rel_path, "failed to build fallback snippet");
+                                None
+                            }
                         }
                     }
                 })
@@ -1219,6 +1321,13 @@ impl Indexer {
         rel_path: &str,
         max_lines: usize,
     ) -> Result<Option<(String, bool, usize, usize)>> {
+        if self.config.repo_encryption().is_enabled() {
+            return Err(AppError::new(
+                ERR_REPO_ENCRYPTION_UNSUPPORTED,
+                "direct source preview snippets are disabled for encrypted repositories",
+            )
+            .into());
+        }
         if max_lines == 0 {
             return Ok(None);
         }
@@ -1273,6 +1382,7 @@ impl Indexer {
     }
 
     pub fn read_symbols(&self, rel_path: &str) -> Result<Option<SymbolsResponseV1>> {
+        self.ensure_code_intelligence_allowed()?;
         let Some(store) = self.symbols_store.as_ref() else {
             return Ok(None);
         };
@@ -1283,6 +1393,7 @@ impl Indexer {
     }
 
     pub fn read_ast(&self, rel_path: &str, max_nodes: usize) -> Result<Option<AstResponseV1>> {
+        self.ensure_code_intelligence_allowed()?;
         let Some(store) = self.symbols_store.as_ref() else {
             return Ok(None);
         };
@@ -1293,6 +1404,7 @@ impl Indexer {
     }
 
     pub fn symbols_parser_status(&self) -> Result<SymbolsParserStatus> {
+        self.ensure_code_intelligence_allowed()?;
         match self.symbols_store.as_ref() {
             Some(store) => store.parser_status(),
             None => {
@@ -1303,6 +1415,7 @@ impl Indexer {
     }
 
     pub fn symbols_reindex_required(&self) -> Result<bool> {
+        self.ensure_code_intelligence_allowed()?;
         let status = match self.symbols_store.as_ref() {
             Some(store) => store.parser_status()?,
             None => {
@@ -1319,6 +1432,7 @@ impl Indexer {
         max_files: usize,
         max_symbols_per_file: usize,
     ) -> Result<Vec<SymbolSearchMatch>> {
+        self.ensure_code_intelligence_allowed()?;
         let Some(store) = self.symbols_store.as_ref() else {
             return Ok(Vec::new());
         };
@@ -1333,6 +1447,7 @@ impl Indexer {
         kinds: &[String],
         max_files: usize,
     ) -> Result<Vec<AstSearchMatch>> {
+        self.ensure_code_intelligence_allowed()?;
         let Some(store) = self.symbols_store.as_ref() else {
             return Ok(Vec::new());
         };
@@ -1348,6 +1463,7 @@ impl Indexer {
         max_files: usize,
         mode: AstSearchMode,
     ) -> Result<Vec<AstSearchMatch>> {
+        self.ensure_code_intelligence_allowed()?;
         let Some(store) = self.symbols_store.as_ref() else {
             return Ok(Vec::new());
         };
@@ -1362,6 +1478,7 @@ impl Indexer {
         rel_path: &str,
         kinds: &[String],
     ) -> Result<BTreeMap<String, usize>> {
+        self.ensure_code_intelligence_allowed()?;
         let Some(store) = self.symbols_store.as_ref() else {
             return Ok(BTreeMap::new());
         };
@@ -1372,6 +1489,7 @@ impl Indexer {
     }
 
     pub fn query_ast(&self, query: &AstQuery) -> Result<Vec<AstQueryMatch>> {
+        self.ensure_code_intelligence_allowed()?;
         let Some(store) = self.symbols_store.as_ref() else {
             return Ok(Vec::new());
         };
@@ -1379,6 +1497,17 @@ impl Indexer {
             return Ok(Vec::new());
         }
         store.query_ast(query)
+    }
+
+    fn ensure_code_intelligence_allowed(&self) -> Result<()> {
+        if self.config.repo_encryption().is_enabled() {
+            return Err(AppError::new(
+                ERR_REPO_ENCRYPTION_UNSUPPORTED,
+                "symbols, AST, and impact graph are disabled for encrypted repositories until their stores are protected",
+            )
+            .into());
+        }
+        Ok(())
     }
 
     pub fn state_dir(&self) -> &Path {
@@ -1532,7 +1661,7 @@ impl Indexer {
         let Some(doc) = self.fetch_document(doc_id)? else {
             return Ok(None);
         };
-        let snapshot = self.snapshot_from_document(doc_id, &doc);
+        let snapshot = self.snapshot_from_document(doc_id, &doc)?;
         let snippet =
             self.snippet_from_document(&doc, Some(&snapshot.rel_path), query, fallback_lines)?;
         Ok(Some((snapshot, snippet)))
@@ -1569,7 +1698,7 @@ impl Indexer {
                     .get_first(self.doc_id_field)
                     .and_then(|v| v.as_text())
                     .unwrap_or_default();
-                snapshots.push(self.snapshot_from_document(doc_id_text, &doc));
+                snapshots.push(self.snapshot_from_document(doc_id_text, &doc)?);
             }
         }
         Ok((snapshots, total_live))
@@ -1602,13 +1731,63 @@ impl Indexer {
         let summary = summarize(&content);
         let tokens = estimate_tokens(&content);
         let kind = document_kind_for_path(&rel_for_return);
-        let mut document = doc!(
-            self.doc_id_field => rel.clone(),
-            self.path_field => rel,
-            self.body_field => content,
-            self.summary_field => summary,
-            self.token_field => tokens,
-        );
+        let mut document = Document::default();
+        document.add_text(self.doc_id_field, rel.clone());
+        document.add_text(self.path_field, rel);
+        if self.config.repo_encryption().is_enabled() {
+            let key = self.config.repo_encryption().require_key()?;
+            let domain_id = repo_encryption_domain_id(&self.repo_root);
+            let protected_body = self.config.repo_encryption().protect_text(
+                &key,
+                &domain_id,
+                &rel_for_return,
+                "body",
+                &content,
+            )?;
+            let protected_summary = self.config.repo_encryption().protect_text(
+                &key,
+                &domain_id,
+                &rel_for_return,
+                "summary",
+                &summary,
+            )?;
+            let Some(protected_body_field) = self.protected_body_field else {
+                return Err(
+                    stale_index_error(self.config.state_dir(), Some(&self.repo_root)).into(),
+                );
+            };
+            let Some(protected_summary_field) = self.protected_summary_field else {
+                return Err(
+                    stale_index_error(self.config.state_dir(), Some(&self.repo_root)).into(),
+                );
+            };
+            let Some(protection_key_id_field) = self.protection_key_id_field else {
+                return Err(
+                    stale_index_error(self.config.state_dir(), Some(&self.repo_root)).into(),
+                );
+            };
+            document.add_text(protected_body_field, protected_body);
+            document.add_text(protected_summary_field, protected_summary);
+            document.add_text(protection_key_id_field, key.key_id.clone());
+            if self.config.repo_encryption().plaintext_term_index_enabled {
+                let Some(body_index_field) = self.body_index_field else {
+                    return Err(
+                        stale_index_error(self.config.state_dir(), Some(&self.repo_root)).into(),
+                    );
+                };
+                let Some(summary_index_field) = self.summary_index_field else {
+                    return Err(
+                        stale_index_error(self.config.state_dir(), Some(&self.repo_root)).into(),
+                    );
+                };
+                document.add_text(body_index_field, content);
+                document.add_text(summary_index_field, summary);
+            }
+        } else {
+            document.add_text(self.body_field, content);
+            document.add_text(self.summary_field, summary);
+        }
+        document.add_u64(self.token_field, tokens);
         if let Some(kind_field) = self.kind_field {
             document.add_text(kind_field, kind.as_str());
         }
@@ -1629,29 +1808,85 @@ impl Indexer {
         Ok(rel.to_string_lossy().replace('\\', "/"))
     }
 
-    fn snapshot_from_document(&self, doc_id: &str, doc: &Document) -> DocSnapshot {
+    fn snapshot_from_document(&self, doc_id: &str, doc: &Document) -> Result<DocSnapshot> {
         let rel_path = doc
             .get_first(self.path_field)
             .and_then(|v| v.as_text().map(|s| s.to_string()))
             .unwrap_or_default();
-        let summary = doc
-            .get_first(self.summary_field)
-            .and_then(|v| v.as_text().map(|s| s.to_string()))
-            .unwrap_or_default();
+        let summary = self.document_summary_text(doc, &rel_path)?;
         let kind = self.document_kind_from_doc(doc, &rel_path);
         let doc_type = document_type_for_path(&rel_path, kind);
         let token_estimate = doc
             .get_first(self.token_field)
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
-        DocSnapshot {
+        Ok(DocSnapshot {
             doc_id: doc_id.to_string(),
             rel_path,
             kind,
             doc_type,
             summary,
             token_estimate,
+        })
+    }
+
+    fn document_body_text(&self, doc: &Document, rel_path: &str) -> Result<String> {
+        if !self.config.repo_encryption().is_enabled() {
+            return Ok(doc
+                .get_first(self.body_field)
+                .and_then(|v| v.as_text())
+                .unwrap_or_default()
+                .to_string());
         }
+        let key = self.config.repo_encryption().require_key()?;
+        let Some(field) = self.protected_body_field else {
+            return Err(stale_index_error(self.config.state_dir(), Some(&self.repo_root)).into());
+        };
+        let protected = doc
+            .get_first(field)
+            .and_then(|v| v.as_text())
+            .ok_or_else(|| {
+                AppError::new(
+                    ERR_REPO_ENCRYPTION_UNSUPPORTED,
+                    "encrypted repository document is missing protected body content",
+                )
+            })?;
+        self.config.repo_encryption().unprotect_text(
+            &key,
+            &repo_encryption_domain_id(&self.repo_root),
+            rel_path,
+            "body",
+            protected,
+        )
+    }
+
+    fn document_summary_text(&self, doc: &Document, rel_path: &str) -> Result<String> {
+        if !self.config.repo_encryption().is_enabled() {
+            return Ok(doc
+                .get_first(self.summary_field)
+                .and_then(|v| v.as_text().map(|s| s.to_string()))
+                .unwrap_or_default());
+        }
+        let key = self.config.repo_encryption().require_key()?;
+        let Some(field) = self.protected_summary_field else {
+            return Err(stale_index_error(self.config.state_dir(), Some(&self.repo_root)).into());
+        };
+        let protected = doc
+            .get_first(field)
+            .and_then(|v| v.as_text())
+            .ok_or_else(|| {
+                AppError::new(
+                    ERR_REPO_ENCRYPTION_UNSUPPORTED,
+                    "encrypted repository document is missing protected summary content",
+                )
+            })?;
+        self.config.repo_encryption().unprotect_text(
+            &key,
+            &repo_encryption_domain_id(&self.repo_root),
+            rel_path,
+            "summary",
+            protected,
+        )
     }
 
     fn snippet_from_document(
@@ -1670,37 +1905,64 @@ impl Indexer {
                 Some(trimmed)
             }
         }) {
-            let parser = QueryParser::for_index(&self.index, vec![self.body_field]);
-            if let Ok(parsed) = parser.parse_query(query) {
-                if let Ok(mut generator) =
-                    SnippetGenerator::create(&searcher, parsed.as_ref(), self.body_field)
+            if self.config.repo_encryption().is_enabled() {
+                let rel_path = rel_path_hint
+                    .map(|value| value.to_string())
+                    .or_else(|| {
+                        doc.get_first(self.path_field)
+                            .and_then(|v| v.as_text().map(|s| s.to_string()))
+                    })
+                    .unwrap_or_default();
+                let body_text = self.document_body_text(doc, &rel_path)?;
+                if let Some((text, truncated, start_line, end_line)) =
+                    line_safe_snippet_for_query(&body_text, query, MAX_SNIPPET_CHARS)
                 {
-                    generator.set_max_num_chars(MAX_SNIPPET_CHARS);
-                    let snippet = generator.snippet_from_doc(doc);
-                    let fragment = snippet.fragment().trim();
-                    if !fragment.is_empty() {
-                        let inferred_truncated =
-                            fragment.chars().count() >= MAX_SNIPPET_CHARS.saturating_sub(1);
-                        let body_text = doc
-                            .get_first(self.body_field)
-                            .and_then(|v| v.as_text())
-                            .unwrap_or_default();
-                        if let Some((text, snippet_truncated, start_line, end_line)) =
-                            line_safe_snippet_for_fragment(body_text, fragment, MAX_SNIPPET_CHARS)
-                        {
-                            let html = if text.trim() == fragment {
-                                Some(snippet.to_html())
-                            } else {
-                                None
-                            };
-                            return Ok(Some(SnippetResult {
-                                text,
-                                html,
-                                truncated: snippet_truncated || inferred_truncated,
-                                origin: SnippetOrigin::Query,
-                                line_start: Some(start_line),
-                                line_end: Some(end_line),
-                            }));
+                    return Ok(Some(SnippetResult {
+                        text,
+                        html: None,
+                        truncated,
+                        origin: SnippetOrigin::Query,
+                        line_start: Some(start_line),
+                        line_end: Some(end_line),
+                    }));
+                }
+            } else {
+                let parser = QueryParser::for_index(&self.index, vec![self.body_field]);
+                if let Ok(parsed) = parser.parse_query(query) {
+                    if let Ok(mut generator) =
+                        SnippetGenerator::create(&searcher, parsed.as_ref(), self.body_field)
+                    {
+                        generator.set_max_num_chars(MAX_SNIPPET_CHARS);
+                        let snippet = generator.snippet_from_doc(doc);
+                        let fragment = snippet.fragment().trim();
+                        if !fragment.is_empty() {
+                            let inferred_truncated =
+                                fragment.chars().count() >= MAX_SNIPPET_CHARS.saturating_sub(1);
+                            let body_text = doc
+                                .get_first(self.body_field)
+                                .and_then(|v| v.as_text())
+                                .unwrap_or_default();
+                            if let Some((text, snippet_truncated, start_line, end_line)) =
+                                line_safe_snippet_for_fragment(
+                                    body_text,
+                                    fragment,
+                                    MAX_SNIPPET_CHARS,
+                                )
+                            {
+                                let html = if text.trim() == fragment {
+                                    Some(snippet.to_html())
+                                } else {
+                                    None
+                                };
+                                return Ok(Some(SnippetResult {
+                                    text,
+                                    html,
+                                    truncated: snippet_truncated || inferred_truncated,
+                                    origin: SnippetOrigin::Query,
+                                    line_start: Some(start_line),
+                                    line_end: Some(end_line),
+                                }));
+                            }
                         }
                     }
                 }
@@ -1713,9 +1975,13 @@ impl Indexer {
                 .map(|text| text.to_string())
         });
         if let Some(rel_path) = rel_path {
-            if let Some((text, truncated, line_start, line_end)) =
+            let snippet = if self.config.repo_encryption().is_enabled() {
+                let body_text = self.document_body_text(doc, &rel_path)?;
+                line_safe_snippet_preview_from_text(&body_text, MAX_SNIPPET_CHARS)
+            } else {
                 self.preview_snippet(&rel_path, fallback_lines)?
-            {
+            };
+            if let Some((text, truncated, line_start, line_end)) = snippet {
                 return Ok(Some(SnippetResult {
                     text,
                     html: None,
@@ -1768,12 +2034,24 @@ fn build_schema() -> (
     tantivy::schema::Field,
     tantivy::schema::Field,
     tantivy::schema::Field,
+    tantivy::schema::Field,
+    tantivy::schema::Field,
+    tantivy::schema::Field,
+    tantivy::schema::Field,
+    tantivy::schema::Field,
 ) {
     let mut builder = Schema::builder();
     let doc_id_field = builder.add_text_field("doc_id", STRING | STORED);
     let path_field = builder.add_text_field("rel_path", STRING | STORED);
     let body_field = builder.add_text_field("body", TEXT | STORED);
     let summary_field = builder.add_text_field("summary", TEXT | STORED);
+    let body_index_field = builder.add_text_field("body_index", TEXT);
+    let summary_index_field = builder.add_text_field("summary_index", TEXT);
+    let protected_body_field =
+        builder.add_text_field("protected_body", TextOptions::default().set_stored());
+    let protected_summary_field =
+        builder.add_text_field("protected_summary", TextOptions::default().set_stored());
+    let protection_key_id_field = builder.add_text_field("protection_key_id", STRING | STORED);
     let token_field = builder.add_u64_field("token_estimate", FAST | STORED);
     let kind_field = builder.add_text_field("kind", STRING | STORED);
     let schema = builder.build();
@@ -1783,6 +2061,11 @@ fn build_schema() -> (
         path_field,
         body_field,
         summary_field,
+        body_index_field,
+        summary_index_field,
+        protected_body_field,
+        protected_summary_field,
+        protection_key_id_field,
         token_field,
         kind_field,
     )
@@ -2608,6 +2891,27 @@ fn resolve_state_dir(repo_root: &Path, state_dir: Option<PathBuf>) -> Result<Pat
     }
 }
 
+fn purge_unprotected_code_intelligence_state(state_dir: &Path) {
+    let mut candidates = vec![state_dir.join("symbols.db"), impact_graph_path(state_dir)];
+    if state_dir.file_name().and_then(|name| name.to_str()) == Some("index") {
+        if let Some(repo_state_root) = state_dir.parent() {
+            candidates.push(repo_state_root.join("symbols.db"));
+        }
+    }
+    for path in candidates {
+        if path.exists() {
+            if let Err(err) = fs::remove_file(&path) {
+                warn!(
+                    target: "docdexd",
+                    error = ?err,
+                    path = %path.display(),
+                    "failed to remove unprotected code-intelligence state for encrypted repository"
+                );
+            }
+        }
+    }
+}
+
 fn normalize_prefix(input: &str) -> String {
     let mut cleaned = input
         .replace('\\', "/")
@@ -2935,6 +3239,98 @@ fn line_safe_snippet_for_fragment(
     Some((snippet, truncated, start, end))
 }
 
+fn line_safe_snippet_for_query(
+    body: &str,
+    query: &str,
+    max_chars: usize,
+) -> Option<(String, bool, usize, usize)> {
+    let terms = query_terms(query);
+    if terms.is_empty() {
+        return line_safe_snippet_preview_from_text(body, max_chars);
+    }
+    let lowered_terms = terms
+        .into_iter()
+        .map(|term| term.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let lines = body
+        .lines()
+        .enumerate()
+        .map(|(idx, line)| (idx + 1, line.trim()))
+        .collect::<Vec<_>>();
+    let Some((idx, _)) = lines.iter().enumerate().find(|(_, (_, line))| {
+        let lowered = line.to_ascii_lowercase();
+        lowered_terms.iter().any(|term| lowered.contains(term))
+    }) else {
+        return line_safe_snippet_preview_from_text(body, max_chars);
+    };
+    let start_idx = idx.saturating_sub(1);
+    let end_idx = (idx + 2).min(lines.len().saturating_sub(1));
+    let selected = lines[start_idx..=end_idx]
+        .iter()
+        .filter_map(|(line_no, line)| {
+            if line.is_empty() {
+                None
+            } else {
+                Some((*line_no, (*line).to_string()))
+            }
+        })
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        return line_safe_snippet_preview_from_text(body, max_chars);
+    }
+    let (text, truncated, start_line, end_line) =
+        line_safe_snippet_from_lines(&selected, max_chars);
+    Some((
+        text,
+        truncated,
+        start_line.unwrap_or(selected[0].0),
+        end_line.unwrap_or(selected[0].0),
+    ))
+}
+
+fn line_safe_snippet_preview_from_text(
+    body: &str,
+    max_chars: usize,
+) -> Option<(String, bool, usize, usize)> {
+    let preview_lines = body
+        .lines()
+        .enumerate()
+        .filter_map(|(idx, line)| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some((idx + 1, trimmed.to_string()))
+            }
+        })
+        .take(FALLBACK_PREVIEW_LINES)
+        .collect::<Vec<_>>();
+    if preview_lines.is_empty() {
+        return None;
+    }
+    let (text, truncated, start_line, end_line) =
+        line_safe_snippet_from_lines(&preview_lines, max_chars);
+    if text.trim().is_empty() {
+        return None;
+    }
+    Some((
+        text,
+        truncated,
+        start_line.unwrap_or(preview_lines[0].0),
+        end_line.unwrap_or(preview_lines[0].0),
+    ))
+}
+
+fn query_terms(query: &str) -> Vec<String> {
+    static TERM_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"[A-Za-z0-9_]{2,}").expect("query term regex"));
+    TERM_RE
+        .find_iter(query)
+        .map(|mat| mat.as_str().to_string())
+        .take(8)
+        .collect()
+}
+
 fn is_safe_rel_path(rel_path: &str) -> bool {
     let path = Path::new(rel_path);
     if path.is_absolute() {
@@ -3150,6 +3546,230 @@ mod reindex_tests {
         let indexer = Indexer::with_config(repo.path().to_path_buf(), config)?;
         let hits = indexer.search("SCHEMA_TOKEN", 1)?;
         assert!(!hits.is_empty(), "expected hits after auto reindex");
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod repo_encryption_index_tests {
+    use super::{IndexConfig, Indexer};
+    use crate::repo_encryption::{
+        RepoEncryptionConfig, RepoEncryptionMode, DEFAULT_REPO_ENCRYPTION_KEY_ENV,
+    };
+    use anyhow::Result;
+    use std::fs;
+    use tempfile::TempDir;
+    use walkdir::WalkDir;
+
+    const TEST_KEY: &str = "01234567890123456789012345678901";
+    const OTHER_TEST_KEY: &str = "abcdefghijklmnopqrstuvwxyz123456";
+    const SECRET_PHRASE: &str = "ULTRA_SECRET_PHRASE_FOR_STORED_FIELD_TEST";
+
+    fn encrypted_index_config(
+        repo_root: &std::path::Path,
+        state_root: &std::path::Path,
+    ) -> Result<IndexConfig> {
+        encrypted_index_config_with_key_id(repo_root, state_root, None)
+    }
+
+    fn encrypted_index_config_with_key_id(
+        repo_root: &std::path::Path,
+        state_root: &std::path::Path,
+        key_id: Option<&str>,
+    ) -> Result<IndexConfig> {
+        let mut repo_encryption = RepoEncryptionConfig {
+            encryption_mode: RepoEncryptionMode::ApplicationManagedEncryption,
+            key_id: key_id.map(str::to_string),
+            ..RepoEncryptionConfig::default()
+        };
+        repo_encryption.apply_defaults();
+        Ok(IndexConfig::with_overrides(
+            repo_root,
+            Some(state_root.to_path_buf()),
+            Vec::new(),
+            Vec::new(),
+            true,
+        )?
+        .with_repo_encryption(repo_encryption))
+    }
+
+    fn state_contains(path: &std::path::Path, needle: &[u8]) -> bool {
+        WalkDir::new(path)
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_type().is_file())
+            .any(|entry| {
+                fs::read(entry.path())
+                    .map(|bytes| bytes.windows(needle.len()).any(|window| window == needle))
+                    .unwrap_or(false)
+            })
+    }
+
+    fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
+        for entry in WalkDir::new(src) {
+            let entry = entry?;
+            let rel = entry.path().strip_prefix(src)?;
+            let target = dst.join(rel);
+            if entry.file_type().is_dir() {
+                fs::create_dir_all(&target)?;
+            } else {
+                if let Some(parent) = target.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::copy(entry.path(), &target)?;
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn encrypted_index_searches_without_plaintext_stored_body() -> Result<()> {
+        let _guard = crate::setup::test_support::ENV_LOCK.lock();
+        std::env::set_var(DEFAULT_REPO_ENCRYPTION_KEY_ENV, TEST_KEY);
+        let repo = TempDir::new()?;
+        fs::write(
+            repo.path().join("doc.md"),
+            format!("# Secret\n\n{SECRET_PHRASE} appears here.\n"),
+        )?;
+        let state_root = TempDir::new()?;
+        let config = encrypted_index_config(repo.path(), state_root.path())?;
+        let state_dir = config.state_dir().to_path_buf();
+        let indexer = Indexer::with_config(repo.path().to_path_buf(), config)?;
+
+        indexer.reindex_all_blocking()?;
+        let hits = indexer.search(SECRET_PHRASE, 3)?;
+
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].snippet.contains(SECRET_PHRASE));
+        assert!(
+            !state_contains(&state_dir, SECRET_PHRASE.as_bytes()),
+            "protected index state must not store the raw body phrase"
+        );
+        std::env::remove_var(DEFAULT_REPO_ENCRYPTION_KEY_ENV);
+        Ok(())
+    }
+
+    #[test]
+    fn encrypted_indexing_fails_closed_without_key_material() -> Result<()> {
+        let _guard = crate::setup::test_support::ENV_LOCK.lock();
+        std::env::remove_var(DEFAULT_REPO_ENCRYPTION_KEY_ENV);
+        let repo = TempDir::new()?;
+        fs::write(repo.path().join("doc.md"), SECRET_PHRASE)?;
+        let state_root = TempDir::new()?;
+        let config = encrypted_index_config(repo.path(), state_root.path())?;
+        let indexer = Indexer::with_config(repo.path().to_path_buf(), config)?;
+
+        let err = indexer
+            .reindex_all_blocking()
+            .expect_err("missing key must fail closed");
+        assert!(err.to_string().contains("key material"));
+        Ok(())
+    }
+
+    #[test]
+    fn encrypted_index_search_fails_closed_after_key_removal() -> Result<()> {
+        let _guard = crate::setup::test_support::ENV_LOCK.lock();
+        std::env::set_var(DEFAULT_REPO_ENCRYPTION_KEY_ENV, TEST_KEY);
+        let repo = TempDir::new()?;
+        fs::write(repo.path().join("doc.md"), SECRET_PHRASE)?;
+        let state_root = TempDir::new()?;
+        let config = encrypted_index_config(repo.path(), state_root.path())?;
+        let indexer = Indexer::with_config(repo.path().to_path_buf(), config)?;
+        indexer.reindex_all_blocking()?;
+        drop(indexer);
+
+        std::env::remove_var(DEFAULT_REPO_ENCRYPTION_KEY_ENV);
+        let config = encrypted_index_config(repo.path(), state_root.path())?;
+        let indexer = Indexer::with_config(repo.path().to_path_buf(), config)?;
+        let err = indexer
+            .search(SECRET_PHRASE, 3)
+            .expect_err("removed key must fail closed");
+
+        assert!(err.to_string().contains("key material"));
+        Ok(())
+    }
+
+    #[test]
+    fn encrypted_index_search_fails_closed_with_wrong_key_material() -> Result<()> {
+        let _guard = crate::setup::test_support::ENV_LOCK.lock();
+        std::env::set_var(DEFAULT_REPO_ENCRYPTION_KEY_ENV, TEST_KEY);
+        let repo = TempDir::new()?;
+        fs::write(repo.path().join("doc.md"), SECRET_PHRASE)?;
+        let state_root = TempDir::new()?;
+        let config =
+            encrypted_index_config_with_key_id(repo.path(), state_root.path(), Some("stable-key"))?;
+        let indexer = Indexer::with_config(repo.path().to_path_buf(), config)?;
+        indexer.reindex_all_blocking()?;
+        drop(indexer);
+
+        std::env::set_var(DEFAULT_REPO_ENCRYPTION_KEY_ENV, OTHER_TEST_KEY);
+        let config =
+            encrypted_index_config_with_key_id(repo.path(), state_root.path(), Some("stable-key"))?;
+        let indexer = Indexer::with_config(repo.path().to_path_buf(), config)?;
+        let err = indexer
+            .search(SECRET_PHRASE, 3)
+            .expect_err("wrong key must fail closed");
+
+        assert!(err.to_string().contains("cannot decrypt"));
+        std::env::remove_var(DEFAULT_REPO_ENCRYPTION_KEY_ENV);
+        Ok(())
+    }
+
+    #[test]
+    fn encrypted_index_state_restore_preserves_authorized_search() -> Result<()> {
+        let _guard = crate::setup::test_support::ENV_LOCK.lock();
+        std::env::set_var(DEFAULT_REPO_ENCRYPTION_KEY_ENV, TEST_KEY);
+        let repo = TempDir::new()?;
+        fs::write(repo.path().join("doc.md"), SECRET_PHRASE)?;
+        let state_root = TempDir::new()?;
+        let config = encrypted_index_config(repo.path(), state_root.path())?;
+        let state_dir = config.state_dir().to_path_buf();
+        let indexer = Indexer::with_config(repo.path().to_path_buf(), config)?;
+        indexer.reindex_all_blocking()?;
+        drop(indexer);
+
+        let backup_root = TempDir::new()?;
+        let backup_config = encrypted_index_config(repo.path(), backup_root.path())?;
+        let backup_state_dir = backup_config.state_dir().to_path_buf();
+        copy_dir_all(&state_dir, &backup_state_dir)?;
+        let restored = Indexer::with_config(repo.path().to_path_buf(), backup_config)?;
+        let hits = restored.search(SECRET_PHRASE, 3)?;
+
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].snippet.contains(SECRET_PHRASE));
+        std::env::remove_var(DEFAULT_REPO_ENCRYPTION_KEY_ENV);
+        Ok(())
+    }
+
+    #[test]
+    fn encrypted_index_state_cannot_be_reused_for_another_repository() -> Result<()> {
+        let _guard = crate::setup::test_support::ENV_LOCK.lock();
+        std::env::set_var(DEFAULT_REPO_ENCRYPTION_KEY_ENV, TEST_KEY);
+        let source_repo = TempDir::new()?;
+        fs::write(source_repo.path().join("doc.md"), SECRET_PHRASE)?;
+        let source_state_root = TempDir::new()?;
+        let source_config = encrypted_index_config(source_repo.path(), source_state_root.path())?;
+        let source_state_dir = source_config.state_dir().to_path_buf();
+        let source_indexer = Indexer::with_config(source_repo.path().to_path_buf(), source_config)?;
+        source_indexer.reindex_all_blocking()?;
+        drop(source_indexer);
+
+        let other_repo = TempDir::new()?;
+        fs::write(
+            other_repo.path().join("doc.md"),
+            "not the protected repository",
+        )?;
+        let other_state_root = TempDir::new()?;
+        let other_config = encrypted_index_config(other_repo.path(), other_state_root.path())?;
+        let other_state_dir = other_config.state_dir().to_path_buf();
+        copy_dir_all(&source_state_dir, &other_state_dir)?;
+        let other_indexer = Indexer::with_config(other_repo.path().to_path_buf(), other_config)?;
+        let err = other_indexer
+            .search(SECRET_PHRASE, 3)
+            .expect_err("cross-repo encrypted state must fail closed");
+
+        assert!(err.to_string().contains("cannot decrypt"));
+        std::env::remove_var(DEFAULT_REPO_ENCRYPTION_KEY_ENV);
         Ok(())
     }
 }

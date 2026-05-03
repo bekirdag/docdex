@@ -9,7 +9,8 @@ use crate::error::{
     ERR_EMBEDDING_MODEL_NOT_FOUND, ERR_EMBEDDING_TIMEOUT, ERR_INDEXING_IN_PROGRESS,
     ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_KNOWLEDGE_EPISODE_NOT_FOUND, ERR_MEMORY_DISABLED,
     ERR_MISSING_DEPENDENCY, ERR_MISSING_INDEX, ERR_MISSING_REPO, ERR_MISSING_REPO_PATH,
-    ERR_RATE_LIMITED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX, ERR_UNAUTHORIZED, ERR_UNKNOWN_REPO,
+    ERR_RATE_LIMITED, ERR_REPO_ENCRYPTION_UNSUPPORTED, ERR_REPO_STATE_MISMATCH, ERR_STALE_INDEX,
+    ERR_UNAUTHORIZED, ERR_UNKNOWN_REPO,
 };
 use crate::impact::{build_impact_diagnostics_response, ImpactDiagnosticsEntry, ImpactGraphStore};
 use crate::index::{IndexConfig, Indexer};
@@ -678,6 +679,12 @@ impl McpService {
         let repo_root = repo_root
             .canonicalize()
             .context("resolve repo root for MCP server")?;
+        let config = config::AppConfig::load_default().ok();
+        let repo_encryption_from_config = config
+            .as_ref()
+            .map(|cfg| cfg.repo_encryption.clone())
+            .unwrap_or_default();
+        let index_config = index_config.with_repo_encryption(repo_encryption_from_config.clone());
         // Try to open with a writer; if the index is already locked (another docdexd
         // instance is indexing), fall back to read-only so search/open still work.
         let indexer = match Indexer::with_config(repo_root.clone(), index_config.clone()) {
@@ -691,7 +698,6 @@ impl McpService {
             Err(err) => return Err(err),
         };
         let indexer = Arc::new(indexer);
-        let config = config::AppConfig::load_default().ok();
         let global_state_dir = config
             .as_ref()
             .and_then(|cfg| cfg.core.global_state_dir.clone());
@@ -761,6 +767,10 @@ impl McpService {
             .as_ref()
             .map(|cfg| cfg.llm.clone())
             .unwrap_or_default();
+        let repo_encryption = config
+            .as_ref()
+            .map(|cfg| cfg.repo_encryption.clone())
+            .unwrap_or(repo_encryption_from_config);
         let personal_preferences_config = config
             .as_ref()
             .map(|cfg| cfg.memory.personal_preferences.clone())
@@ -867,6 +877,7 @@ impl McpService {
             profile_state,
             max_answer_tokens,
             llm_config,
+            repo_encryption,
             global_state_dir,
             tool_rate_limit,
             auth_token,
@@ -996,6 +1007,7 @@ struct McpServer {
     profile_state: Option<search::ProfileState>,
     max_answer_tokens: u32,
     llm_config: config::LlmConfig,
+    repo_encryption: crate::repo_encryption::RepoEncryptionConfig,
     global_state_dir: Option<PathBuf>,
     tool_rate_limit: Option<RateLimiter<()>>,
     auth_token: Option<String>,

@@ -86,13 +86,25 @@ async fn run_local(
     async_web: bool,
 ) -> Result<()> {
     let repo_root = repo.repo_root();
+    let config = config::AppConfig::load_default().ok();
+    let repo_encryption = config
+        .as_ref()
+        .map(|cfg| cfg.repo_encryption.clone())
+        .unwrap_or_default();
+    if repo_encryption.is_enabled()
+        && !repo_encryption.web_discovery_enabled
+        && (force_web || skip_local_search)
+    {
+        anyhow::bail!("web discovery is disabled by repository encryption policy");
+    }
     let index_config = index::IndexConfig::with_overrides(
         &repo_root,
         repo.state_dir_override(),
         repo.exclude_dir_overrides(),
         repo.exclude_prefix_overrides(),
         repo.symbols_enabled(),
-    )?;
+    )?
+    .with_repo_encryption(repo_encryption.clone());
     util::init_logging("warn")?;
     let indexer = Arc::new(index::Indexer::with_config_read_only(
         repo_root,
@@ -107,7 +119,6 @@ async fn run_local(
     } else {
         None
     };
-    let config = config::AppConfig::load_default().ok();
     let max_answer_tokens = config
         .as_ref()
         .map(|cfg| cfg.llm.max_answer_tokens)
@@ -116,7 +127,11 @@ async fn run_local(
         resolve_memory_state(config.as_ref(), indexer.state_dir(), indexer.repo_root())?;
     let plan = WaterfallPlan::new(
         WebGateConfig::from_env(),
-        Tier2Config::enabled(),
+        if repo_encryption.is_enabled() && !repo_encryption.web_discovery_enabled {
+            Tier2Config::default()
+        } else {
+            Tier2Config::enabled()
+        },
         memory_budget_from_max_answer_tokens(max_answer_tokens),
         ProfileBudget::default(),
     );

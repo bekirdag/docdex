@@ -393,6 +393,10 @@ pub fn router(state: AppState) -> Router {
             axum::routing::put(crate::api::v1::admin::admin_repo_access_bindings_handler),
         )
         .route(
+            "/v1/admin/repos/:repo_id/documents/ingest",
+            post(crate::api::v1::admin::admin_repo_documents_ingest_handler),
+        )
+        .route(
             "/v1/admin/auth/cache/invalidate",
             post(crate::api::v1::admin::admin_auth_cache_invalidate_handler),
         )

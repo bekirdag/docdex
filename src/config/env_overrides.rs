@@ -207,6 +207,9 @@ pub(crate) fn apply_env_overrides(config: &mut AppConfig) {
     if let Some(value) = env_bool("DOCDEX_AUTH_SERVICE_TOKEN_ENABLED") {
         config.auth.service_token.enabled = value;
     }
+    if let Some(value) = env_bool("DOCDEX_AUTH_SERVICE_TOKEN_ENCRYPTED_REPO_DATA_ACCESS") {
+        config.auth.service_token.encrypted_repo_data_access = value;
+    }
     if let Some(value) = env_trimmed("DOCDEX_AUTH_SERVICE_TOKEN_ENV") {
         config.auth.service_token.token_env = value;
     } else if env_trimmed("DOCDEX_AUTH_SERVICE_TOKEN").is_some() {

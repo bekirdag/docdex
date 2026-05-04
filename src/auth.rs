@@ -195,6 +195,8 @@ pub struct ServiceTokenAuthConfig {
     pub enabled: bool,
     #[serde(default = "default_service_token_env")]
     pub token_env: String,
+    #[serde(default)]
+    pub encrypted_repo_data_access: bool,
 }
 
 impl Default for ServiceTokenAuthConfig {
@@ -202,6 +204,7 @@ impl Default for ServiceTokenAuthConfig {
         Self {
             enabled: false,
             token_env: default_service_token_env(),
+            encrypted_repo_data_access: false,
         }
     }
 }
@@ -701,13 +704,21 @@ impl AuthRuntime {
         }
         if !matches!(
             path,
-            "/search" | "/v1/chat/completions" | "/v1/mcp" | "/v1/mcp/message" | "/sse"
+            "/search"
+                | "/v1/search/batch"
+                | "/v1/search/rerank"
+                | "/v1/chat/completions"
+                | "/v1/mcp"
+                | "/v1/mcp/message"
+                | "/sse"
         ) && !path.starts_with("/snippet/")
             && path != "/v1/mcp/sse"
         {
             return false;
         }
-        self.config.external_api_key_introspection.enabled
+        (self.config.external_api_key_introspection.enabled
+            || self.config.static_token.encrypted_repo_data_access
+            || self.config.service_token.encrypted_repo_data_access)
             && self.has_deferred_route_credential(headers)
     }
 
@@ -725,11 +736,15 @@ impl AuthRuntime {
         .ok_or_else(|| AppError::new(ERR_MISSING_CREDENTIALS, "missing API credential"))?;
 
         if let Some(ctx) = self.authenticate_service_token(&material)? {
-            return Err(AppError::new(
-                ERR_SCOPE_DENIED,
-                "service tokens are restricted to administrative operations",
-            )
-            .with_details(json!({ "auth_method": format!("{:?}", ctx.auth_method) })));
+            if !self.config.service_token.encrypted_repo_data_access {
+                return Err(AppError::new(
+                    ERR_SCOPE_DENIED,
+                    "service tokens are restricted to administrative operations",
+                )
+                .with_details(json!({ "auth_method": format!("{:?}", ctx.auth_method) })));
+            }
+            self.access_store.authorize(&ctx, repo_id, operation)?;
+            return Ok(ctx);
         }
 
         if let Some(ctx) = self.authenticate_static_token(&material)? {
@@ -1396,6 +1411,75 @@ mod tests {
         assert_eq!(ctx.auth_method, AuthMethod::StaticToken);
         assert!(!runtime.config().static_token.encrypted_repo_data_access);
         std::env::remove_var(DEFAULT_STATIC_TOKEN_ENV);
+    }
+
+    #[tokio::test]
+    async fn service_token_is_not_data_plane_authorized_by_default() {
+        let _guard = crate::setup::test_support::ENV_LOCK.lock();
+        std::env::set_var("DOCDEX_AUTH_SERVICE_TOKEN", "service-secret");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut config = AuthConfig::default();
+        config.service_token.enabled = true;
+        let runtime = AuthRuntime::new_for_tests(config, temp.path());
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Bearer service-secret"),
+        );
+
+        let err = runtime
+            .authorize_repo_access(&headers, "repo-1", RepoOperation::Search)
+            .await
+            .expect_err("service token data access should fail by default");
+        assert_eq!(err.code, ERR_SCOPE_DENIED);
+        assert!(!runtime.config().service_token.encrypted_repo_data_access);
+        std::env::remove_var("DOCDEX_AUTH_SERVICE_TOKEN");
+    }
+
+    #[tokio::test]
+    async fn service_token_data_plane_access_requires_repo_binding() {
+        let _guard = crate::setup::test_support::ENV_LOCK.lock();
+        std::env::set_var("DOCDEX_AUTH_SERVICE_TOKEN", "service-secret");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut config = AuthConfig::default();
+        config.service_token.enabled = true;
+        config.service_token.encrypted_repo_data_access = true;
+        let runtime = AuthRuntime::new_for_tests(config, temp.path());
+        runtime
+            .access_store()
+            .upsert_binding(RepoAccessBinding {
+                id: "service-binding-1".to_string(),
+                repo_id: "repo-1".to_string(),
+                issuer: "docdex_service_token".to_string(),
+                principal_type: "service".to_string(),
+                principal_id: "service".to_string(),
+                credential_id: Some("service_token".to_string()),
+                required_scopes: vec!["docdex:admin".to_string()],
+                allowed_operations: vec!["search".to_string()],
+                status: "active".to_string(),
+                expires_at_ms: None,
+                metadata_json: json!({}),
+            })
+            .expect("upsert");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Bearer service-secret"),
+        );
+
+        assert!(runtime.may_defer_route_auth(&headers, "/v1/search/batch", true));
+        let ctx = runtime
+            .authorize_repo_access(&headers, "repo-1", RepoOperation::Search)
+            .await
+            .expect("service token should be authorized by repo binding");
+        assert_eq!(ctx.auth_method, AuthMethod::ServiceToken);
+
+        let err = runtime
+            .authorize_repo_access(&headers, "repo-2", RepoOperation::Search)
+            .await
+            .expect_err("unbound repo should fail");
+        assert_eq!(err.code, ERR_REPO_ACCESS_DENIED);
+        std::env::remove_var("DOCDEX_AUTH_SERVICE_TOKEN");
     }
 
     #[test]

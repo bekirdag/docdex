@@ -1621,6 +1621,7 @@ mod tests {
         assert!(!config.auth.static_token.encrypted_repo_data_access);
         assert!(!config.auth.external_api_key_introspection.enabled);
         assert!(!config.auth.service_token.enabled);
+        assert!(!config.auth.service_token.encrypted_repo_data_access);
         assert!(!config.repo_encryption.is_enabled());
         assert_eq!(
             config.repo_encryption.encryption_mode,
@@ -1776,6 +1777,7 @@ required_status = "active"
 [auth.service_token]
 enabled = true
 token_env = "DOCDEX_SERVICE_FOR_TEST"
+encrypted_repo_data_access = true
 "#;
         let mut config = parse_config_text(text).expect("parse config");
         config.apply_defaults().expect("apply defaults");
@@ -1792,6 +1794,7 @@ token_env = "DOCDEX_SERVICE_FOR_TEST"
             config.auth.service_token.token_env.as_str(),
             "DOCDEX_SERVICE_FOR_TEST"
         );
+        assert!(config.auth.service_token.encrypted_repo_data_access);
     }
 
     #[test]
@@ -1806,6 +1809,10 @@ token_env = "DOCDEX_SERVICE_FOR_TEST"
         std::env::set_var("DOCDEX_AUTH_EXTERNAL_API_KEY_INTROSPECTION_TOKEN", "secret");
         std::env::set_var("DOCDEX_AUTH_SERVICE_TOKEN_ENABLED", "true");
         std::env::set_var("DOCDEX_AUTH_SERVICE_TOKEN", "admin-secret");
+        std::env::set_var(
+            "DOCDEX_AUTH_SERVICE_TOKEN_ENCRYPTED_REPO_DATA_ACCESS",
+            "true",
+        );
 
         let mut config = AppConfig::default();
         apply_env_overrides(&mut config);
@@ -1825,6 +1832,7 @@ token_env = "DOCDEX_SERVICE_FOR_TEST"
             config.auth.service_token.token_env,
             "DOCDEX_AUTH_SERVICE_TOKEN"
         );
+        assert!(config.auth.service_token.encrypted_repo_data_access);
 
         std::env::remove_var("DOCDEX_AUTH_MODE");
         std::env::remove_var("DOCDEX_AUTH_EXTERNAL_API_KEY_INTROSPECTION_ENABLED");
@@ -1832,5 +1840,6 @@ token_env = "DOCDEX_SERVICE_FOR_TEST"
         std::env::remove_var("DOCDEX_AUTH_EXTERNAL_API_KEY_INTROSPECTION_TOKEN");
         std::env::remove_var("DOCDEX_AUTH_SERVICE_TOKEN_ENABLED");
         std::env::remove_var("DOCDEX_AUTH_SERVICE_TOKEN");
+        std::env::remove_var("DOCDEX_AUTH_SERVICE_TOKEN_ENCRYPTED_REPO_DATA_ACCESS");
     }
 }

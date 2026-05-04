@@ -191,6 +191,67 @@ mod repo_context_tests {
 }
 
 #[cfg(test)]
+mod encrypted_search_ranking_tests {
+    use super::{run_query, RankingSurface};
+    use crate::index::{IndexConfig, Indexer};
+    use crate::repo_encryption::{
+        RepoEncryptionConfig, RepoEncryptionMode, DEFAULT_REPO_ENCRYPTION_KEY_ENV,
+    };
+    use anyhow::Result;
+    use std::fs;
+    use tempfile::TempDir;
+
+    const TEST_KEY: &str = "01234567890123456789012345678901";
+
+    #[tokio::test]
+    async fn encrypted_search_skips_structural_ranking() -> Result<()> {
+        let _guard = crate::setup::test_support::ENV_LOCK.lock();
+        std::env::set_var(DEFAULT_REPO_ENCRYPTION_KEY_ENV, TEST_KEY);
+
+        let repo = TempDir::new()?;
+        fs::write(
+            repo.path().join("daily-log.md"),
+            "# Daily log\n\nDOCDEX_ENCRYPTED_RANKING_MARKER appears here.\n",
+        )?;
+        let state_root = TempDir::new()?;
+        let mut repo_encryption = RepoEncryptionConfig {
+            encryption_mode: RepoEncryptionMode::ApplicationManagedEncryption,
+            ..RepoEncryptionConfig::default()
+        };
+        repo_encryption.apply_defaults();
+        let config = IndexConfig::with_overrides(
+            repo.path(),
+            Some(state_root.path().to_path_buf()),
+            Vec::new(),
+            Vec::new(),
+            true,
+        )?
+        .with_repo_encryption(repo_encryption);
+        let indexer = Indexer::with_config(repo.path().to_path_buf(), config)?;
+
+        indexer.reindex_all().await?;
+        let response = run_query(
+            &indexer,
+            None,
+            "DOCDEX_ENCRYPTED_RANKING_MARKER",
+            5,
+            RankingSurface::Search,
+        )
+        .await?;
+
+        assert_eq!(response.hits.len(), 1);
+        assert!(
+            response.hits[0]
+                .snippet
+                .contains("DOCDEX_ENCRYPTED_RANKING_MARKER"),
+            "encrypted lexical search should still return decrypted snippets"
+        );
+        std::env::remove_var(DEFAULT_REPO_ENCRYPTION_KEY_ENV);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
 mod rate_limit_contract_tests {
     use crate::error::RateLimited;
     use crate::http_api::{ErrorBody, ErrorDetail, MAX_RATE_LIMIT_MESSAGE_BYTES};

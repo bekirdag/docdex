@@ -1965,6 +1965,10 @@ pub(crate) fn apply_ranking_deltas(
     Ok(())
 }
 
+fn structural_ranking_available(indexer: &Indexer) -> bool {
+    !indexer.config().repo_encryption().is_enabled() && indexer.symbols_enabled()
+}
+
 fn ranking_config_for_surface(surface: RankingSurface) -> RankingConfig {
     let mode = match surface {
         RankingSurface::Search => RankingMode::IncludeNewHits,
@@ -1984,7 +1988,7 @@ fn apply_symbol_matches(
     limit: usize,
     mode: RankingMode,
 ) -> Result<()> {
-    if !indexer.symbols_enabled() {
+    if !structural_ranking_available(indexer) {
         return Ok(());
     }
     if indexer.symbols_reindex_required().unwrap_or(false) {
@@ -2051,7 +2055,7 @@ fn apply_ast_matches(
     limit: usize,
     mode: RankingMode,
 ) -> Result<()> {
-    if !indexer.symbols_enabled() {
+    if !structural_ranking_available(indexer) {
         return Ok(());
     }
     if indexer.symbols_reindex_required().unwrap_or(false) {

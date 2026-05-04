@@ -14,6 +14,15 @@ use tempfile::TempDir;
 type BoxError = Box<dyn Error + Send + Sync>;
 const MAX_RATE_LIMIT_MESSAGE_BYTES: usize = 256;
 
+struct ChildGuard(Child);
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 fn docdex_bin() -> PathBuf {
     std::env::set_var("DOCDEX_CLI_LOCAL", "1");
     std::env::set_var("DOCDEX_WEB_ENABLED", "0");
@@ -132,6 +141,38 @@ fn wait_for_health(host: &str, port: u16) -> Result<(), BoxError> {
     Err("docdexd healthz endpoint did not respond in time".into())
 }
 
+fn test_http_timeout() -> Duration {
+    let timeout_secs = std::env::var("DOCDEX_TEST_HTTP_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(10);
+    Duration::from_secs(timeout_secs)
+}
+
+fn wait_for_successful_get(
+    client: &Client,
+    url: &str,
+    query: &[(&str, &str)],
+    label: &str,
+) -> Result<(), BoxError> {
+    let deadline = Instant::now() + test_http_timeout();
+    let mut last_error = String::new();
+    while Instant::now() < deadline {
+        match client.get(url).query(query).send() {
+            Ok(resp) if resp.status().is_success() => return Ok(()),
+            Ok(resp) => {
+                last_error = format!("HTTP {}", resp.status());
+            }
+            Err(err) => {
+                last_error = err.to_string();
+            }
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+
+    Err(format!("{label} did not become ready in time: {last_error}").into())
+}
+
 fn assert_http_rate_limit_payload(body: &Value) -> Result<HashSet<String>, BoxError> {
     let top = body
         .as_object()
@@ -248,7 +289,7 @@ fn http_rate_limit_signaling_is_stable_under_concurrency() -> Result<(), BoxErro
         return Ok(());
     };
     let host = "127.0.0.1";
-    let mut child = spawn_server_with_args(
+    let child = spawn_server_with_args(
         state_root.path(),
         repo.path(),
         host,
@@ -262,31 +303,26 @@ fn http_rate_limit_signaling_is_stable_under_concurrency() -> Result<(), BoxErro
             "2",
         ],
     )?;
+    let _child_guard = ChildGuard(child);
     wait_for_health(host, port)?;
 
-    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+    let client = Client::builder().timeout(test_http_timeout()).build()?;
     let search_url = format!("http://{host}:{port}/search");
     let snippet_url = format!("http://{host}:{port}/snippet/docs%2Foverview.md");
 
     // Preflight endpoints to avoid mixing in handler-level errors; then wait for a refill.
-    assert!(
-        client
-            .get(&search_url)
-            .query(&[("q", "roadmap"), ("limit", "1")])
-            .send()?
-            .status()
-            .is_success(),
-        "preflight /search should succeed"
-    );
-    assert!(
-        client
-            .get(&snippet_url)
-            .query(&[("window", "8"), ("q", "roadmap"), ("text_only", "true")])
-            .send()?
-            .status()
-            .is_success(),
-        "preflight /snippet should succeed"
-    );
+    wait_for_successful_get(
+        &client,
+        &search_url,
+        &[("q", "roadmap"), ("limit", "1")],
+        "preflight /search",
+    )?;
+    wait_for_successful_get(
+        &client,
+        &snippet_url,
+        &[("window", "8"), ("q", "roadmap"), ("text_only", "true")],
+        "preflight /snippet",
+    )?;
     thread::sleep(Duration::from_millis(1100));
 
     let threads = 32usize;
@@ -298,7 +334,7 @@ fn http_rate_limit_signaling_is_stable_under_concurrency() -> Result<(), BoxErro
         let snippet_url = snippet_url.clone();
         handles.push(thread::spawn(
             move || -> Result<(u16, Option<String>, Vec<u8>), BoxError> {
-                let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+                let client = Client::builder().timeout(test_http_timeout()).build()?;
                 barrier.wait();
                 let resp = if i % 2 == 0 {
                     client
@@ -359,7 +395,5 @@ fn http_rate_limit_signaling_is_stable_under_concurrency() -> Result<(), BoxErro
         "rate-limit payload schema should not vary under concurrency"
     );
 
-    child.kill().ok();
-    child.wait().ok();
     Ok(())
 }

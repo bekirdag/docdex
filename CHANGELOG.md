@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.73
+- Add a service-admin document ingest endpoint for encrypted repositories and remove plaintext source artifacts after encrypted ingestion.
+- Allow bound service-token search for encrypted repositories when repository access bindings authorize the request.
+- Skip structural ranking for encrypted search and disable encrypted-repository file watching to avoid plaintext-side watcher behavior.
+- Bump release metadata to 0.2.73.
+
 ## 0.2.72
 - Update the MCP Registry publisher used by the release workflow so GitHub OIDC login requests the registry URL audience expected by the current registry service.
 - Bump release metadata to 0.2.72.

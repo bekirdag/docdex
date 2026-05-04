@@ -38,6 +38,18 @@ pub fn spawn(indexer: Arc<Indexer>) -> Result<WatcherHandle> {
     let repo_root = indexer.repo_root().to_path_buf();
     let config = indexer.config().clone();
     let stop_flag = Arc::new(AtomicBool::new(false));
+    if config.repo_encryption().is_enabled() {
+        info!(
+            target: "docdexd",
+            repo = %repo_root.display(),
+            "docdex file watcher disabled for encrypted repository"
+        );
+        return Ok(WatcherHandle {
+            stop_flag,
+            watcher_thread: None,
+            worker_task: None,
+        });
+    }
     let (tx, mut rx) = mpsc::unbounded_channel::<WatchAction>();
     let watcher_thread = start_blocking_watcher(repo_root.clone(), config, tx, stop_flag.clone())?;
     info!(
@@ -244,4 +256,47 @@ fn should_track_path(
         return false;
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::spawn;
+    use crate::index::{IndexConfig, Indexer};
+    use crate::repo_encryption::{
+        RepoEncryptionConfig, RepoEncryptionMode, DEFAULT_REPO_ENCRYPTION_KEY_ENV,
+    };
+    use anyhow::Result;
+    use tempfile::TempDir;
+
+    const TEST_KEY: &str = "01234567890123456789012345678901";
+
+    #[test]
+    fn encrypted_repos_do_not_start_filesystem_watcher() -> Result<()> {
+        let _guard = crate::setup::test_support::ENV_LOCK.lock();
+        std::env::set_var(DEFAULT_REPO_ENCRYPTION_KEY_ENV, TEST_KEY);
+        let repo = TempDir::new()?;
+        let state_root = TempDir::new()?;
+        let mut repo_encryption = RepoEncryptionConfig {
+            encryption_mode: RepoEncryptionMode::ApplicationManagedEncryption,
+            ..RepoEncryptionConfig::default()
+        };
+        repo_encryption.apply_defaults();
+        let config = IndexConfig::with_overrides(
+            repo.path(),
+            Some(state_root.path().to_path_buf()),
+            Vec::new(),
+            Vec::new(),
+            true,
+        )?
+        .with_repo_encryption(repo_encryption);
+        let indexer = std::sync::Arc::new(Indexer::with_config(repo.path().to_path_buf(), config)?);
+
+        let mut handle = spawn(indexer)?;
+
+        assert!(handle.watcher_thread.is_none());
+        assert!(handle.worker_task.is_none());
+        handle.stop();
+        std::env::remove_var(DEFAULT_REPO_ENCRYPTION_KEY_ENV);
+        Ok(())
+    }
 }

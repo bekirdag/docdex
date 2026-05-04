@@ -238,7 +238,14 @@ pub async fn admin_repo_documents_ingest_handler(
                 format!("failed to write document: {err}"),
             ));
         }
-        if let Err(err) = repo.indexer.ingest_file(full_path).await {
+        let encrypted_repo = repo.indexer.config().repo_encryption().is_enabled();
+        let ingest_result = repo.indexer.ingest_file(full_path.clone()).await;
+        if encrypted_repo {
+            if let Err(err) = remove_encrypted_ingest_source(&full_path).await {
+                return app_error_to_response(err);
+            }
+        }
+        if let Err(err) = ingest_result {
             return app_error_to_response(AppError::new(
                 ERR_INVALID_ARGUMENT,
                 format!("failed to index document: {err}"),
@@ -354,6 +361,15 @@ fn safe_repo_relative_path(raw: &str) -> Result<PathBuf, AppError> {
     Ok(safe)
 }
 
+async fn remove_encrypted_ingest_source(path: &FsPath) -> Result<(), AppError> {
+    tokio::fs::remove_file(path).await.map_err(|err| {
+        AppError::new(
+            ERR_INVALID_ARGUMENT,
+            format!("failed to remove plaintext encrypted-repo ingest source: {err}"),
+        )
+    })
+}
+
 fn require_service_admin(
     state: &AppState,
     headers: &HeaderMap,
@@ -464,5 +480,38 @@ fn app_error_to_response(err: AppError) -> Response {
     match err.details {
         Some(details) => json_error_with_details(status, err.code, err.message, details),
         None => json_error(status, err.code, err.message),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn safe_repo_relative_path_rejects_escape_attempts() {
+        assert!(safe_repo_relative_path("../secret.txt").is_err());
+        assert!(safe_repo_relative_path("/absolute/secret.txt").is_err());
+        assert_eq!(
+            safe_repo_relative_path("daily-logs/log-1.md")
+                .expect("valid path")
+                .to_string_lossy(),
+            "daily-logs/log-1.md"
+        );
+    }
+
+    #[tokio::test]
+    async fn encrypted_ingest_cleanup_removes_plaintext_source_file() {
+        let dir = TempDir::new().expect("temp dir");
+        let path = dir.path().join("daily-log.md");
+        tokio::fs::write(&path, "sensitive uploaded OKACAM log")
+            .await
+            .expect("write test source");
+
+        remove_encrypted_ingest_source(&path)
+            .await
+            .expect("remove encrypted ingest source");
+
+        assert!(!path.exists());
     }
 }

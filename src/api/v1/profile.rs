@@ -45,6 +45,12 @@ pub struct ProfileSaveRequest {
     pub role: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct ProfileDeleteRequest {
+    #[serde(default, alias = "id")]
+    pub preference_id: Option<String>,
+}
+
 #[derive(Serialize)]
 pub struct ProfileListResponse {
     pub agents: Vec<Agent>,
@@ -72,6 +78,12 @@ pub struct ProfileSearchHit {
 pub struct ProfileSaveResponse {
     pub request_id: String,
     pub status: &'static str,
+}
+
+#[derive(Serialize)]
+pub struct ProfileDeleteResponse {
+    pub preference_id: String,
+    pub deleted: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -450,6 +462,47 @@ pub async fn profile_save_handler(
         status: "queued",
     })
     .into_response()
+}
+
+pub async fn profile_delete_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<ProfileDeleteRequest>,
+) -> Response {
+    let Some(profile_state) = state.profile_state.as_ref() else {
+        return json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            ERR_PROFILE_DISABLED,
+            "profile memory disabled",
+        );
+    };
+    let preference_id = payload
+        .preference_id
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("");
+    if preference_id.is_empty() {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "preference_id is required",
+        );
+    }
+    match profile_state.manager.delete_preference(preference_id) {
+        Ok(deleted) => Json(ProfileDeleteResponse {
+            preference_id: preference_id.to_string(),
+            deleted,
+        })
+        .into_response(),
+        Err(err) => {
+            state.metrics.inc_error();
+            warn!(target: "docdexd", error = ?err, "profile delete failed");
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_INTERNAL_ERROR,
+                "profile delete failed",
+            )
+        }
+    }
 }
 
 pub async fn profile_import_handler(

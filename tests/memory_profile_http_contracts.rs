@@ -3,6 +3,7 @@ mod common;
 use common::{docdex_bin, pick_free_port, wait_for_health, MockOllama};
 use docdexd::profiles::{PreferenceCategory, ProfileManager};
 use reqwest::blocking::Client;
+use serde_json::json;
 use serde_json::Value;
 use std::error::Error;
 use std::fs;
@@ -157,6 +158,37 @@ fn profile_export_and_import_contracts() -> Result<(), Box<dyn Error>> {
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
     assert!(inserted >= 1);
+
+    let preference_id = export_resp
+        .get("preferences")
+        .and_then(|v| v.as_array())
+        .and_then(|v| v.first())
+        .and_then(|v| v.get("id"))
+        .and_then(|v| v.as_str())
+        .ok_or("missing preference id")?;
+    let delete_url = format!("http://{host}:{port}/v1/memory/profile/delete");
+    let delete_resp: Value = client
+        .post(&delete_url)
+        .json(&json!({ "preference_id": preference_id }))
+        .send()?
+        .json()?;
+    assert_eq!(
+        delete_resp.get("preference_id").and_then(|v| v.as_str()),
+        Some(preference_id)
+    );
+    assert_eq!(
+        delete_resp.get("deleted").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    let delete_again: Value = client
+        .post(&delete_url)
+        .json(&json!({ "preference_id": preference_id }))
+        .send()?
+        .json()?;
+    assert_eq!(
+        delete_again.get("deleted").and_then(|v| v.as_bool()),
+        Some(false)
+    );
 
     server.shutdown();
     Ok(())

@@ -9,7 +9,9 @@ pub mod routing;
 pub mod types;
 
 pub use db::ConversationStore;
-pub use diary::{read_diary_entries, record_diary_entry_episode, write_diary_entry};
+pub use diary::{
+    delete_diary_entry, read_diary_entries, record_diary_entry_episode, write_diary_entry,
+};
 pub use extract::{extract_session_artifacts, ExtractedConversationArtifacts};
 pub use hooks::{enqueue_conversation_hook, execute_conversation_hook};
 pub use import::{

@@ -36,6 +36,10 @@ pub async fn read_diary_entries(
     .await?
 }
 
+pub async fn delete_diary_entry(store: ConversationStore, entry_id: String) -> Result<bool> {
+    tokio::task::spawn_blocking(move || store.delete_diary_entry(&entry_id)).await?
+}
+
 pub async fn record_diary_entry_episode(
     knowledge: KnowledgeStore,
     entry: DiaryEntryRecord,

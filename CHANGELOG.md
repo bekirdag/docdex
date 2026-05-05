@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.74
+- Add compatibility HTTP aliases for repo memory, profile memory, personal-preferences, conversation, diary, KG, index, tree, files, stats, repo-inspect, impact diagnostics, and retrieval-only RAG surfaces.
+- Add delete endpoints for repo memory, profile preferences, and diary entries, including storage cleanup and HTTP regression coverage.
+- Bump release metadata to 0.2.74.
+
 ## 0.2.73
 - Add a service-admin document ingest endpoint for encrypted repositories and remove plaintext source artifacts after encrypted ingestion.
 - Allow bound service-token search for encrypted repositories when repository access bindings authorize the request.

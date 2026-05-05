@@ -161,12 +161,17 @@ fn memory_isolation_multi_repo_requires_repo_id() -> Result<(), Box<dyn Error>> 
         .send()?;
     assert_eq!(missing_store.status(), reqwest::StatusCode::BAD_REQUEST);
 
-    let store_one = client
+    let store_one: serde_json::Value = client
         .post(&store_url)
         .header("x-docdex-repo-id", repo_one_id.clone())
         .json(&json!({ "text": "alpha memory" }))
-        .send()?;
-    assert!(store_one.status().is_success());
+        .send()?
+        .json()?;
+    let memory_one_id = store_one
+        .get("id")
+        .and_then(|value| value.as_str())
+        .ok_or("missing memory id")?
+        .to_string();
     let store_two = client
         .post(&store_url)
         .header("x-docdex-repo-id", repo_two_id.clone())
@@ -176,7 +181,7 @@ fn memory_isolation_multi_repo_requires_repo_id() -> Result<(), Box<dyn Error>> 
 
     let recall_one: serde_json::Value = client
         .post(&recall_url)
-        .header("x-docdex-repo-id", repo_one_id)
+        .header("x-docdex-repo-id", repo_one_id.clone())
         .json(&json!({ "query": "alpha", "top_k": 5 }))
         .send()?
         .json()?;
@@ -227,6 +232,50 @@ fn memory_isolation_multi_repo_requires_repo_id() -> Result<(), Box<dyn Error>> 
         .json(&json!({ "query": "alpha", "top_k": 5 }))
         .send()?;
     assert_eq!(missing_recall.status(), reqwest::StatusCode::BAD_REQUEST);
+
+    let delete_url = format!("http://127.0.0.1:{port}/v1/memory/delete");
+    let deleted: serde_json::Value = client
+        .post(&delete_url)
+        .header("x-docdex-repo-id", repo_one_id.clone())
+        .json(&json!({ "id": memory_one_id }))
+        .send()?
+        .json()?;
+    assert_eq!(
+        deleted.get("deleted").and_then(|value| value.as_bool()),
+        Some(true)
+    );
+
+    let recall_after_delete: serde_json::Value = client
+        .post(&recall_url)
+        .header("x-docdex-repo-id", repo_one_id.clone())
+        .json(&json!({ "query": "alpha", "top_k": 5 }))
+        .send()?
+        .json()?;
+    let after_delete_results = recall_after_delete
+        .get("results")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        after_delete_results
+            .iter()
+            .all(|item| item.get("content") != Some(&json!("alpha memory"))),
+        "deleted memory still recalled: {recall_after_delete}"
+    );
+
+    let delete_alias_url = format!("http://127.0.0.1:{port}/v1/memory/repo/delete");
+    let deleted_again: serde_json::Value = client
+        .post(&delete_alias_url)
+        .header("x-docdex-repo-id", repo_one_id)
+        .json(&json!({ "memory_id": memory_one_id }))
+        .send()?
+        .json()?;
+    assert_eq!(
+        deleted_again
+            .get("deleted")
+            .and_then(|value| value.as_bool()),
+        Some(false)
+    );
 
     Ok(())
 }

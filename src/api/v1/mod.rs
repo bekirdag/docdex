@@ -5,6 +5,7 @@ pub mod conversations;
 pub mod dag;
 pub mod delegate;
 pub mod diary;
+pub mod encrypted_search_compat;
 pub mod gates;
 pub mod graph;
 pub mod hooks;

@@ -122,6 +122,36 @@ fn diary_write_and_read_http_contracts() -> Result<(), Box<dyn Error>> {
         .unwrap_or("")
         .contains("hook summaries"));
 
+    let entry_id = first
+        .get("entry_id")
+        .and_then(|value| value.as_str())
+        .ok_or("missing diary entry id")?;
+    let delete_url = format!("http://{host}:{port}/v1/diary/delete");
+    let deleted: Value = client
+        .post(&delete_url)
+        .json(&json!({ "entry_id": entry_id }))
+        .send()?
+        .json()?;
+    assert_eq!(
+        deleted.get("entry_id").and_then(|value| value.as_str()),
+        Some(entry_id)
+    );
+    assert_eq!(
+        deleted.get("deleted").and_then(|value| value.as_bool()),
+        Some(true)
+    );
+    let deleted_again: Value = client
+        .post(&delete_url)
+        .json(&json!({ "entry_id": entry_id }))
+        .send()?
+        .json()?;
+    assert_eq!(
+        deleted_again
+            .get("deleted")
+            .and_then(|value| value.as_bool()),
+        Some(false)
+    );
+
     server.shutdown();
     Ok(())
 }

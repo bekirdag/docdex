@@ -432,6 +432,10 @@ pub fn router(state: AppState) -> Router {
             post(crate::api::v1::profile::profile_save_handler),
         )
         .route(
+            "/v1/profile/delete",
+            post(crate::api::v1::profile::profile_delete_handler),
+        )
+        .route(
             "/v1/profile/import",
             post(crate::api::v1::profile::profile_import_handler),
         )
@@ -458,7 +462,26 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/v1/personal-preferences/search",
-            get(crate::api::v1::personal_preferences::personal_preferences_search_handler),
+            get(crate::api::v1::personal_preferences::personal_preferences_search_handler)
+                .post(
+                    crate::api::v1::encrypted_search_compat::personal_preferences_search_alias_handler,
+                ),
+        )
+        .route(
+            "/v1/personal-preferences/read",
+            post(crate::api::v1::encrypted_search_compat::personal_preferences_read_alias_handler),
+        )
+        .route(
+            "/v1/personal-preferences/write",
+            post(crate::api::v1::encrypted_search_compat::personal_preferences_write_alias_handler),
+        )
+        .route(
+            "/v1/personal-preferences/evaluate",
+            post(crate::api::v1::encrypted_search_compat::personal_preferences_evaluate_alias_handler),
+        )
+        .route(
+            "/v1/personal-preferences/delete",
+            post(crate::api::v1::encrypted_search_compat::personal_preferences_delete_alias_handler),
         )
         .route(
             "/v1/personal-preferences/claims",
@@ -569,6 +592,10 @@ pub fn router(state: AppState) -> Router {
             "/v1/graph/impact/diagnostics",
             get(crate::api::v1::graph::impact_diagnostics_handler),
         )
+        .route(
+            "/v1/impact/diagnostics",
+            get(crate::api::v1::graph::impact_diagnostics_handler),
+        )
         .route("/v1/symbols", get(crate::api::v1::symbols::symbols_handler))
         .route("/v1/ast", get(crate::api::v1::ast::ast_handler))
         .route(
@@ -590,6 +617,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/index/rebuild",
             post(crate::api::v1::index::index_rebuild_handler),
+        )
+        .route(
+            "/v1/index",
+            post(crate::api::v1::encrypted_search_compat::index_compat_handler),
+        )
+        .route(
+            "/v1/index/jobs/:job_id",
+            get(crate::api::v1::encrypted_search_compat::index_job_handler),
         )
         .route(
             "/v1/index/ingest",
@@ -620,11 +655,56 @@ pub fn router(state: AppState) -> Router {
             post(crate::api::v1::web::web_fetch_handler),
         )
         .route(
+            "/v1/rag",
+            post(crate::api::v1::encrypted_search_compat::rag_handler),
+        )
+        .route(
             "/v1/web/cache/flush",
             post(crate::api::v1::web::web_cache_flush_handler),
         )
+        .route(
+            "/v1/tree",
+            get(crate::api::v1::encrypted_search_compat::tree_handler),
+        )
+        .route(
+            "/v1/files",
+            get(crate::api::v1::encrypted_search_compat::files_handler),
+        )
+        .route(
+            "/v1/stats",
+            get(crate::api::v1::encrypted_search_compat::stats_handler),
+        )
+        .route(
+            "/v1/repo/inspect",
+            get(crate::api::v1::encrypted_search_compat::repo_inspect_handler),
+        )
         .route("/v1/memory/store", post(memory_store_handler))
         .route("/v1/memory/recall", post(memory_recall_handler))
+        .route("/v1/memory/delete", post(memory_delete_handler))
+        .route(
+            "/v1/memory/repo/recall",
+            post(crate::api::v1::encrypted_search_compat::repo_memory_recall_alias_handler),
+        )
+        .route(
+            "/v1/memory/repo/save",
+            post(crate::api::v1::encrypted_search_compat::repo_memory_save_alias_handler),
+        )
+        .route(
+            "/v1/memory/repo/delete",
+            post(crate::api::v1::encrypted_search_compat::repo_memory_delete_alias_handler),
+        )
+        .route(
+            "/v1/memory/profile/get",
+            post(crate::api::v1::encrypted_search_compat::profile_get_alias_handler),
+        )
+        .route(
+            "/v1/memory/profile/save",
+            post(crate::api::v1::encrypted_search_compat::profile_save_alias_handler),
+        )
+        .route(
+            "/v1/memory/profile/delete",
+            post(crate::api::v1::encrypted_search_compat::profile_delete_alias_handler),
+        )
         .route(
             "/v1/memory/layers",
             get(crate::api::v1::memory_layers::memory_layers_handler),
@@ -639,15 +719,25 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/v1/diary/read",
-            get(crate::api::v1::diary::diary_read_handler),
+            get(crate::api::v1::diary::diary_read_handler)
+                .post(crate::api::v1::encrypted_search_compat::diary_read_alias_handler),
+        )
+        .route(
+            "/v1/diary/delete",
+            post(crate::api::v1::diary::diary_delete_handler),
         )
         .route(
             "/v1/conversations",
             get(crate::api::v1::conversations::conversation_list_handler),
         )
         .route(
+            "/v1/conversations/list",
+            post(crate::api::v1::encrypted_search_compat::conversation_list_alias_handler),
+        )
+        .route(
             "/v1/conversations/search",
-            get(crate::api::v1::conversations::conversation_search_handler),
+            get(crate::api::v1::conversations::conversation_search_handler)
+                .post(crate::api::v1::encrypted_search_compat::conversation_search_alias_handler),
         )
         .route(
             "/v1/conversations/import",
@@ -670,42 +760,86 @@ pub fn router(state: AppState) -> Router {
             "/v1/conversations/:session_id/redact",
             post(crate::api::v1::conversations::conversation_redact_handler),
         )
-        .route("/v1/kg/query", get(crate::api::v1::kg::kg_query_handler))
+        .route(
+            "/v1/conversations/read",
+            post(crate::api::v1::encrypted_search_compat::conversation_read_alias_handler),
+        )
+        .route(
+            "/v1/conversations/export",
+            post(crate::api::v1::encrypted_search_compat::conversation_export_alias_handler),
+        )
+        .route(
+            "/v1/conversations/redact",
+            post(crate::api::v1::encrypted_search_compat::conversation_redact_alias_handler),
+        )
+        .route(
+            "/v1/conversations/delete",
+            post(crate::api::v1::encrypted_search_compat::conversation_delete_alias_handler),
+        )
+        .route(
+            "/v1/kg/query",
+            get(crate::api::v1::kg::kg_query_handler)
+                .post(crate::api::v1::encrypted_search_compat::kg_query_alias_handler),
+        )
         .route(
             "/v1/kg/search/nodes",
             get(crate::api::v1::kg::kg_search_nodes_handler),
+        )
+        .route(
+            "/v1/kg/search-nodes",
+            post(crate::api::v1::encrypted_search_compat::kg_search_nodes_alias_handler),
         )
         .route(
             "/v1/kg/search/edges",
             get(crate::api::v1::kg::kg_search_edges_handler),
         )
         .route(
+            "/v1/kg/search-edges",
+            post(crate::api::v1::encrypted_search_compat::kg_search_edges_alias_handler),
+        )
+        .route(
             "/v1/kg/search/episodes",
             get(crate::api::v1::kg::kg_search_episodes_handler),
         )
         .route(
+            "/v1/kg/search-episodes",
+            post(crate::api::v1::encrypted_search_compat::kg_search_episodes_alias_handler),
+        )
+        .route(
             "/v1/kg/timeline",
-            get(crate::api::v1::kg::kg_timeline_handler),
+            get(crate::api::v1::kg::kg_timeline_handler)
+                .post(crate::api::v1::encrypted_search_compat::kg_timeline_alias_handler),
         )
         .route(
             "/v1/kg/neighborhood",
-            get(crate::api::v1::kg::kg_neighborhood_handler),
+            get(crate::api::v1::kg::kg_neighborhood_handler)
+                .post(crate::api::v1::encrypted_search_compat::kg_neighborhood_alias_handler),
         )
         .route(
             "/v1/kg/entity-links",
-            get(crate::api::v1::kg::kg_entity_links_handler),
+            get(crate::api::v1::kg::kg_entity_links_handler)
+                .post(crate::api::v1::encrypted_search_compat::kg_entity_links_alias_handler),
         )
         .route(
             "/v1/kg/episode",
-            get(crate::api::v1::kg::kg_episode_handler),
+            get(crate::api::v1::kg::kg_episode_handler)
+                .post(crate::api::v1::encrypted_search_compat::kg_episode_alias_handler),
         )
         .route(
             "/v1/kg/edge/delete",
             post(crate::api::v1::kg::kg_delete_edge_handler),
         )
         .route(
+            "/v1/kg/delete-edge",
+            post(crate::api::v1::encrypted_search_compat::kg_delete_edge_alias_handler),
+        )
+        .route(
             "/v1/kg/episode/delete",
             post(crate::api::v1::kg::kg_delete_episode_handler),
+        )
+        .route(
+            "/v1/kg/delete-episode",
+            post(crate::api::v1::encrypted_search_compat::kg_delete_episode_alias_handler),
         )
         .route(
             "/v1/kg/rebuild",
@@ -764,7 +898,7 @@ pub(crate) struct RepoIdQuery {
 }
 
 #[derive(Deserialize)]
-struct MemoryStoreRequest {
+pub(crate) struct MemoryStoreRequest {
     text: String,
     #[serde(default)]
     metadata: Option<serde_json::Value>,
@@ -779,7 +913,7 @@ struct MemoryStoreResponse {
 }
 
 #[derive(Deserialize)]
-struct MemoryRecallRequest {
+pub(crate) struct MemoryRecallRequest {
     query: String,
     #[serde(default)]
     top_k: Option<usize>,
@@ -799,6 +933,20 @@ struct MemoryRecallItem {
     metadata: serde_json::Value,
 }
 
+#[derive(Deserialize)]
+pub(crate) struct MemoryDeleteRequest {
+    #[serde(default, alias = "memory_id")]
+    id: Option<String>,
+    #[serde(default)]
+    repo_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct MemoryDeleteResponse {
+    id: String,
+    deleted: bool,
+}
+
 fn header_dag_session_id(headers: &HeaderMap) -> Option<String> {
     headers
         .get(DAG_SESSION_HEADER)
@@ -808,7 +956,7 @@ fn header_dag_session_id(headers: &HeaderMap) -> Option<String> {
         .map(|value| value.to_string())
 }
 
-async fn memory_store_handler(
+pub(crate) async fn memory_store_handler(
     State(state): State<AppState>,
     axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
     headers: HeaderMap,
@@ -934,7 +1082,7 @@ async fn memory_store_handler(
     }
 }
 
-async fn memory_recall_handler(
+pub(crate) async fn memory_recall_handler(
     State(state): State<AppState>,
     axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
     headers: HeaderMap,
@@ -1058,6 +1206,80 @@ async fn memory_recall_handler(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 ERR_INTERNAL_ERROR,
                 "memory recall failed",
+            )
+        }
+    }
+}
+
+pub(crate) async fn memory_delete_handler(
+    State(state): State<AppState>,
+    axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
+    headers: HeaderMap,
+    Query(repo_id): Query<RepoIdQuery>,
+    Json(req): Json<MemoryDeleteRequest>,
+) -> impl IntoResponse {
+    let repo = match resolve_repo_context(
+        &state,
+        &headers,
+        repo_id.repo_id.as_deref(),
+        req.repo_id.as_deref(),
+        false,
+    ) {
+        Ok(repo) => repo,
+        Err(err) => return repo_error_response(err),
+    };
+    let Some(memory) = repo.memory.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            "memory is disabled; start the daemon with --enable-memory=true",
+        );
+    };
+
+    let id = req.id.as_deref().map(str::trim).unwrap_or("");
+    if id.is_empty() {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "id is required",
+        );
+    }
+
+    let store = memory.store.clone();
+    let id_owned = id.to_string();
+    let delete = tokio::task::spawn_blocking(move || store.delete(&id_owned)).await;
+    match delete {
+        Ok(Ok(deleted)) => Json(MemoryDeleteResponse {
+            id: id.to_string(),
+            deleted,
+        })
+        .into_response(),
+        Ok(Err(err)) => {
+            state.metrics.inc_error();
+            warn!(
+                target: "docdexd",
+                request_id = %request_id.0,
+                error = ?err,
+                "memory_delete persistence failed"
+            );
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_INTERNAL_ERROR,
+                "memory delete failed",
+            )
+        }
+        Err(err) => {
+            state.metrics.inc_error();
+            warn!(
+                target: "docdexd",
+                request_id = %request_id.0,
+                error = ?err,
+                "memory_delete task join failed"
+            );
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_INTERNAL_ERROR,
+                "memory delete failed",
             )
         }
     }
@@ -1274,6 +1496,12 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 params: &["query=<string>", "top_k=<int optional>", "repo_id=<optional>"],
             },
             AiHelpEndpoint {
+                method: "POST",
+                path: "/v1/memory/delete",
+                description: "Delete a repo memory item by id (requires memory enabled).",
+                params: &["id=<memory id>", "repo_id=<optional>"],
+            },
+            AiHelpEndpoint {
                 method: "GET",
                 path: "/v1/profile/list",
                 description: "List profile agents and preferences (global memory).",
@@ -1300,6 +1528,12 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                     "category=<style|tooling|constraint|workflow>",
                     "role=<string optional>",
                 ],
+            },
+            AiHelpEndpoint {
+                method: "POST",
+                path: "/v1/profile/delete",
+                description: "Delete a profile preference by id.",
+                params: &["preference_id=<string>"],
             },
             AiHelpEndpoint {
                 method: "POST",

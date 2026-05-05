@@ -661,6 +661,21 @@ impl ConversationStore {
         })
     }
 
+    pub fn delete_diary_entry(&self, entry_id: &str) -> Result<bool> {
+        let entry_id = entry_id.trim();
+        if entry_id.is_empty() {
+            anyhow::bail!("entry_id must not be empty");
+        }
+        let _guard = self.lock.lock();
+        let _file_lock = self.lock_exclusive()?;
+        let conn = self.open_connection()?;
+        let deleted = conn.execute(
+            "DELETE FROM conversation_diary_entries WHERE id = ?1",
+            params![entry_id],
+        )?;
+        Ok(deleted > 0)
+    }
+
     pub fn enqueue_hook_event(
         &self,
         payload: &ConversationHookPayload,
@@ -2483,6 +2498,11 @@ mod tests {
         let filtered = store.read_diary_entries(Some("codex"), 10, 0)?;
         assert_eq!(filtered.total, 1);
         assert_eq!(filtered.entries[0].entry_id, first.entry_id);
+
+        assert!(store.delete_diary_entry(&first.entry_id)?);
+        assert!(!store.delete_diary_entry(&first.entry_id)?);
+        let filtered_after_delete = store.read_diary_entries(Some("codex"), 10, 0)?;
+        assert_eq!(filtered_after_delete.total, 0);
         Ok(())
     }
 

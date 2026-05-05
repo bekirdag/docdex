@@ -214,6 +214,32 @@ impl MemoryStore {
             .collect())
     }
 
+    pub fn delete(&self, memory_id: &str) -> Result<bool> {
+        let _guard = self.lock.lock();
+        let _file_lock = self.lock_exclusive()?;
+        let (mut conn, _) = self.open_connection(None)?;
+        let rowid: Option<i64> = conn
+            .query_row(
+                "SELECT rowid FROM memories WHERE id = ?1",
+                params![memory_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("lookup memory rowid")?;
+        let Some(rowid) = rowid else {
+            return Ok(false);
+        };
+        let tx = conn
+            .transaction()
+            .context("start memory delete transaction")?;
+        tx.execute("DELETE FROM memories WHERE id = ?1", params![memory_id])
+            .context("delete memory record")?;
+        tx.execute("DELETE FROM memory_vec WHERE rowid = ?1", params![rowid])
+            .context("delete memory vector")?;
+        tx.commit().context("commit memory delete")?;
+        Ok(true)
+    }
+
     pub fn compact_superseded(&self, dry_run: bool) -> Result<MemoryCompactSummary> {
         let _guard = self.lock.lock();
         let _file_lock = self.lock_exclusive()?;
@@ -671,4 +697,29 @@ fn decode_embedding(blob: &[u8]) -> Option<Vec<f32>> {
         out.push(f32::from_le_bytes(bytes));
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn delete_removes_memory_and_vector_once() -> Result<()> {
+        let dir = TempDir::new()?;
+        let store = MemoryStore::new(dir.path());
+        let (id, _) = store.store(
+            "remember the repo rule",
+            &[0.1, 0.2, 0.3, 0.4],
+            json!({}),
+            1,
+        )?;
+
+        assert_eq!(store.recall(&[0.1, 0.2, 0.3, 0.4], 5)?.len(), 1);
+        assert!(store.delete(&id.to_string())?);
+        assert!(store.recall(&[0.1, 0.2, 0.3, 0.4], 5)?.is_empty());
+        assert!(!store.delete(&id.to_string())?);
+
+        Ok(())
+    }
 }

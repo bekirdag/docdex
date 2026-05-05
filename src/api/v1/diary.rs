@@ -1,4 +1,6 @@
-use crate::conversations::{read_diary_entries, record_diary_entry_episode, write_diary_entry};
+use crate::conversations::{
+    delete_diary_entry, read_diary_entries, record_diary_entry_episode, write_diary_entry,
+};
 use crate::error::{ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED};
 use crate::http_api::{json_error, repo_error_response, resolve_conversation_context};
 use crate::search::{AppState, RepoIdQuery, RequestId};
@@ -41,6 +43,16 @@ pub struct DiaryReadQuery {
     pub limit: Option<usize>,
     #[serde(default)]
     pub offset: Option<usize>,
+    #[serde(default)]
+    pub repo_id: Option<String>,
+    #[serde(default, alias = "namespace")]
+    pub conversation_namespace: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct DiaryDeleteRequest {
+    #[serde(default, alias = "id")]
+    pub entry_id: Option<String>,
     #[serde(default)]
     pub repo_id: Option<String>,
     #[serde(default, alias = "namespace")]
@@ -207,6 +219,81 @@ pub(crate) async fn diary_read_handler(
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 ERR_INTERNAL_ERROR,
                 "diary read failed",
+            )
+        }
+    }
+}
+
+pub(crate) async fn diary_delete_handler(
+    State(state): State<AppState>,
+    axum::extract::Extension(request_id): axum::extract::Extension<RequestId>,
+    headers: HeaderMap,
+    Query(repo_id): Query<RepoIdQuery>,
+    Json(req): Json<DiaryDeleteRequest>,
+) -> impl IntoResponse {
+    let scope = match resolve_conversation_context(
+        &state,
+        &headers,
+        repo_id.repo_id.as_deref(),
+        req.repo_id.as_deref(),
+        repo_id.conversation_namespace.as_deref(),
+        req.conversation_namespace.as_deref(),
+        false,
+    ) {
+        Ok(scope) => scope,
+        Err(err) => return repo_error_response(err),
+    };
+    let Some(conversations) = scope.conversations() else {
+        return json_error(
+            axum::http::StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            "conversation memory is disabled; enable [memory.conversations].enabled",
+        );
+    };
+    let Some(entry_id) = req
+        .entry_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+    else {
+        return json_error(
+            axum::http::StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "entry_id is required",
+        );
+    };
+    let started = Instant::now();
+    let scope_label = scope.scope_label();
+    match delete_diary_entry(conversations.store.clone(), entry_id.clone()).await {
+        Ok(deleted) => {
+            info!(
+                target: "docdexd",
+                request_id = %request_id.0,
+                scope = %scope_label,
+                latency_ms = started.elapsed().as_millis(),
+                entry_id = %entry_id,
+                deleted,
+                "diary delete succeeded"
+            );
+            Json(serde_json::json!({
+                "entry_id": entry_id,
+                "deleted": deleted
+            }))
+            .into_response()
+        }
+        Err(err) => {
+            state.metrics.inc_error();
+            warn!(
+                target: "docdexd",
+                request_id = %request_id.0,
+                error = ?err,
+                "diary delete failed"
+            );
+            json_error(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_INTERNAL_ERROR,
+                "diary delete failed",
             )
         }
     }

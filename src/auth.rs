@@ -550,6 +550,15 @@ impl RepoAccessStore {
         Ok(bindings)
     }
 
+    pub fn delete_bindings_for_repo(&self, repo_id: &str) -> Result<usize, AppError> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "DELETE FROM repo_access_bindings WHERE repo_id = ?1",
+            params![repo_id],
+        )
+        .map_err(|err| AppError::new(ERR_REPO_ACCESS_DENIED, format!("delete bindings: {err}")))
+    }
+
     pub fn authorize(
         &self,
         ctx: &AuthContext,

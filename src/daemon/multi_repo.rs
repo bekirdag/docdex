@@ -248,6 +248,21 @@ impl RepoManager {
         Some(runtime)
     }
 
+    pub fn remove_repo_by_id(&self, repo_id: &str) -> Option<Arc<RepoRuntime>> {
+        let entry = self.get_entry(repo_id)?;
+        let mut entry_guard = entry.lock();
+        if let Some(mut watcher) = entry_guard.watcher.take() {
+            watcher.stop();
+        }
+        let runtime = entry_guard.runtime.clone();
+        drop(entry_guard);
+        self.repos.write().remove(&runtime.repo_id);
+        self.legacy_repos.write().remove(&runtime.legacy_repo_id);
+        crate::metrics::global()
+            .set_conversation_archive_size_bytes(self.conversation_archive_size_bytes_total());
+        Some(runtime)
+    }
+
     pub fn repo_count(&self) -> usize {
         self.repos.read().len()
     }

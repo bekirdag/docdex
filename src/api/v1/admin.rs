@@ -30,6 +30,18 @@ pub struct AccessBindingsRequest {
     bindings: Vec<RepoAccessBindingInput>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub struct AdminRepoDeleteRequest {
+    #[serde(default)]
+    repo_root: Option<String>,
+    #[serde(default)]
+    delete_repo_root: Option<bool>,
+    #[serde(default)]
+    delete_state: Option<bool>,
+    #[serde(default)]
+    delete_access_bindings: Option<bool>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct RepoAccessBindingInput {
     #[serde(default)]
@@ -65,6 +77,16 @@ pub struct AdminRepoProvisionResponse {
 pub struct AccessBindingsResponse {
     repo_id: String,
     bindings: Vec<RepoAccessBinding>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AdminRepoDeleteResponse {
+    repo_id: String,
+    repo_root: Option<String>,
+    repo_root_deleted: bool,
+    state_dir: Option<String>,
+    state_deleted: bool,
+    access_bindings_deleted: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -165,6 +187,96 @@ pub async fn admin_repo_access_bindings_handler(
         }
     }
     Json(AccessBindingsResponse { repo_id, bindings }).into_response()
+}
+
+pub async fn admin_repo_delete_handler(
+    State(state): State<AppState>,
+    Path(repo_id): Path<String>,
+    headers: HeaderMap,
+    request: Option<Json<AdminRepoDeleteRequest>>,
+) -> Response {
+    if let Err(response) = require_service_admin(&state, &headers, "/v1/admin/repos/{repo_id}") {
+        return response;
+    }
+    let repo_id = repo_id.trim().to_string();
+    if repo_id.is_empty() {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "repo_id is required",
+        );
+    }
+    let request = request.map(|Json(payload)| payload).unwrap_or_default();
+    let delete_repo_root = request.delete_repo_root.unwrap_or(true);
+    let delete_state = request.delete_state.unwrap_or(true);
+    let delete_access_bindings = request.delete_access_bindings.unwrap_or(true);
+    let requested_repo_root = match resolve_delete_repo_root(&repo_id, request.repo_root.as_deref())
+    {
+        Ok(root) => root,
+        Err(err) => return app_error_to_response(err),
+    };
+
+    let mut mounted_repo_root: Option<PathBuf> = None;
+    let mut mounted_state_dir: Option<PathBuf> = None;
+    if let Some(manager) = state.repos.as_ref() {
+        let runtime = manager.get_by_id(&repo_id).or_else(|| {
+            requested_repo_root.as_ref().and_then(|root| {
+                if root.exists() {
+                    manager.mount_repo(root).ok().map(|mount| mount.repo)
+                } else {
+                    None
+                }
+            })
+        });
+        if let Some(runtime) = runtime {
+            mounted_repo_root = Some(runtime.repo_root.clone());
+            mounted_state_dir = Some(runtime.indexer.state_dir().to_path_buf());
+            let _removed = manager.remove_repo_by_id(&repo_id);
+        }
+    }
+
+    let repo_root = mounted_repo_root.or(requested_repo_root);
+    let state_dir =
+        mounted_state_dir.map(|path| crate::state_layout::repo_state_root_from_state_dir(&path));
+    let access_bindings_deleted = if delete_access_bindings {
+        match state.auth.access_store().delete_bindings_for_repo(&repo_id) {
+            Ok(count) => count,
+            Err(err) => return app_error_to_response(err),
+        }
+    } else {
+        0
+    };
+    let state_deleted = if delete_state {
+        match state_dir.as_deref() {
+            Some(path) => match remove_dir_all_if_exists(path).await {
+                Ok(deleted) => deleted,
+                Err(err) => return app_error_to_response(err),
+            },
+            None => false,
+        }
+    } else {
+        false
+    };
+    let repo_root_deleted = if delete_repo_root {
+        match repo_root.as_deref() {
+            Some(path) => match remove_dir_all_if_exists(path).await {
+                Ok(deleted) => deleted,
+                Err(err) => return app_error_to_response(err),
+            },
+            None => false,
+        }
+    } else {
+        false
+    };
+    Json(AdminRepoDeleteResponse {
+        repo_id,
+        repo_root: repo_root.map(|path| path.display().to_string()),
+        repo_root_deleted,
+        state_dir: state_dir.map(|path| path.display().to_string()),
+        state_deleted,
+        access_bindings_deleted,
+    })
+    .into_response()
 }
 
 pub async fn admin_repo_documents_ingest_handler(
@@ -370,6 +482,67 @@ async fn remove_encrypted_ingest_source(path: &FsPath) -> Result<(), AppError> {
     })
 }
 
+fn resolve_delete_repo_root(
+    repo_id: &str,
+    raw_repo_root: Option<&str>,
+) -> Result<Option<PathBuf>, AppError> {
+    let Some(raw_repo_root) = raw_repo_root
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(raw_repo_root);
+    if !path.exists() {
+        return Ok(Some(path));
+    }
+    if !path.is_dir() {
+        return Err(AppError::new(
+            ERR_INVALID_ARGUMENT,
+            "repo_root must be a directory",
+        ));
+    }
+    let canonical = path.canonicalize().unwrap_or(path);
+    let computed = repo_manager::repo_fingerprint_sha256(&canonical).map_err(|err| {
+        AppError::new(
+            ERR_INVALID_ARGUMENT,
+            format!("failed to compute repository id for deletion: {err}"),
+        )
+    })?;
+    if computed != repo_id {
+        return Err(AppError::new(
+            ERR_INVALID_ARGUMENT,
+            "provided repo_id does not match repo_root",
+        ));
+    }
+    Ok(Some(canonical))
+}
+
+async fn remove_dir_all_if_exists(path: &FsPath) -> Result<bool, AppError> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    if !path.is_dir() {
+        return Err(AppError::new(
+            ERR_INVALID_ARGUMENT,
+            "delete target must be a directory",
+        ));
+    }
+    if path.parent().is_none() {
+        return Err(AppError::new(
+            ERR_INVALID_ARGUMENT,
+            "refusing to delete filesystem root",
+        ));
+    }
+    tokio::fs::remove_dir_all(path).await.map_err(|err| {
+        AppError::new(
+            ERR_INVALID_ARGUMENT,
+            format!("failed to delete directory {}: {err}", path.display()),
+        )
+    })?;
+    Ok(true)
+}
+
 fn require_service_admin(
     state: &AppState,
     headers: &HeaderMap,
@@ -513,5 +686,33 @@ mod tests {
             .expect("remove encrypted ingest source");
 
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn delete_repo_root_rejects_mismatched_repo_id() {
+        let dir = TempDir::new().expect("temp dir");
+        std::fs::write(dir.path().join("README.md"), "# repo\n").expect("write marker");
+
+        let err = resolve_delete_repo_root("not-the-real-repo-id", dir.path().to_str())
+            .expect_err("repo id mismatch should fail");
+
+        assert_eq!(err.code, ERR_INVALID_ARGUMENT);
+    }
+
+    #[tokio::test]
+    async fn remove_dir_all_if_exists_deletes_directory_tree() {
+        let dir = TempDir::new().expect("temp dir");
+        let target = dir.path().join("repo-state");
+        tokio::fs::create_dir_all(target.join("index"))
+            .await
+            .expect("create target");
+        tokio::fs::write(target.join("index").join("marker"), "indexed")
+            .await
+            .expect("write marker");
+
+        assert!(remove_dir_all_if_exists(&target)
+            .await
+            .expect("delete target"));
+        assert!(!target.exists());
     }
 }

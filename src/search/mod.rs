@@ -39,7 +39,7 @@ use axum::{
     http::{header::CONTENT_LENGTH, HeaderMap, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Json, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use serde::{Deserialize, Serialize};
@@ -387,6 +387,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/admin/repos/provision",
             post(crate::api::v1::admin::admin_repo_provision_handler),
+        )
+        .route(
+            "/v1/admin/repos/:repo_id",
+            delete(crate::api::v1::admin::admin_repo_delete_handler),
         )
         .route(
             "/v1/admin/repos/:repo_id/access-bindings",

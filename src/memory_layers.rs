@@ -1036,8 +1036,12 @@ fn memory_layer_personal_preferences(
             "docdex_personal_preferences_claims".to_string(),
             "docdex_personal_preferences_reviews".to_string(),
             "docdex_clone_context".to_string(),
+            "docdex_clone_directive".to_string(),
             "docdex_clone_explain".to_string(),
             "docdex_clone_evaluate".to_string(),
+            "docdex_clone_replay_evaluate".to_string(),
+            "docdex_clone_replay_dataset".to_string(),
+            "docdex_clone_replay_suite".to_string(),
         ],
         automatic_read_surfaces,
         automatic_write_surfaces: vec![

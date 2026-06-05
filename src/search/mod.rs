@@ -448,6 +448,12 @@ pub fn router(state: AppState) -> Router {
             get(crate::api::v1::personal_preferences::personal_preferences_categories_handler),
         )
         .route(
+            "/v1/personal-preferences/retention-policies",
+            get(
+                crate::api::v1::personal_preferences::personal_preferences_retention_policies_handler,
+            ),
+        )
+        .route(
             "/v1/personal-preferences/captures",
             get(crate::api::v1::personal_preferences::personal_preferences_list_captures_handler),
         )
@@ -522,9 +528,153 @@ pub fn router(state: AppState) -> Router {
             ),
         )
         .route(
+            "/v1/personal-preferences/operator-events",
+            get(crate::api::v1::personal_preferences::personal_preferences_operator_events_handler)
+                .post(
+                    crate::api::v1::personal_preferences::personal_preferences_operator_event_record_handler,
+                ),
+        )
+        .route(
+            "/v1/personal-preferences/operator-events/scan-artifacts",
+            post(
+                crate::api::v1::personal_preferences::personal_preferences_operator_events_scan_artifacts_handler,
+            ),
+        )
+        .route(
+            "/v1/personal-preferences/routines",
+            get(crate::api::v1::personal_preferences::personal_preferences_routines_handler),
+        )
+        .route(
+            "/v1/personal-preferences/routines/rebuild",
+            post(crate::api::v1::personal_preferences::personal_preferences_routines_rebuild_handler),
+        )
+        .route(
+            "/v1/personal-preferences/routines/:routine_id",
+            get(crate::api::v1::personal_preferences::personal_preferences_routine_read_handler),
+        )
+        .route(
+            "/v1/personal-preferences/routines/:routine_id/explain",
+            get(crate::api::v1::personal_preferences::personal_preferences_routine_explain_handler),
+        )
+        .route(
+            "/v1/personal-preferences/mind-map",
+            get(crate::api::v1::personal_preferences::personal_preferences_mind_map_handler),
+        )
+        .route(
+            "/v1/personal-preferences/playbooks",
+            get(crate::api::v1::personal_preferences::personal_preferences_playbooks_handler),
+        )
+        .route(
+            "/v1/personal-preferences/generated-skills",
+            get(
+                crate::api::v1::personal_preferences::personal_preferences_generated_skills_handler,
+            ),
+        )
+        .route(
+            "/v1/personal-preferences/generated-skills/sync",
+            post(
+                crate::api::v1::personal_preferences::personal_preferences_generated_skills_sync_handler,
+            ),
+        )
+        .route(
+            "/v1/personal-preferences/generated-skills/autopilot",
+            post(
+                crate::api::v1::personal_preferences::personal_preferences_generated_skills_autopilot_handler,
+            ),
+        )
+        .route(
+            "/v1/personal-preferences/generated-skills/preview",
+            post(
+                crate::api::v1::personal_preferences::personal_preferences_generated_skills_preview_handler,
+            ),
+        )
+        .route(
+            "/v1/personal-preferences/generated-skills/render",
+            post(
+                crate::api::v1::personal_preferences::personal_preferences_generated_skills_preview_handler,
+            ),
+        )
+        .route(
+            "/v1/personal-preferences/generated-skills/events",
+            get(
+                crate::api::v1::personal_preferences::personal_preferences_generated_skill_events_handler,
+            ),
+        )
+        .route(
+            "/v1/personal-preferences/generated-skills/:skill_id",
+            get(
+                crate::api::v1::personal_preferences::personal_preferences_generated_skill_read_handler,
+            ),
+        )
+        .route(
+            "/v1/personal-preferences/generated-skills/:skill_id/validate",
+            post(
+                crate::api::v1::personal_preferences::personal_preferences_generated_skill_validate_handler,
+            ),
+        )
+        .route(
+            "/v1/personal-preferences/generated-skills/:skill_id/install",
+            post(
+                crate::api::v1::personal_preferences::personal_preferences_generated_skill_install_handler,
+            ),
+        )
+        .route(
+            "/v1/personal-preferences/generated-skills/:skill_id/disable",
+            post(
+                crate::api::v1::personal_preferences::personal_preferences_generated_skill_disable_handler,
+            ),
+        )
+        .route(
+            "/v1/personal-preferences/generated-skills/:skill_id/rollback",
+            post(
+                crate::api::v1::personal_preferences::personal_preferences_generated_skill_rollback_handler,
+            ),
+        )
+        .route(
+            "/v1/ai-terminals/status",
+            get(crate::api::v1::personal_preferences::ai_terminal_status_handler),
+        )
+        .route(
+            "/v1/ai-terminals/events",
+            get(crate::api::v1::personal_preferences::ai_terminal_events_handler),
+        )
+        .route(
+            "/v1/ai-terminals/detect",
+            post(
+                crate::api::v1::personal_preferences::ai_terminal_integrations_detect_handler,
+            ),
+        )
+        .route(
+            "/v1/ai-terminals/integrations",
+            get(crate::api::v1::personal_preferences::ai_terminal_integrations_handler)
+                .post(
+                    crate::api::v1::personal_preferences::ai_terminal_integrations_bootstrap_handler,
+                ),
+        )
+        .route(
+            "/v1/ai-terminals/integrations/bootstrap",
+            post(
+                crate::api::v1::personal_preferences::ai_terminal_integrations_bootstrap_handler,
+            ),
+        )
+        .route(
+            "/v1/ai-terminals/capture",
+            post(crate::api::v1::personal_preferences::ai_terminal_capture_handler),
+        )
+        .route(
+            "/v1/ai-terminals/sync-skills",
+            post(crate::api::v1::personal_preferences::ai_terminal_sync_skills_handler),
+        )
+        .route(
             "/v1/personal-preferences/clone/context",
             post(
                 crate::api::v1::personal_preferences::personal_preferences_clone_context_handler,
+            ),
+        )
+        .route(
+            "/v1/personal-preferences/clone/directive",
+            post(
+                crate::api::v1::personal_preferences::personal_preferences_clone_directive_handler,
             ),
         )
         .route(
@@ -537,6 +687,24 @@ pub fn router(state: AppState) -> Router {
             "/v1/personal-preferences/clone/evaluate",
             post(
                 crate::api::v1::personal_preferences::personal_preferences_clone_evaluate_handler,
+            ),
+        )
+        .route(
+            "/v1/personal-preferences/clone/replay-evaluate",
+            post(
+                crate::api::v1::personal_preferences::personal_preferences_clone_replay_evaluate_handler,
+            ),
+        )
+        .route(
+            "/v1/personal-preferences/clone/replay-dataset",
+            post(
+                crate::api::v1::personal_preferences::personal_preferences_clone_replay_dataset_handler,
+            ),
+        )
+        .route(
+            "/v1/personal-preferences/clone/replay-suite",
+            post(
+                crate::api::v1::personal_preferences::personal_preferences_clone_replay_suite_handler,
             ),
         )
         .route(

@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod ai_terminals;
 pub mod browser;
 pub mod check;
 pub mod conversations;
@@ -210,6 +211,7 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
         super::Command::Diary { command } => diary::run(command).await,
         super::Command::Profile { command } => profile::run(command).await,
         super::Command::PersonalPreferences { command } => personal_preferences::run(command).await,
+        super::Command::AiTerminals { command } => ai_terminals::run(command).await,
         super::Command::Hook { command } => hook::run(command).await,
         super::Command::SymbolsStatus { repo } => symbols::run_status(repo).await,
         super::Command::ImpactDiagnostics {

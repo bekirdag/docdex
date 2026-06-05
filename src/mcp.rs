@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 const MCP_ROUTER_SESSION_IDLE_SECS: u64 = 3600;
 const MCP_ROUTER_CLEANUP_INTERVAL_SECS: u64 = 600;
+const MCP_CHILD_SPAWN_ATTEMPTS: usize = 4;
 
 pub async fn spawn_proxy_for_serve(
     repo: crate::config::RepoArgs,
@@ -284,7 +285,7 @@ impl McpProxyRouter {
             auth_token: self.config.auth_token.clone(),
             delegation_metrics: self.delegation_metrics_for_repo(&repo_root),
         };
-        let child = spawn_mcp_proxy(options).await?;
+        let child = spawn_mcp_proxy_with_retry(options).await?;
         let mut children = self.children.write().await;
         if let Some(existing) = children.get(&repo_root) {
             return Ok(existing.clone());
@@ -441,6 +442,7 @@ mod tests {
     }
 }
 
+#[derive(Clone)]
 struct McpSpawnOptions {
     repo: crate::config::RepoArgs,
     max_results: usize,
@@ -459,6 +461,21 @@ async fn spawn_mcp_proxy(options: McpSpawnOptions) -> Result<Arc<McpProxy>> {
     apply_mcp_env(&options);
     let service = build_mcp_service(&options)?;
     Ok(McpProxy::new(service))
+}
+
+async fn spawn_mcp_proxy_with_retry(options: McpSpawnOptions) -> Result<Arc<McpProxy>> {
+    let mut last_err = None;
+    for attempt in 1..=MCP_CHILD_SPAWN_ATTEMPTS {
+        match spawn_mcp_proxy(options.clone()).await {
+            Ok(proxy) => return Ok(proxy),
+            Err(err) if is_retryable_mcp_error(&err) && attempt < MCP_CHILD_SPAWN_ATTEMPTS => {
+                last_err = Some(err);
+                tokio::time::sleep(Duration::from_millis(75 * attempt as u64)).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow!("mcp proxy spawn failed")))
 }
 
 fn build_mcp_service(options: &McpSpawnOptions) -> Result<crate::mcp_server::McpService> {

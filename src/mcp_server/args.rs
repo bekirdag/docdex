@@ -700,6 +700,9 @@ pub(super) struct PersonalPreferencesStatusArgs {}
 #[derive(Default, Deserialize)]
 pub(super) struct PersonalPreferencesCategoriesArgs {}
 
+#[derive(Default, Deserialize)]
+pub(super) struct PersonalPreferencesRetentionPoliciesArgs {}
+
 #[derive(Deserialize)]
 pub(super) struct PersonalPreferencesListArgs {
     #[serde(default)]
@@ -857,6 +860,53 @@ pub(super) struct PersonalPreferencesFeedbackArgs {
 }
 
 #[derive(Deserialize)]
+pub(super) struct PersonalPreferencesOperatorEventsArgs {
+    #[serde(default, alias = "kind", alias = "event_type")]
+    pub(super) event_kind: Option<String>,
+    #[serde(default)]
+    pub(super) action: Option<String>,
+    #[serde(default)]
+    pub(super) repo_root: Option<String>,
+    #[serde(default)]
+    pub(super) limit: Option<usize>,
+    #[serde(default)]
+    pub(super) offset: Option<usize>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct PersonalPreferencesOperatorEventRecordArgs {
+    #[serde(default, alias = "kind", alias = "event_type")]
+    pub(super) event_kind: Option<String>,
+    pub(super) action: String,
+    #[serde(default)]
+    pub(super) summary: Option<String>,
+    #[serde(default)]
+    pub(super) command_text: Option<String>,
+    #[serde(default)]
+    pub(super) source_session_id: Option<String>,
+    #[serde(default)]
+    pub(super) repo_id: Option<String>,
+    #[serde(default)]
+    pub(super) repo_root: Option<String>,
+    #[serde(default)]
+    pub(super) capture_id: Option<String>,
+    #[serde(default)]
+    pub(super) artifact_path: Option<String>,
+    #[serde(default)]
+    pub(super) occurred_at_ms: Option<i64>,
+    #[serde(default)]
+    pub(super) metadata: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct PersonalPreferencesOperatorEventScanArgs {
+    #[serde(default)]
+    pub(super) repo_root: Option<String>,
+    #[serde(default)]
+    pub(super) limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
 pub(super) struct PersonalPreferencesSnapshotsArgs {
     #[serde(default)]
     pub(super) limit: Option<usize>,
@@ -871,10 +921,182 @@ pub(super) struct PersonalPreferencesSnapshotReadArgs {
 }
 
 #[derive(Deserialize)]
+pub(super) struct PersonalPreferencesRoutinesArgs {
+    #[serde(default)]
+    pub(super) limit: Option<usize>,
+    #[serde(default)]
+    pub(super) offset: Option<usize>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct PersonalPreferencesRoutineReadArgs {
+    #[serde(alias = "id", alias = "routine_key")]
+    pub(super) routine_id: String,
+}
+
+#[derive(Deserialize)]
+pub(super) struct PersonalPreferencesMindMapArgs {
+    #[serde(default, alias = "q")]
+    pub(super) query: Option<String>,
+    #[serde(default)]
+    pub(super) limit: Option<usize>,
+    #[serde(default)]
+    pub(super) include_sensitive: Option<bool>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct PersonalPreferencesPlaybooksArgs {
+    #[serde(default)]
+    pub(super) min_confidence: Option<f32>,
+    #[serde(default)]
+    pub(super) min_support_count: Option<usize>,
+    #[serde(default)]
+    pub(super) include_sensitive: Option<bool>,
+}
+
+#[derive(Default, Deserialize)]
+pub(super) struct AiTerminalIntegrationsArgs {}
+
+#[derive(Default, Deserialize)]
+pub(super) struct AiTerminalStatusArgs {}
+
+#[derive(Deserialize)]
+pub(super) struct AiTerminalEventsArgs {
+    #[serde(default)]
+    pub(super) limit: Option<usize>,
+    #[serde(default)]
+    pub(super) offset: Option<usize>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct AiTerminalIntegrationsBootstrapArgs {
+    #[serde(default)]
+    pub(super) terminals: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct AiTerminalCaptureArgs {
+    pub(super) terminal: String,
+    #[serde(default)]
+    pub(super) integration_id: Option<String>,
+    #[serde(default)]
+    pub(super) source_session_id: Option<String>,
+    #[serde(default)]
+    pub(super) event_kind: Option<String>,
+    #[serde(default)]
+    pub(super) repo_scope: Option<String>,
+    pub(super) summary: String,
+    #[serde(default)]
+    pub(super) transcript_text: Option<String>,
+    #[serde(default)]
+    pub(super) agent_id: Option<String>,
+    #[serde(default)]
+    pub(super) metadata: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct GeneratedSkillsSyncArgs {
+    #[serde(default)]
+    pub(super) min_confidence: Option<f32>,
+    #[serde(default)]
+    pub(super) min_support_count: Option<usize>,
+    #[serde(default)]
+    pub(super) include_sensitive: Option<bool>,
+    #[serde(default)]
+    pub(super) install: Option<bool>,
+    #[serde(default)]
+    pub(super) terminals: Vec<String>,
+}
+
+#[derive(Default, Deserialize)]
+pub(super) struct GeneratedSkillsListArgs {}
+
+#[derive(Deserialize)]
+pub(super) struct GeneratedSkillReadArgs {
+    #[serde(alias = "id", alias = "slug", alias = "name")]
+    pub(super) skill_id: String,
+}
+
+#[derive(Deserialize)]
+pub(super) struct GeneratedSkillActionArgs {
+    #[serde(default, alias = "id", alias = "slug", alias = "name")]
+    pub(super) skill_id: Option<String>,
+    #[serde(default)]
+    pub(super) terminals: Vec<String>,
+    #[serde(default)]
+    pub(super) reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct GeneratedSkillEventsArgs {
+    #[serde(default)]
+    pub(super) limit: Option<usize>,
+    #[serde(default)]
+    pub(super) offset: Option<usize>,
+}
+
+#[derive(Deserialize)]
 pub(super) struct PersonalPreferencesCloneArgs {
     pub(super) query: String,
     #[serde(default)]
+    pub(super) agent_id: Option<String>,
+    #[serde(default)]
     pub(super) mode: Option<String>,
+    #[serde(default)]
+    pub(super) allow_sensitive: Option<bool>,
+    #[serde(default)]
+    pub(super) current_repo_root: Option<String>,
+    #[serde(default)]
+    pub(super) max_records: Option<usize>,
+    #[serde(default)]
+    pub(super) budget_tokens: Option<usize>,
+    #[serde(default)]
+    pub(super) task_type: Option<String>,
+    #[serde(default)]
+    pub(super) risk_level: Option<String>,
+    #[serde(default)]
+    pub(super) current_files: Vec<String>,
+    #[serde(default)]
+    pub(super) current_plan_path: Option<String>,
+    #[serde(default)]
+    pub(super) enforcement_level: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct PersonalPreferencesCloneReplayArgs {
+    pub(super) query: String,
+    #[serde(default)]
+    pub(super) mode: Option<String>,
+    #[serde(default)]
+    pub(super) allow_sensitive: Option<bool>,
+    #[serde(default)]
+    pub(super) current_repo_root: Option<String>,
+    #[serde(default)]
+    pub(super) max_records: Option<usize>,
+    #[serde(default)]
+    pub(super) budget_tokens: Option<usize>,
+    #[serde(default)]
+    pub(super) expected_categories: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct PersonalPreferencesCloneReplayDatasetArgs {
+    #[serde(default)]
+    pub(super) ci_subset: Option<bool>,
+    #[serde(default)]
+    pub(super) limit: Option<usize>,
+    #[serde(default)]
+    pub(super) current_repo_root: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct PersonalPreferencesCloneReplaySuiteArgs {
+    #[serde(default)]
+    pub(super) ci_subset: Option<bool>,
+    #[serde(default)]
+    pub(super) limit: Option<usize>,
+    #[serde(default)]
+    pub(super) threshold: Option<f32>,
     #[serde(default)]
     pub(super) allow_sensitive: Option<bool>,
     #[serde(default)]

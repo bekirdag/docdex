@@ -1170,7 +1170,7 @@ impl McpServer {
                 let protocol_version = init_params
                     .protocol_version
                     .unwrap_or_else(|| "2025-11-25".to_string());
-                let instructions = "Docdex is a local-first repo indexer: use docdex_search for repo docs/code before changing code.\nIf results are weak or the user asks for web context, use docdex_web_research (requires web enabled).\nUse docdex_open for file reads, docdex_files to list indexed docs, docdex_tree for folder structure, and docdex_index to refresh the index when stale.\nFor code intelligence, use docdex_symbols/docdex_ast, docdex_impact_diagnostics for unresolved imports, and docdex_impact_graph for dependency traversal.\nUse docdex_dag_export to export DAG sessions; pass the dag_session_id from docdex_search/docdex_web_research responses (or provide session_id directly).\nUse docdex_local_completion to offload small tasks to a local model or managed mcoda cloud agent. Code-oriented task types use the code lane; lightweight Q&A uses general_question. If mswarm is configured and cloud delegation is enabled, Docdex can discover `mswarm-cloud-*` candidates from `mcoda cloud agent list` and automatically skip usage-limited cloud agents.\nUse docdex_memory_route when you need query-specific guidance about which memory lane to read from or write to. Use docdex_memory_layers when you need the current map of all six memory layers and their scope/storage details.\nThe six layers are: repo memory for repo-specific technical truth; profile memory for global agent/user preferences; conversation memory for archived sessions and wake-up recall; diary memory for per-agent episodic handoff notes; temporal knowledge graph for structured timeline/entity recall; and personal preferences for richer user-specific claims and clone-context flows.\nMemory tools (docdex_memory_store/recall) require memory to be enabled.\nConversation tools: use docdex_conversation_import for ingest, docdex_conversation_search/list/read/export/delete/redact for archive inspection, docdex_conversation_prune for retention cleanup, docdex_diary_write/read for per-agent journals, docdex_conversation_hook for append-only capture events, docdex_kg_* for structured conversation facts, and docdex_wakeup for bounded startup memory.\nProfile tools (docdex_save_preference/docdex_get_profile) use global profile memory and do not require project_root.\nPersonal preferences tools (docdex_personal_preferences_* and docdex_clone_*) are the richer global user-preference lane.\nPass project_root/repo_path to match the MCP server repo (or omit if initialize set a default).";
+                let instructions = "Docdex is a local-first repo indexer: use docdex_search for repo docs/code before changing code.\nIf results are weak or the user asks for web context, use docdex_web_research (requires web enabled).\nUse docdex_open for file reads, docdex_files to list indexed docs, docdex_tree for folder structure, and docdex_index to refresh the index when stale.\nFor code intelligence, use docdex_symbols/docdex_ast, docdex_impact_diagnostics for unresolved imports, and docdex_impact_graph for dependency traversal.\nUse docdex_dag_export to export DAG sessions; pass the dag_session_id from docdex_search/docdex_web_research responses (or provide session_id directly).\nUse docdex_local_completion to offload small tasks to a local model or managed mcoda cloud agent. Code-oriented task types use the code lane; lightweight Q&A uses general_question. If mswarm is configured and cloud delegation is enabled, Docdex can discover `mswarm-cloud-*` candidates from `mcoda cloud agent list` and automatically skip usage-limited cloud agents.\nUse docdex_memory_route when you need query-specific guidance about which memory lane to read from or write to. Use docdex_memory_layers when you need the current map of all six memory layers and their scope/storage details.\nThe six layers are: repo memory for repo-specific technical truth; profile memory for global agent/user preferences; conversation memory for archived sessions and wake-up recall; diary memory for per-agent episodic handoff notes; temporal knowledge graph for structured timeline/entity recall; and personal preferences for richer user-specific claims and clone-context flows.\nMemory tools (docdex_memory_store/recall) require memory to be enabled.\nConversation tools: use docdex_conversation_import for ingest, docdex_conversation_search/list/read/export/delete/redact for archive inspection, docdex_conversation_prune for retention cleanup, docdex_diary_write/read for per-agent journals, docdex_conversation_hook for append-only capture events, docdex_kg_* for structured conversation facts, and docdex_wakeup for bounded startup memory.\nProfile tools (docdex_save_preference/docdex_get_profile) use global profile memory and do not require project_root.\nPersonal preferences tools (docdex_personal_preferences_* and docdex_clone_*) are the richer global user-preference lane.\nUse docdex_clone_directive before planning non-trivial agent work when personal-preferences memory is relevant, then compare completed work against required_steps and approval_gates before the final response.\nPass project_root/repo_path to match the MCP server repo (or omit if initialize set a default).";
                 let mut caps = json!({
                     "tools": { "listChanged": false },
                     "resources": { "listChanged": false },
@@ -3079,6 +3079,48 @@ impl McpServer {
                             }
                         }
                     }
+                    "docdex_personal_preferences_retention_policies"
+                    | "docdex.personal_preferences_retention_policies" => {
+                        let args_res: Result<PersonalPreferencesRetentionPoliciesArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_personal_preferences_retention_policies"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_personal_preferences_retention_policies" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self
+                            .handle_personal_preferences_retention_policies(args)
+                            .await
+                        {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_personal_preferences_retention_policies"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
                     "docdex_personal_preferences_list" | "docdex.personal_preferences_list" => {
                         let args_res: Result<PersonalPreferencesListArgs, _> =
                             serde_json::from_value(params.arguments.clone());
@@ -3770,6 +3812,131 @@ impl McpServer {
                             }
                         }
                     }
+                    "docdex_personal_preferences_operator_events"
+                    | "docdex.personal_preferences_operator_events" => {
+                        let args_res: Result<PersonalPreferencesOperatorEventsArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_personal_preferences_operator_events"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_personal_preferences_operator_events" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_personal_preferences_operator_events(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_personal_preferences_operator_events"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_personal_preferences_operator_event_record"
+                    | "docdex.personal_preferences_operator_event_record" => {
+                        let args_res: Result<PersonalPreferencesOperatorEventRecordArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_personal_preferences_operator_event_record"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_personal_preferences_operator_event_record" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self
+                            .handle_personal_preferences_operator_event_record(args)
+                            .await
+                        {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_personal_preferences_operator_event_record"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_personal_preferences_operator_events_scan_artifacts"
+                    | "docdex.personal_preferences_operator_events_scan_artifacts" => {
+                        let args_res: Result<PersonalPreferencesOperatorEventScanArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_personal_preferences_operator_events_scan_artifacts"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_personal_preferences_operator_events_scan_artifacts" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self
+                            .handle_personal_preferences_operator_events_scan_artifacts(args)
+                            .await
+                        {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some(
+                                            "docdex_personal_preferences_operator_events_scan_artifacts",
+                                        ),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
                     "docdex_personal_preferences_snapshots"
                     | "docdex.personal_preferences_snapshots" => {
                         let args_res: Result<PersonalPreferencesSnapshotsArgs, _> =
@@ -3865,6 +4032,712 @@ impl McpServer {
                             }
                         }
                     }
+                    "docdex_personal_preferences_routines"
+                    | "docdex.personal_preferences_routines" => {
+                        let args_res: Result<PersonalPreferencesRoutinesArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_personal_preferences_routines"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_personal_preferences_routines" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_personal_preferences_routines(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_personal_preferences_routines"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_personal_preferences_routine_read"
+                    | "docdex.personal_preferences_routine_read" => {
+                        let args_res: Result<PersonalPreferencesRoutineReadArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_personal_preferences_routine_read"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_personal_preferences_routine_read" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_personal_preferences_routine_read(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_personal_preferences_routine_read"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_personal_preferences_routine_explain"
+                    | "docdex.personal_preferences_routine_explain" => {
+                        let args_res: Result<PersonalPreferencesRoutineReadArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_personal_preferences_routine_explain"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_personal_preferences_routine_explain" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_personal_preferences_routine_explain(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_personal_preferences_routine_explain"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_personal_preferences_routines_rebuild"
+                    | "docdex.personal_preferences_routines_rebuild" => {
+                        match self.handle_personal_preferences_routines_rebuild().await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_personal_preferences_routines_rebuild"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_personal_preferences_mind_map"
+                    | "docdex.personal_preferences_mind_map" => {
+                        let args_res: Result<PersonalPreferencesMindMapArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_personal_preferences_mind_map"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_personal_preferences_mind_map" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_personal_preferences_mind_map(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_personal_preferences_mind_map"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_personal_preferences_playbooks"
+                    | "docdex.personal_preferences_playbooks" => {
+                        let args_res: Result<PersonalPreferencesPlaybooksArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_personal_preferences_playbooks"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_personal_preferences_playbooks" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_personal_preferences_playbooks(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_personal_preferences_playbooks"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_ai_terminal_integrations" | "docdex.ai_terminal_integrations" => {
+                        let args_res: Result<AiTerminalIntegrationsArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_ai_terminal_integrations"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_ai_terminal_integrations" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_ai_terminal_integrations(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_ai_terminal_integrations"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_ai_terminal_integrations_bootstrap"
+                    | "docdex.ai_terminal_integrations_bootstrap" => {
+                        let args_res: Result<AiTerminalIntegrationsBootstrapArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_ai_terminal_integrations_bootstrap"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_ai_terminal_integrations_bootstrap" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_ai_terminal_integrations_bootstrap(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_ai_terminal_integrations_bootstrap"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_ai_terminal_capture" | "docdex.ai_terminal_capture" => {
+                        let args_res: Result<AiTerminalCaptureArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_ai_terminal_capture"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_ai_terminal_capture" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_ai_terminal_capture(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_ai_terminal_capture"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_ai_terminal_detect" | "docdex.ai_terminal_detect" => {
+                        let args_res: Result<AiTerminalIntegrationsBootstrapArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_ai_terminal_detect"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_ai_terminal_detect" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_ai_terminal_detect(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_ai_terminal_detect"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_ai_terminal_status" | "docdex.ai_terminal_status" => {
+                        let args_res: Result<AiTerminalStatusArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_ai_terminal_status"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_ai_terminal_status" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_ai_terminal_status(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_ai_terminal_status"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_ai_terminal_events" | "docdex.ai_terminal_events" => {
+                        let args_res: Result<AiTerminalEventsArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_ai_terminal_events"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_ai_terminal_events" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_ai_terminal_events(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_ai_terminal_events"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_ai_terminal_sync_skills"
+                    | "docdex.ai_terminal_sync_skills"
+                    | "docdex_personal_preferences_generated_skills_sync"
+                    | "docdex.personal_preferences_generated_skills_sync" => {
+                        let args_res: Result<GeneratedSkillsSyncArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_personal_preferences_generated_skills_sync"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_personal_preferences_generated_skills_sync" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_generated_skills_sync(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_personal_preferences_generated_skills_sync"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_personal_preferences_generated_skills"
+                    | "docdex.personal_preferences_generated_skills" => {
+                        let args_res: Result<GeneratedSkillsListArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_personal_preferences_generated_skills"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_personal_preferences_generated_skills" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_generated_skills_list(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_personal_preferences_generated_skills"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_personal_preferences_generated_skill"
+                    | "docdex.personal_preferences_generated_skill" => {
+                        let args_res: Result<GeneratedSkillReadArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_personal_preferences_generated_skill"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_personal_preferences_generated_skill" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_generated_skill_read(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_personal_preferences_generated_skill"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_personal_preferences_generated_skill_events"
+                    | "docdex.personal_preferences_generated_skill_events" => {
+                        let args_res: Result<GeneratedSkillEventsArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_personal_preferences_generated_skill_events"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_personal_preferences_generated_skill_events" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_generated_skill_events(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_personal_preferences_generated_skill_events"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_personal_preferences_generated_skills_preview"
+                    | "docdex.personal_preferences_generated_skills_preview"
+                    | "docdex_personal_preferences_generated_skills_render"
+                    | "docdex.personal_preferences_generated_skills_render"
+                    | "docdex_personal_preferences_generated_skills_autopilot"
+                    | "docdex.personal_preferences_generated_skills_autopilot" => {
+                        let args_res: Result<GeneratedSkillsSyncArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some(
+                                            "docdex_personal_preferences_generated_skills_preview",
+                                        ),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_personal_preferences_generated_skills_preview" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        let is_autopilot = params.name.contains("autopilot");
+                        let result = if is_autopilot {
+                            self.handle_generated_skills_autopilot(args).await
+                        } else {
+                            self.handle_generated_skills_preview(args).await
+                        };
+                        match result {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some(
+                                            "docdex_personal_preferences_generated_skills_preview",
+                                        ),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_personal_preferences_generated_skill_validate"
+                    | "docdex.personal_preferences_generated_skill_validate"
+                    | "docdex_personal_preferences_generated_skill_install"
+                    | "docdex.personal_preferences_generated_skill_install"
+                    | "docdex_personal_preferences_generated_skill_disable"
+                    | "docdex.personal_preferences_generated_skill_disable"
+                    | "docdex_personal_preferences_generated_skill_rollback"
+                    | "docdex.personal_preferences_generated_skill_rollback" => {
+                        let args_res: Result<GeneratedSkillActionArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_personal_preferences_generated_skill_action"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_personal_preferences_generated_skill_action" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        let result = if params.name.contains("validate") {
+                            self.handle_generated_skill_validate(args).await
+                        } else if params.name.contains("install") {
+                            self.handle_generated_skill_install(args).await
+                        } else if params.name.contains("disable") {
+                            self.handle_generated_skill_disable(args).await
+                        } else {
+                            self.handle_generated_skill_rollback(args).await
+                        };
+                        match result {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_personal_preferences_generated_skill_action"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
                     "docdex_clone_context" | "docdex.clone_context" => {
                         let args_res: Result<PersonalPreferencesCloneArgs, _> =
                             serde_json::from_value(params.arguments.clone());
@@ -3896,6 +4769,44 @@ impl McpServer {
                                     id: id.clone(),
                                     result: None,
                                     error: Some(rpc_tool_error(&err, Some("docdex_clone_context"))),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_clone_directive" | "docdex.clone_directive" => {
+                        let args_res: Result<PersonalPreferencesCloneArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_clone_directive"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_clone_directive" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_clone_directive(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_clone_directive"),
+                                    )),
                                 }))
                             }
                         }
@@ -3968,6 +4879,120 @@ impl McpServer {
                                     error: Some(rpc_tool_error(
                                         &err,
                                         Some("docdex_clone_evaluate"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_clone_replay_evaluate" | "docdex.clone_replay_evaluate" => {
+                        let args_res: Result<PersonalPreferencesCloneReplayArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_clone_replay_evaluate"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_clone_replay_evaluate" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_clone_replay_evaluate(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_clone_replay_evaluate"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_clone_replay_dataset" | "docdex.clone_replay_dataset" => {
+                        let args_res: Result<PersonalPreferencesCloneReplayDatasetArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_clone_replay_dataset"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_clone_replay_dataset" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_clone_replay_dataset(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_clone_replay_dataset"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_clone_replay_suite" | "docdex.clone_replay_suite" => {
+                        let args_res: Result<PersonalPreferencesCloneReplaySuiteArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_clone_replay_suite"),
+                                        Some(
+                                            json!({ "validation": "serde", "tool": "docdex_clone_replay_suite" }),
+                                        ),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_clone_replay_suite(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_clone_replay_suite"),
                                     )),
                                 }))
                             }
@@ -4105,6 +5130,7 @@ impl McpServer {
                                         "docdex_local_completion",
                                         "docdex_personal_preferences_status",
                                         "docdex_personal_preferences_categories",
+                                        "docdex_personal_preferences_retention_policies",
                                         "docdex_personal_preferences_list",
                                         "docdex_personal_preferences_read",
                                         "docdex_personal_preferences_search",
@@ -4123,12 +5149,41 @@ impl McpServer {
                                         "docdex_personal_preferences_claim_override",
                                         "docdex_personal_preferences_claim_forget",
                                         "docdex_personal_preferences_feedback",
+                                        "docdex_personal_preferences_operator_events",
+                                        "docdex_personal_preferences_operator_event_record",
+                                        "docdex_personal_preferences_operator_events_scan_artifacts",
                                         "docdex_personal_preferences_snapshots",
                                         "docdex_personal_preferences_snapshot_read",
                                         "docdex_personal_preferences_snapshots_rebuild",
+                                        "docdex_personal_preferences_routines",
+                                        "docdex_personal_preferences_routine_read",
+                                        "docdex_personal_preferences_routine_explain",
+                                        "docdex_personal_preferences_routines_rebuild",
+                                        "docdex_personal_preferences_mind_map",
+                                        "docdex_personal_preferences_playbooks",
+                                        "docdex_ai_terminal_integrations",
+                                        "docdex_ai_terminal_detect",
+                                        "docdex_ai_terminal_integrations_bootstrap",
+                                        "docdex_ai_terminal_status",
+                                        "docdex_ai_terminal_events",
+                                        "docdex_ai_terminal_capture",
+                                        "docdex_ai_terminal_sync_skills",
+                                        "docdex_personal_preferences_generated_skills",
+                                        "docdex_personal_preferences_generated_skill",
+                                        "docdex_personal_preferences_generated_skills_sync",
+                                        "docdex_personal_preferences_generated_skills_preview",
+                                        "docdex_personal_preferences_generated_skills_render",
+                                        "docdex_personal_preferences_generated_skills_autopilot",
+                                        "docdex_personal_preferences_generated_skill_events",
+                                        "docdex_personal_preferences_generated_skill_validate",
+                                        "docdex_personal_preferences_generated_skill_install",
+                                        "docdex_personal_preferences_generated_skill_disable",
+                                        "docdex_personal_preferences_generated_skill_rollback",
                                         "docdex_clone_context",
+                                        "docdex_clone_directive",
                                         "docdex_clone_explain",
                                         "docdex_clone_evaluate",
+                                        "docdex_clone_replay_evaluate",
                                         "docdex_save_preference",
                                         "docdex_get_profile"
                                     ]
@@ -5040,6 +6095,13 @@ impl McpServer {
                 input_schema: json!({ "type": "object", "properties": {} }),
             },
             ToolDefinition {
+                name: "docdex_personal_preferences_retention_policies",
+                title: "Personal Preferences Retention Policies",
+                description: "List personal-preferences retention policies by memory lane.",
+                annotations: Some(annotations_with_priority(0.4)),
+                input_schema: json!({ "type": "object", "properties": {} }),
+            },
+            ToolDefinition {
                 name: "docdex_personal_preferences_list",
                 title: "List Personal Preference Captures",
                 description: "List captured personal-preferences sessions.",
@@ -5305,6 +6367,62 @@ impl McpServer {
                 }),
             },
             ToolDefinition {
+                name: "docdex_personal_preferences_operator_events",
+                title: "List Personal Preference Operator Events",
+                description: "List first-class operator events captured from commands, approvals, and planning artifacts.",
+                annotations: Some(annotations_with_priority(0.45)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "event_kind": { "type": "string" },
+                        "kind": { "type": "string" },
+                        "event_type": { "type": "string" },
+                        "action": { "type": "string" },
+                        "repo_root": { "type": "string" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
+                        "offset": { "type": "integer", "minimum": 0 }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_operator_event_record",
+                title: "Record Personal Preference Operator Event",
+                description: "Record one manual operator event such as a git/test/deploy/approval/action step.",
+                annotations: Some(annotations_with_priority(0.45)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "event_kind": { "type": "string" },
+                        "kind": { "type": "string" },
+                        "event_type": { "type": "string" },
+                        "action": { "type": "string", "minLength": 1 },
+                        "summary": { "type": "string" },
+                        "command_text": { "type": "string" },
+                        "source_session_id": { "type": "string" },
+                        "repo_id": { "type": "string" },
+                        "repo_root": { "type": "string" },
+                        "capture_id": { "type": "string" },
+                        "artifact_path": { "type": "string" },
+                        "occurred_at_ms": { "type": "integer" },
+                        "metadata": { "type": "object" }
+                    },
+                    "required": ["action"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_operator_events_scan_artifacts",
+                title: "Scan Operator Planning Artifacts",
+                description: "Scan repo planning/progress/SDS markdown artifacts into first-class operator events.",
+                annotations: Some(annotations_with_priority(0.45)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "repo_root": { "type": "string" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 2000 }
+                    }
+                }),
+            },
+            ToolDefinition {
                 name: "docdex_personal_preferences_snapshots",
                 title: "List Personal Preference Snapshots",
                 description: "List temporal identity snapshots compiled from claims.",
@@ -5339,6 +6457,330 @@ impl McpServer {
                 input_schema: json!({ "type": "object", "properties": {} }),
             },
             ToolDefinition {
+                name: "docdex_personal_preferences_routines",
+                title: "List Personal Preference Routines",
+                description: "List synthesized operator routines compiled from repeated personal-preference claims.",
+                annotations: Some(annotations_with_priority(0.45)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
+                        "offset": { "type": "integer", "minimum": 0 }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_routine_read",
+                title: "Read Personal Preference Routine",
+                description: "Read one synthesized operator routine by id or routine key.",
+                annotations: Some(annotations_with_priority(0.45)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "routine_id": { "type": "string", "minLength": 1 },
+                        "routine_key": { "type": "string", "minLength": 1 },
+                        "id": { "type": "string", "minLength": 1 }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_routine_explain",
+                title: "Explain Personal Preference Routine",
+                description: "Explain one synthesized operator routine with source claims grouped by step.",
+                annotations: Some(annotations_with_priority(0.45)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "routine_id": { "type": "string", "minLength": 1 },
+                        "routine_key": { "type": "string", "minLength": 1 },
+                        "id": { "type": "string", "minLength": 1 }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_routines_rebuild",
+                title: "Rebuild Personal Preference Routines",
+                description: "Rebuild synthesized operator routines from the current claim set.",
+                annotations: Some(annotations_with_priority(0.45)),
+                input_schema: json!({ "type": "object", "properties": {} }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_mind_map",
+                title: "Compile Personal Preference Mind Map",
+                description: "Compile a queryable operator mind map from approved claims and synthesized routines.",
+                annotations: Some(annotations_with_priority(0.5)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string" },
+                        "q": { "type": "string" },
+                        "limit": { "type": "integer", "minimum": 4, "maximum": 200 },
+                        "include_sensitive": { "type": "boolean" }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_playbooks",
+                title: "Compile Personal Preference Playbooks",
+                description: "Compile stable operator routines into SKILL.md-compatible playbook artifacts.",
+                annotations: Some(annotations_with_priority(0.5)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "min_confidence": { "type": "number", "minimum": 0, "maximum": 0.99 },
+                        "min_support_count": { "type": "integer", "minimum": 1 },
+                        "include_sensitive": { "type": "boolean" }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_ai_terminal_integrations",
+                title: "List AI Terminal Integrations",
+                description: "List configured AI-terminal integrations for automatic capture, generated-skill sync, and activation.",
+                annotations: Some(annotations_with_priority(0.55)),
+                input_schema: json!({ "type": "object", "properties": {} }),
+            },
+            ToolDefinition {
+                name: "docdex_ai_terminal_detect",
+                title: "Detect AI Terminal Integrations",
+                description: "Detect supported AI-terminal generated-skill targets without persisting integration records.",
+                annotations: Some(annotations_with_priority(0.55)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "terminals": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Terminal targets such as codex, claude, or generic_mcp. Empty defaults to Codex and Claude."
+                        }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_ai_terminal_status",
+                title: "AI Terminal Status",
+                description: "Show AI-terminal capture and generated-skill sync status.",
+                annotations: Some(annotations_with_priority(0.55)),
+                input_schema: json!({ "type": "object", "properties": {} }),
+            },
+            ToolDefinition {
+                name: "docdex_ai_terminal_events",
+                title: "List AI Terminal Events",
+                description: "List normalized AI-terminal capture events.",
+                annotations: Some(annotations_with_priority(0.5)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "limit": { "type": "integer", "minimum": 1 },
+                        "offset": { "type": "integer", "minimum": 0 }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_ai_terminal_integrations_bootstrap",
+                title: "Bootstrap AI Terminal Integrations",
+                description: "Create or update Docdex-owned generated-skill roots for supported AI terminals.",
+                annotations: Some(annotations_with_priority(0.55)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "terminals": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Terminal targets such as codex, claude, or generic_mcp. Empty defaults to Codex and Claude."
+                        }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_ai_terminal_capture",
+                title: "Capture AI Terminal Session",
+                description: "Record a normalized AI-terminal session summary into personal preferences and mind-clone inputs.",
+                annotations: Some(annotations_with_priority(0.6)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "terminal": { "type": "string", "minLength": 1 },
+                        "integration_id": { "type": "string" },
+                        "source_session_id": { "type": "string" },
+                        "event_kind": { "type": "string" },
+                        "repo_scope": { "type": "string" },
+                        "summary": { "type": "string", "minLength": 1 },
+                        "transcript_text": { "type": "string" },
+                        "agent_id": { "type": "string" },
+                        "metadata": { "type": "object" }
+                    },
+                    "required": ["terminal", "summary"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_ai_terminal_sync_skills",
+                title: "Sync AI Terminal Generated Skills",
+                description: "Promote stable mind-clone playbooks into generated skills and install low-risk validated skills into enabled AI terminals.",
+                annotations: Some(annotations_with_priority(0.6)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "min_confidence": { "type": "number", "minimum": 0, "maximum": 0.99 },
+                        "min_support_count": { "type": "integer", "minimum": 1 },
+                        "include_sensitive": { "type": "boolean" },
+                        "install": { "type": "boolean" },
+                        "terminals": { "type": "array", "items": { "type": "string" } }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_generated_skills",
+                title: "List Generated Skills",
+                description: "List generated skills derived from personal preferences and mind-clone operator routines.",
+                annotations: Some(annotations_with_priority(0.55)),
+                input_schema: json!({ "type": "object", "properties": {} }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_generated_skill",
+                title: "Read Generated Skill",
+                description: "Read one generated skill by skill id, slug, or portable skill name.",
+                annotations: Some(annotations_with_priority(0.55)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "skill_id": { "type": "string", "minLength": 1 },
+                        "id": { "type": "string", "minLength": 1 },
+                        "slug": { "type": "string", "minLength": 1 },
+                        "name": { "type": "string", "minLength": 1 }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_generated_skill_events",
+                title: "List Generated Skill Events",
+                description: "List registry audit events for generated skills.",
+                annotations: Some(annotations_with_priority(0.5)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "limit": { "type": "integer", "minimum": 1 },
+                        "offset": { "type": "integer", "minimum": 0 }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_generated_skills_sync",
+                title: "Sync Generated Skills",
+                description: "Promote stable operator playbooks into versioned generated skills and optionally install them to terminal integrations.",
+                annotations: Some(annotations_with_priority(0.55)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "min_confidence": { "type": "number", "minimum": 0, "maximum": 0.99 },
+                        "min_support_count": { "type": "integer", "minimum": 1 },
+                        "include_sensitive": { "type": "boolean" },
+                        "install": { "type": "boolean" },
+                        "terminals": { "type": "array", "items": { "type": "string" } }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_generated_skills_preview",
+                title: "Preview Generated Skills",
+                description: "Render registry-backed generated-skill candidates without installing them.",
+                annotations: Some(annotations_with_priority(0.55)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "min_confidence": { "type": "number", "minimum": 0, "maximum": 0.99 },
+                        "min_support_count": { "type": "integer", "minimum": 1 },
+                        "include_sensitive": { "type": "boolean" },
+                        "terminals": { "type": "array", "items": { "type": "string" } }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_generated_skills_render",
+                title: "Render Generated Skills",
+                description: "Render registry-backed generated-skill candidates without installing them.",
+                annotations: Some(annotations_with_priority(0.55)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "min_confidence": { "type": "number", "minimum": 0, "maximum": 0.99 },
+                        "min_support_count": { "type": "integer", "minimum": 1 },
+                        "include_sensitive": { "type": "boolean" },
+                        "terminals": { "type": "array", "items": { "type": "string" } }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_generated_skills_autopilot",
+                title: "Run Generated Skills Autopilot",
+                description: "Run one generated-skills autopilot pass through registry, validation, and install policy.",
+                annotations: Some(annotations_with_priority(0.6)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "min_confidence": { "type": "number", "minimum": 0, "maximum": 0.99 },
+                        "min_support_count": { "type": "integer", "minimum": 1 },
+                        "include_sensitive": { "type": "boolean" },
+                        "install": { "type": "boolean" },
+                        "terminals": { "type": "array", "items": { "type": "string" } }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_generated_skill_validate",
+                title: "Validate Generated Skill",
+                description: "Validate one generated skill's current version and persist the result.",
+                annotations: Some(annotations_with_priority(0.55)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "skill_id": { "type": "string", "minLength": 1 },
+                        "id": { "type": "string", "minLength": 1 },
+                        "slug": { "type": "string", "minLength": 1 },
+                        "name": { "type": "string", "minLength": 1 }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_generated_skill_install",
+                title: "Install Generated Skill",
+                description: "Install one generated skill into enabled Docdex-owned terminal roots.",
+                annotations: Some(annotations_with_priority(0.55)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "skill_id": { "type": "string", "minLength": 1 },
+                        "terminals": { "type": "array", "items": { "type": "string" } }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_generated_skill_disable",
+                title: "Disable Generated Skill",
+                description: "Disable one generated skill while preserving registry provenance.",
+                annotations: Some(annotations_with_priority(0.5)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "skill_id": { "type": "string", "minLength": 1 },
+                        "reason": { "type": "string" }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_personal_preferences_generated_skill_rollback",
+                title: "Rollback Generated Skill",
+                description: "Roll back one generated skill to the previous rendered version when available.",
+                annotations: Some(annotations_with_priority(0.5)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "skill_id": { "type": "string", "minLength": 1 },
+                        "terminals": { "type": "array", "items": { "type": "string" } }
+                    }
+                }),
+            },
+            ToolDefinition {
                 name: "docdex_clone_context",
                 title: "Build Mind Clone Context",
                 description: "Compile a bounded personal-preferences clone context pack for a query.",
@@ -5352,6 +6794,33 @@ impl McpServer {
                         "current_repo_root": { "type": "string" },
                         "max_records": { "type": "integer", "minimum": 1 },
                         "budget_tokens": { "type": "integer", "minimum": 1 }
+                    },
+                    "required": ["query"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_clone_directive",
+                title: "Build Mind Clone Directive",
+                description: "Compile an auditable operator-clone directive checklist for an agent task.",
+                annotations: Some(annotations_with_priority(0.5)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "minLength": 1 },
+                        "agent_id": { "type": "string" },
+                        "mode": { "type": "string" },
+                        "allow_sensitive": { "type": "boolean" },
+                        "current_repo_root": { "type": "string" },
+                        "max_records": { "type": "integer", "minimum": 1 },
+                        "budget_tokens": { "type": "integer", "minimum": 1 },
+                        "task_type": { "type": "string" },
+                        "risk_level": { "type": "string" },
+                        "current_files": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        },
+                        "current_plan_path": { "type": "string" },
+                        "enforcement_level": { "type": "string" }
                     },
                     "required": ["query"]
                 }),
@@ -5390,6 +6859,60 @@ impl McpServer {
                         "budget_tokens": { "type": "integer", "minimum": 1 }
                     },
                     "required": ["query"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_clone_replay_evaluate",
+                title: "Replay-Evaluate Mind Clone Context",
+                description: "Score whether a clone context pack predicts expected operator next-step categories.",
+                annotations: Some(annotations_with_priority(0.5)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "minLength": 1 },
+                        "mode": { "type": "string" },
+                        "allow_sensitive": { "type": "boolean" },
+                        "current_repo_root": { "type": "string" },
+                        "max_records": { "type": "integer", "minimum": 1 },
+                        "budget_tokens": { "type": "integer", "minimum": 1 },
+                        "expected_categories": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        }
+                    },
+                    "required": ["query"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_clone_replay_dataset",
+                title: "Build Mind Clone Replay Dataset",
+                description: "Generate replay dataset cases from executable operator routines for clone-prediction evaluation.",
+                annotations: Some(annotations_with_priority(0.5)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "ci_subset": { "type": "boolean" },
+                        "limit": { "type": "integer", "minimum": 1 },
+                        "current_repo_root": { "type": "string" }
+                    }
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_clone_replay_suite",
+                title: "Run Mind Clone Replay Suite",
+                description: "Run replay cases through clone directives and report aggregate category, routine, step, and approval metrics.",
+                annotations: Some(annotations_with_priority(0.5)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "ci_subset": { "type": "boolean" },
+                        "limit": { "type": "integer", "minimum": 1 },
+                        "threshold": { "type": "number", "minimum": 0, "maximum": 1 },
+                        "allow_sensitive": { "type": "boolean" },
+                        "current_repo_root": { "type": "string" },
+                        "max_records": { "type": "integer", "minimum": 1 },
+                        "budget_tokens": { "type": "integer", "minimum": 32 }
+                    }
                 }),
             },
             ToolDefinition {

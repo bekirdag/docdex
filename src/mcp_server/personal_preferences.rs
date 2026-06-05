@@ -6,7 +6,10 @@ impl McpServer {
         _args: PersonalPreferencesStatusArgs,
     ) -> Result<serde_json::Value> {
         let personal_preferences = self.personal_preferences_state()?;
-        Ok(serde_json::to_value(personal_preferences.store.status()?)?)
+        crate::personal_preferences::status_payload_with_config(
+            personal_preferences.store.status()?,
+            &personal_preferences.config,
+        )
     }
 
     pub(super) async fn handle_personal_preferences_categories(
@@ -16,6 +19,16 @@ impl McpServer {
         let personal_preferences = self.personal_preferences_state()?;
         Ok(serde_json::to_value(
             personal_preferences.store.list_categories()?,
+        )?)
+    }
+
+    pub(super) async fn handle_personal_preferences_retention_policies(
+        &self,
+        _args: PersonalPreferencesRetentionPoliciesArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        Ok(serde_json::to_value(
+            personal_preferences.store.list_retention_policies()?,
         )?)
     }
 
@@ -366,6 +379,65 @@ impl McpServer {
         )?)
     }
 
+    pub(super) async fn handle_personal_preferences_operator_events(
+        &self,
+        args: PersonalPreferencesOperatorEventsArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        Ok(serde_json::to_value(
+            personal_preferences.store.list_operator_events(
+                args.event_kind.as_deref(),
+                args.action.as_deref(),
+                args.repo_root.as_deref(),
+                args.limit.unwrap_or(20).clamp(1, 200),
+                args.offset.unwrap_or(0),
+            )?,
+        )?)
+    }
+
+    pub(super) async fn handle_personal_preferences_operator_event_record(
+        &self,
+        args: PersonalPreferencesOperatorEventRecordArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        let event = personal_preferences.store.record_operator_event(
+            crate::personal_preferences::PersonalPreferenceOperatorEventRequest {
+                event_kind: args.event_kind,
+                action: args.action,
+                summary: args.summary,
+                command_text: args.command_text,
+                source_session_id: args.source_session_id,
+                repo_id: args.repo_id,
+                repo_root: args.repo_root,
+                capture_id: args.capture_id,
+                artifact_path: args.artifact_path,
+                occurred_at_ms: args.occurred_at_ms,
+                metadata: args.metadata.unwrap_or(serde_json::Value::Null),
+            },
+            "mcp",
+        )?;
+        Ok(serde_json::to_value(event)?)
+    }
+
+    pub(super) async fn handle_personal_preferences_operator_events_scan_artifacts(
+        &self,
+        args: PersonalPreferencesOperatorEventScanArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        let repo_root = args
+            .repo_root
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| self.repo_root.clone());
+        Ok(serde_json::to_value(
+            personal_preferences
+                .store
+                .scan_operator_artifacts(&repo_root, args.limit)?,
+        )?)
+    }
+
     pub(super) async fn handle_personal_preferences_snapshots(
         &self,
         args: PersonalPreferencesSnapshotsArgs,
@@ -409,6 +481,334 @@ impl McpServer {
         )?)
     }
 
+    pub(super) async fn handle_personal_preferences_routines(
+        &self,
+        args: PersonalPreferencesRoutinesArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        Ok(serde_json::to_value(
+            personal_preferences.store.list_operator_routines(
+                args.limit.unwrap_or(20).clamp(1, 200),
+                args.offset.unwrap_or(0),
+            )?,
+        )?)
+    }
+
+    pub(super) async fn handle_personal_preferences_routine_read(
+        &self,
+        args: PersonalPreferencesRoutineReadArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        let routine_id = args.routine_id.trim().to_string();
+        if routine_id.is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "routine_id must not be empty").into());
+        }
+        let Some(routine) = personal_preferences
+            .store
+            .read_operator_routine(&routine_id)?
+        else {
+            return Err(AppError::new(
+                ERR_INVALID_ARGUMENT,
+                "personal preference operator routine not found",
+            )
+            .into());
+        };
+        Ok(serde_json::to_value(routine)?)
+    }
+
+    pub(super) async fn handle_personal_preferences_routine_explain(
+        &self,
+        args: PersonalPreferencesRoutineReadArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        let routine_id = args.routine_id.trim().to_string();
+        if routine_id.is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "routine_id must not be empty").into());
+        }
+        let Some(explanation) = personal_preferences
+            .store
+            .explain_operator_routine(&routine_id)?
+        else {
+            return Err(AppError::new(
+                ERR_INVALID_ARGUMENT,
+                "personal preference operator routine not found",
+            )
+            .into());
+        };
+        Ok(serde_json::to_value(explanation)?)
+    }
+
+    pub(super) async fn handle_personal_preferences_routines_rebuild(
+        &self,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        Ok(serde_json::to_value(
+            personal_preferences.store.rebuild_operator_routines()?,
+        )?)
+    }
+
+    pub(super) async fn handle_personal_preferences_mind_map(
+        &self,
+        args: PersonalPreferencesMindMapArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        let query = args
+            .query
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        Ok(serde_json::to_value(
+            personal_preferences.store.compile_mind_map(
+                query,
+                args.limit.unwrap_or(50).clamp(4, 200),
+                args.include_sensitive.unwrap_or(false),
+            )?,
+        )?)
+    }
+
+    pub(super) async fn handle_personal_preferences_playbooks(
+        &self,
+        args: PersonalPreferencesPlaybooksArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        Ok(serde_json::to_value(
+            personal_preferences.store.compile_operator_playbooks(
+                args.min_confidence.unwrap_or(0.7),
+                args.min_support_count.unwrap_or(2),
+                args.include_sensitive.unwrap_or(false),
+            )?,
+        )?)
+    }
+
+    pub(super) async fn handle_ai_terminal_integrations(
+        &self,
+        _args: AiTerminalIntegrationsArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        Ok(serde_json::to_value(
+            personal_preferences.store.list_ai_terminal_integrations()?,
+        )?)
+    }
+
+    pub(super) async fn handle_ai_terminal_status(
+        &self,
+        _args: AiTerminalStatusArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        Ok(serde_json::to_value(
+            personal_preferences.store.ai_terminal_status()?,
+        )?)
+    }
+
+    pub(super) async fn handle_ai_terminal_detect(
+        &self,
+        args: AiTerminalIntegrationsBootstrapArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        Ok(serde_json::to_value(
+            personal_preferences
+                .store
+                .detect_ai_terminal_integrations(args.terminals)?,
+        )?)
+    }
+
+    pub(super) async fn handle_ai_terminal_events(
+        &self,
+        args: AiTerminalEventsArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        Ok(serde_json::to_value(
+            personal_preferences.store.list_ai_terminal_capture_events(
+                args.limit.unwrap_or(50),
+                args.offset.unwrap_or(0),
+            )?,
+        )?)
+    }
+
+    pub(super) async fn handle_ai_terminal_integrations_bootstrap(
+        &self,
+        args: AiTerminalIntegrationsBootstrapArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        Ok(serde_json::to_value(
+            personal_preferences
+                .store
+                .bootstrap_ai_terminal_integrations(args.terminals)?,
+        )?)
+    }
+
+    pub(super) async fn handle_ai_terminal_capture(
+        &self,
+        args: AiTerminalCaptureArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        Ok(serde_json::to_value(
+            personal_preferences.store.record_ai_terminal_capture(
+                crate::personal_preferences::PersonalPreferenceAiTerminalCaptureRequest {
+                    terminal: args.terminal,
+                    integration_id: args.integration_id,
+                    source_session_id: args.source_session_id,
+                    event_kind: args.event_kind,
+                    repo_scope: args.repo_scope,
+                    summary: args.summary,
+                    transcript_text: args.transcript_text,
+                    agent_id: args.agent_id,
+                    metadata: args.metadata.unwrap_or_else(|| json!({})),
+                },
+            )?,
+        )?)
+    }
+
+    pub(super) async fn handle_generated_skills_list(
+        &self,
+        _args: GeneratedSkillsListArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        Ok(serde_json::to_value(
+            personal_preferences.store.list_generated_skills()?,
+        )?)
+    }
+
+    pub(super) async fn handle_generated_skill_events(
+        &self,
+        args: GeneratedSkillEventsArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        Ok(serde_json::to_value(
+            personal_preferences
+                .store
+                .list_generated_skill_events(args.limit.unwrap_or(50), args.offset.unwrap_or(0))?,
+        )?)
+    }
+
+    pub(super) async fn handle_generated_skill_read(
+        &self,
+        args: GeneratedSkillReadArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        let skill_id = args.skill_id.trim().to_string();
+        if skill_id.is_empty() {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, "skill_id must not be empty").into());
+        }
+        let Some(skill) = personal_preferences.store.read_generated_skill(&skill_id)? else {
+            return Err(AppError::new(
+                ERR_INVALID_ARGUMENT,
+                "personal preference generated skill not found",
+            )
+            .into());
+        };
+        Ok(serde_json::to_value(skill)?)
+    }
+
+    pub(super) async fn handle_generated_skill_validate(
+        &self,
+        args: GeneratedSkillActionArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        let skill_id = normalized_generated_skill_arg(args.skill_id)?;
+        Ok(serde_json::to_value(
+            personal_preferences
+                .store
+                .validate_generated_skill(&skill_id)?,
+        )?)
+    }
+
+    pub(super) async fn handle_generated_skill_install(
+        &self,
+        args: GeneratedSkillActionArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        let skill_id = normalized_generated_skill_arg(args.skill_id)?;
+        Ok(serde_json::to_value(
+            personal_preferences
+                .store
+                .install_generated_skill(&skill_id, args.terminals)?,
+        )?)
+    }
+
+    pub(super) async fn handle_generated_skill_disable(
+        &self,
+        args: GeneratedSkillActionArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        let skill_id = normalized_generated_skill_arg(args.skill_id)?;
+        Ok(serde_json::to_value(
+            personal_preferences
+                .store
+                .disable_generated_skill(&skill_id, args.reason)?,
+        )?)
+    }
+
+    pub(super) async fn handle_generated_skill_rollback(
+        &self,
+        args: GeneratedSkillActionArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        let skill_id = normalized_generated_skill_arg(args.skill_id)?;
+        Ok(serde_json::to_value(
+            personal_preferences
+                .store
+                .rollback_generated_skill(&skill_id, args.terminals)?,
+        )?)
+    }
+
+    pub(super) async fn handle_generated_skills_sync(
+        &self,
+        args: GeneratedSkillsSyncArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        Ok(serde_json::to_value(
+            personal_preferences.store.sync_generated_skills(
+                crate::personal_preferences::PersonalPreferenceGeneratedSkillsSyncOptions {
+                    min_confidence: args.min_confidence,
+                    min_support_count: args.min_support_count,
+                    include_sensitive: args.include_sensitive,
+                    install: args.install,
+                    terminals: args.terminals,
+                },
+            )?,
+        )?)
+    }
+
+    pub(super) async fn handle_generated_skills_preview(
+        &self,
+        args: GeneratedSkillsSyncArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        Ok(serde_json::to_value(
+            personal_preferences.store.preview_generated_skills(
+                crate::personal_preferences::PersonalPreferenceGeneratedSkillsSyncOptions {
+                    min_confidence: args.min_confidence,
+                    min_support_count: args.min_support_count,
+                    include_sensitive: args.include_sensitive,
+                    install: Some(false),
+                    terminals: args.terminals,
+                },
+            )?,
+        )?)
+    }
+
+    pub(super) async fn handle_generated_skills_autopilot(
+        &self,
+        args: GeneratedSkillsSyncArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        let mut summary = personal_preferences.store.sync_generated_skills(
+            crate::personal_preferences::PersonalPreferenceGeneratedSkillsSyncOptions {
+                min_confidence: args.min_confidence,
+                min_support_count: args.min_support_count,
+                include_sensitive: args.include_sensitive,
+                install: args.install,
+                terminals: args.terminals,
+            },
+        )?;
+        summary.notes.push(
+            "Autopilot one-shot processed generated skills through registry, validation, and install policy."
+                .to_string(),
+        );
+        Ok(serde_json::to_value(summary)?)
+    }
+
     pub(super) async fn handle_clone_context(
         &self,
         args: PersonalPreferencesCloneArgs,
@@ -430,6 +830,37 @@ impl McpServer {
                     max_records: args.max_records,
                     budget_tokens: args.budget_tokens,
                 },
+            )?,
+        )?)
+    }
+
+    pub(super) async fn handle_clone_directive(
+        &self,
+        args: PersonalPreferencesCloneArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        Ok(serde_json::to_value(
+            personal_preferences.store.build_clone_directive(
+                args.query.trim(),
+                crate::personal_preferences::PersonalPreferencesCloneOptions {
+                    mode: args
+                        .mode
+                        .map(|value| value.trim().to_string())
+                        .filter(|value| !value.is_empty()),
+                    allow_sensitive: args.allow_sensitive.unwrap_or(false),
+                    current_repo_root: args
+                        .current_repo_root
+                        .map(|value| value.trim().to_string())
+                        .filter(|value| !value.is_empty()),
+                    max_records: args.max_records,
+                    budget_tokens: args.budget_tokens,
+                },
+                args.agent_id,
+                args.task_type,
+                args.risk_level,
+                args.current_files,
+                args.current_plan_path,
+                args.enforcement_level,
             )?,
         )?)
     }
@@ -483,4 +914,79 @@ impl McpServer {
             )?,
         )?)
     }
+
+    pub(super) async fn handle_clone_replay_evaluate(
+        &self,
+        args: PersonalPreferencesCloneReplayArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        Ok(serde_json::to_value(
+            personal_preferences.store.evaluate_clone_replay(
+                args.query.trim(),
+                crate::personal_preferences::PersonalPreferencesCloneOptions {
+                    mode: args
+                        .mode
+                        .map(|value| value.trim().to_string())
+                        .filter(|value| !value.is_empty()),
+                    allow_sensitive: args.allow_sensitive.unwrap_or(false),
+                    current_repo_root: args
+                        .current_repo_root
+                        .map(|value| value.trim().to_string())
+                        .filter(|value| !value.is_empty()),
+                    max_records: args.max_records,
+                    budget_tokens: args.budget_tokens,
+                },
+                args.expected_categories,
+            )?,
+        )?)
+    }
+
+    pub(super) async fn handle_clone_replay_dataset(
+        &self,
+        args: PersonalPreferencesCloneReplayDatasetArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        Ok(serde_json::to_value(
+            personal_preferences.store.build_clone_replay_dataset(
+                args.ci_subset.unwrap_or(false),
+                args.limit,
+                args.current_repo_root
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty()),
+            )?,
+        )?)
+    }
+
+    pub(super) async fn handle_clone_replay_suite(
+        &self,
+        args: PersonalPreferencesCloneReplaySuiteArgs,
+    ) -> Result<serde_json::Value> {
+        let personal_preferences = self.personal_preferences_state()?;
+        Ok(serde_json::to_value(
+            personal_preferences.store.run_clone_replay_suite(
+                args.ci_subset.unwrap_or(false),
+                args.limit,
+                args.threshold,
+                crate::personal_preferences::PersonalPreferencesCloneOptions {
+                    mode: None,
+                    allow_sensitive: args.allow_sensitive.unwrap_or(false),
+                    current_repo_root: args
+                        .current_repo_root
+                        .map(|value| value.trim().to_string())
+                        .filter(|value| !value.is_empty()),
+                    max_records: args.max_records,
+                    budget_tokens: args.budget_tokens,
+                },
+            )?,
+        )?)
+    }
+}
+
+fn normalized_generated_skill_arg(skill_id: Option<String>) -> Result<String> {
+    let skill_id = skill_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| AppError::new(ERR_INVALID_ARGUMENT, "skill_id must not be empty"))?;
+    Ok(skill_id.to_string())
 }

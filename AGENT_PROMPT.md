@@ -1,4 +1,4 @@
----- START OF DOCDEX INFO V0.2.74 ----
+---- START OF DOCDEX INFO V0.2.75 ----
 Docdex URL: http://127.0.0.1:28491
 Use this base URL for Docdex HTTP endpoints.
 Health check endpoint: `GET /healthz` (not `/v1/health`).
@@ -99,6 +99,7 @@ When unsure which memory lane fits the task, call `docdex_memory_route` first.
 - Use `docdex_memory_layers` when you need the full six-layer map and storage/scope details.
 - Repo memory and profile memory are the core/default lanes.
 - Conversation memory, diary memory, temporal knowledge graph, and personal-preferences memory are selective lanes for continuity, handoff notes, structured recall, and richer user-specific context.
+- For non-trivial agent work where personal-preferences memory is relevant, call `docdex_clone_directive` before planning and compare completed work against its required steps and approval gates before the final response.
 
 ### D. Conversation Memory + Temporal Knowledge Graph
 

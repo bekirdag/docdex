@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.75
+- Add packaged automatic AI-terminal capture, generated-skill registry, validation, sync, install, rollback, and context-hint surfaces for personal-preferences and mind-clone workflows.
+- Add packaged generated-skill quality reports with replay, drift, stale-source, activation feedback, and promote/keep/review/demote/quarantine recommendations.
+- Split packaged personal-preferences storage, digestion, routines, clone, governance, operator-event, and generated-skill logic into focused modules with HTTP, CLI, MCP, and test coverage.
+- Bump packaged release metadata to 0.2.75.
+
 ## 0.2.74
 - Add packaged compatibility HTTP aliases for repo memory, profile memory, personal-preferences, conversation, diary, KG, index, tree, files, stats, repo-inspect, impact diagnostics, and retrieval-only RAG surfaces.
 - Add packaged delete endpoints for repo memory, profile preferences, and diary entries, including storage cleanup and HTTP regression coverage.

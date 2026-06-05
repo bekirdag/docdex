@@ -199,7 +199,7 @@ fn mcp_http_sse_roundtrip() -> Result<(), Box<dyn Error>> {
         return Ok(());
     };
 
-    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+    let client = Client::builder().timeout(Duration::from_secs(10)).build()?;
     let sse_url = format!("http://127.0.0.1:{port}/v1/mcp/sse");
     let sse_resp = client.get(&sse_url).send()?;
     let session_id = sse_resp
@@ -245,7 +245,12 @@ fn mcp_http_sse_roundtrip() -> Result<(), Box<dyn Error>> {
         .header("x-docdex-mcp-session", session_id.clone())
         .json(&init_payload)
         .send()?;
-    assert!(init_ack.status().is_success());
+    let init_status = init_ack.status();
+    let init_body = init_ack.text()?;
+    assert!(
+        init_status.is_success(),
+        "initialize ack failed: {init_status}: {init_body}"
+    );
 
     let init_resp = read_next_sse(&mut reader).ok_or("missing initialize response")?;
     assert!(

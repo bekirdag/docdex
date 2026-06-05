@@ -10,7 +10,10 @@ use serde_json::Value;
 use crate::error::{ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED};
 use crate::http_api::json_error;
 use crate::personal_preferences::{
-    PersonalPreferencesClaimsQuery, PersonalPreferencesCloneOptions,
+    status_payload_with_config, PersonalPreferenceAiTerminalCaptureRequest,
+    PersonalPreferenceGeneratedSkillActionRequest, PersonalPreferenceGeneratedSkillsSyncOptions,
+    PersonalPreferenceOperatorEventRequest, PersonalPreferencesClaimsQuery,
+    PersonalPreferencesCloneOptions,
 };
 use crate::search::AppState;
 
@@ -136,7 +139,79 @@ pub(crate) struct PersonalPreferencesFeedbackRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub(crate) struct PersonalPreferencesOperatorEventsQuery {
+    #[serde(default, alias = "kind", alias = "event_type")]
+    event_kind: Option<String>,
+    #[serde(default)]
+    action: Option<String>,
+    #[serde(default)]
+    repo_root: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    offset: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct PersonalPreferencesOperatorEventScanRequest {
+    #[serde(default)]
+    repo_root: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
 pub(crate) struct PersonalPreferencesSnapshotsQuery {
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    offset: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct PersonalPreferencesRoutinesQuery {
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    offset: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct PersonalPreferencesMindMapQuery {
+    #[serde(default, alias = "q")]
+    query: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    include_sensitive: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct PersonalPreferencesPlaybooksQuery {
+    #[serde(default)]
+    min_confidence: Option<f32>,
+    #[serde(default)]
+    min_support_count: Option<usize>,
+    #[serde(default)]
+    include_sensitive: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct AiTerminalIntegrationsBootstrapRequest {
+    #[serde(default)]
+    terminals: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct AiTerminalEventsQuery {
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    offset: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct GeneratedSkillEventsQuery {
     #[serde(default)]
     limit: Option<usize>,
     #[serde(default)]
@@ -147,7 +222,64 @@ pub(crate) struct PersonalPreferencesSnapshotsQuery {
 pub(crate) struct PersonalPreferencesCloneRequest {
     query: String,
     #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
     mode: Option<String>,
+    #[serde(default)]
+    allow_sensitive: Option<bool>,
+    #[serde(default)]
+    current_repo_root: Option<String>,
+    #[serde(default)]
+    max_records: Option<usize>,
+    #[serde(default)]
+    budget_tokens: Option<usize>,
+    #[serde(default)]
+    task_type: Option<String>,
+    #[serde(default)]
+    risk_level: Option<String>,
+    #[serde(default)]
+    current_files: Vec<String>,
+    #[serde(default)]
+    current_plan_path: Option<String>,
+    #[serde(default)]
+    enforcement_level: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct PersonalPreferencesCloneReplayRequest {
+    query: String,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    allow_sensitive: Option<bool>,
+    #[serde(default)]
+    current_repo_root: Option<String>,
+    #[serde(default)]
+    max_records: Option<usize>,
+    #[serde(default)]
+    budget_tokens: Option<usize>,
+    #[serde(default)]
+    expected_categories: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct PersonalPreferencesCloneReplayDatasetRequest {
+    #[serde(default)]
+    ci_subset: Option<bool>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    current_repo_root: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct PersonalPreferencesCloneReplaySuiteRequest {
+    #[serde(default)]
+    ci_subset: Option<bool>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    threshold: Option<f32>,
     #[serde(default)]
     allow_sensitive: Option<bool>,
     #[serde(default)]
@@ -185,7 +317,14 @@ pub(crate) async fn personal_preferences_status_handler(State(state): State<AppS
         );
     };
     match personal_preferences.store.status() {
-        Ok(status) => Json(status).into_response(),
+        Ok(status) => match status_payload_with_config(status, &personal_preferences.config) {
+            Ok(payload) => Json(payload).into_response(),
+            Err(err) => json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_INTERNAL_ERROR,
+                err.to_string(),
+            ),
+        },
         Err(err) => json_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             ERR_INTERNAL_ERROR,
@@ -206,6 +345,26 @@ pub(crate) async fn personal_preferences_categories_handler(
     };
     match personal_preferences.store.list_categories() {
         Ok(categories) => Json(categories).into_response(),
+        Err(err) => json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ERR_INTERNAL_ERROR,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_retention_policies_handler(
+    State(state): State<AppState>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    match personal_preferences.store.list_retention_policies() {
+        Ok(policies) => Json(policies).into_response(),
         Err(err) => json_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             ERR_INTERNAL_ERROR,
@@ -615,25 +774,718 @@ pub(crate) async fn personal_preferences_snapshots_rebuild_handler(
     }
 }
 
+pub(crate) async fn personal_preferences_operator_events_handler(
+    State(state): State<AppState>,
+    Query(query): Query<PersonalPreferencesOperatorEventsQuery>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    match personal_preferences.store.list_operator_events(
+        query.event_kind.as_deref(),
+        query.action.as_deref(),
+        query.repo_root.as_deref(),
+        query.limit.unwrap_or(20).clamp(1, 200),
+        query.offset.unwrap_or(0),
+    ) {
+        Ok(list) => Json(list).into_response(),
+        Err(err) => json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ERR_INTERNAL_ERROR,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_operator_event_record_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<PersonalPreferenceOperatorEventRequest>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    match personal_preferences
+        .store
+        .record_operator_event(payload, "http")
+    {
+        Ok(event) => Json(event).into_response(),
+        Err(err) => json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_operator_events_scan_artifacts_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<PersonalPreferencesOperatorEventScanRequest>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    let repo_root = payload
+        .repo_root
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| state.indexer.repo_root().to_path_buf());
+    match personal_preferences
+        .store
+        .scan_operator_artifacts(&repo_root, payload.limit)
+    {
+        Ok(summary) => Json(summary).into_response(),
+        Err(err) => json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_routines_handler(
+    State(state): State<AppState>,
+    Query(query): Query<PersonalPreferencesRoutinesQuery>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    match personal_preferences.store.list_operator_routines(
+        query.limit.unwrap_or(20).clamp(1, 200),
+        query.offset.unwrap_or(0),
+    ) {
+        Ok(list) => Json(list).into_response(),
+        Err(err) => json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ERR_INTERNAL_ERROR,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_routine_read_handler(
+    State(state): State<AppState>,
+    AxumPath(routine_id): AxumPath<String>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    let routine_id = routine_id.trim().to_string();
+    if routine_id.is_empty() {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "routine_id must not be empty",
+        );
+    }
+    match personal_preferences
+        .store
+        .read_operator_routine(&routine_id)
+    {
+        Ok(Some(routine)) => Json(routine).into_response(),
+        Ok(None) => json_error(
+            StatusCode::NOT_FOUND,
+            ERR_INVALID_ARGUMENT,
+            "personal preference operator routine not found",
+        ),
+        Err(err) => json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ERR_INTERNAL_ERROR,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_routine_explain_handler(
+    State(state): State<AppState>,
+    AxumPath(routine_id): AxumPath<String>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    let routine_id = routine_id.trim().to_string();
+    if routine_id.is_empty() {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "routine_id must not be empty",
+        );
+    }
+    match personal_preferences
+        .store
+        .explain_operator_routine(&routine_id)
+    {
+        Ok(Some(explanation)) => Json(explanation).into_response(),
+        Ok(None) => json_error(
+            StatusCode::NOT_FOUND,
+            ERR_INVALID_ARGUMENT,
+            "personal preference operator routine not found",
+        ),
+        Err(err) => json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ERR_INTERNAL_ERROR,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_routines_rebuild_handler(
+    State(state): State<AppState>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    match personal_preferences.store.rebuild_operator_routines() {
+        Ok(summary) => Json(summary).into_response(),
+        Err(err) => json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ERR_INTERNAL_ERROR,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_mind_map_handler(
+    State(state): State<AppState>,
+    Query(query): Query<PersonalPreferencesMindMapQuery>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    let query_text = query
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match personal_preferences.store.compile_mind_map(
+        query_text,
+        query.limit.unwrap_or(50).clamp(4, 200),
+        query.include_sensitive.unwrap_or(false),
+    ) {
+        Ok(map) => Json(map).into_response(),
+        Err(err) => json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ERR_INTERNAL_ERROR,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_playbooks_handler(
+    State(state): State<AppState>,
+    Query(query): Query<PersonalPreferencesPlaybooksQuery>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    match personal_preferences.store.compile_operator_playbooks(
+        query.min_confidence.unwrap_or(0.7),
+        query.min_support_count.unwrap_or(2),
+        query.include_sensitive.unwrap_or(false),
+    ) {
+        Ok(bundle) => Json(bundle).into_response(),
+        Err(err) => json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ERR_INTERNAL_ERROR,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn ai_terminal_integrations_handler(State(state): State<AppState>) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    match personal_preferences.store.list_ai_terminal_integrations() {
+        Ok(summary) => Json(summary).into_response(),
+        Err(err) => json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ERR_INTERNAL_ERROR,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn ai_terminal_status_handler(State(state): State<AppState>) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    match personal_preferences.store.ai_terminal_status() {
+        Ok(status) => Json(status).into_response(),
+        Err(err) => json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ERR_INTERNAL_ERROR,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn ai_terminal_integrations_detect_handler(
+    State(state): State<AppState>,
+    Json(body): Json<AiTerminalIntegrationsBootstrapRequest>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    match personal_preferences
+        .store
+        .detect_ai_terminal_integrations(body.terminals)
+    {
+        Ok(summary) => Json(summary).into_response(),
+        Err(err) => json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn ai_terminal_events_handler(
+    State(state): State<AppState>,
+    Query(query): Query<AiTerminalEventsQuery>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    match personal_preferences
+        .store
+        .list_ai_terminal_capture_events(query.limit.unwrap_or(50), query.offset.unwrap_or(0))
+    {
+        Ok(events) => Json(events).into_response(),
+        Err(err) => json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ERR_INTERNAL_ERROR,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn ai_terminal_integrations_bootstrap_handler(
+    State(state): State<AppState>,
+    Json(body): Json<AiTerminalIntegrationsBootstrapRequest>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    match personal_preferences
+        .store
+        .bootstrap_ai_terminal_integrations(body.terminals)
+    {
+        Ok(summary) => Json(summary).into_response(),
+        Err(err) => json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn ai_terminal_capture_handler(
+    State(state): State<AppState>,
+    Json(body): Json<PersonalPreferenceAiTerminalCaptureRequest>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    match personal_preferences.store.record_ai_terminal_capture(body) {
+        Ok(event) => Json(event).into_response(),
+        Err(err) => json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn ai_terminal_sync_skills_handler(
+    State(state): State<AppState>,
+    Json(body): Json<PersonalPreferenceGeneratedSkillsSyncOptions>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    match personal_preferences.store.sync_generated_skills(body) {
+        Ok(summary) => Json(summary).into_response(),
+        Err(err) => json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_generated_skills_handler(
+    State(state): State<AppState>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    match personal_preferences.store.list_generated_skills() {
+        Ok(list) => Json(list).into_response(),
+        Err(err) => json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ERR_INTERNAL_ERROR,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_generated_skill_read_handler(
+    State(state): State<AppState>,
+    AxumPath(skill_id): AxumPath<String>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    let skill_id = skill_id.trim().to_string();
+    if skill_id.is_empty() {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "skill_id must not be empty",
+        );
+    }
+    match personal_preferences.store.read_generated_skill(&skill_id) {
+        Ok(Some(skill)) => Json(skill).into_response(),
+        Ok(None) => json_error(
+            StatusCode::NOT_FOUND,
+            ERR_INVALID_ARGUMENT,
+            "personal preference generated skill not found",
+        ),
+        Err(err) => json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ERR_INTERNAL_ERROR,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_generated_skills_sync_handler(
+    State(state): State<AppState>,
+    Json(body): Json<PersonalPreferenceGeneratedSkillsSyncOptions>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    match personal_preferences.store.sync_generated_skills(body) {
+        Ok(summary) => Json(summary).into_response(),
+        Err(err) => json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_generated_skills_preview_handler(
+    State(state): State<AppState>,
+    Json(body): Json<PersonalPreferenceGeneratedSkillsSyncOptions>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    match personal_preferences.store.preview_generated_skills(body) {
+        Ok(summary) => Json(summary).into_response(),
+        Err(err) => json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_generated_skills_autopilot_handler(
+    State(state): State<AppState>,
+    Json(body): Json<PersonalPreferenceGeneratedSkillsSyncOptions>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    match personal_preferences.store.sync_generated_skills(body) {
+        Ok(mut summary) => {
+            summary
+                .notes
+                .push("Autopilot one-shot processed generated skills through the registry, validation, and installer pipeline.".to_string());
+            Json(summary).into_response()
+        }
+        Err(err) => json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_generated_skill_validate_handler(
+    State(state): State<AppState>,
+    AxumPath(skill_id): AxumPath<String>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    match personal_preferences
+        .store
+        .validate_generated_skill(&skill_id)
+    {
+        Ok(summary) => Json(summary).into_response(),
+        Err(err) => json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_generated_skill_install_handler(
+    State(state): State<AppState>,
+    AxumPath(skill_id): AxumPath<String>,
+    Json(body): Json<PersonalPreferenceGeneratedSkillActionRequest>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    let skill_id = body.skill_id.unwrap_or(skill_id);
+    match personal_preferences
+        .store
+        .install_generated_skill(&skill_id, body.terminals)
+    {
+        Ok(summary) => Json(summary).into_response(),
+        Err(err) => json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_generated_skill_disable_handler(
+    State(state): State<AppState>,
+    AxumPath(skill_id): AxumPath<String>,
+    Json(body): Json<PersonalPreferenceGeneratedSkillActionRequest>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    let skill_id = body.skill_id.unwrap_or(skill_id);
+    match personal_preferences
+        .store
+        .disable_generated_skill(&skill_id, body.reason)
+    {
+        Ok(summary) => Json(summary).into_response(),
+        Err(err) => json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_generated_skill_rollback_handler(
+    State(state): State<AppState>,
+    AxumPath(skill_id): AxumPath<String>,
+    Json(body): Json<PersonalPreferenceGeneratedSkillActionRequest>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    let skill_id = body.skill_id.unwrap_or(skill_id);
+    match personal_preferences
+        .store
+        .rollback_generated_skill(&skill_id, body.terminals)
+    {
+        Ok(summary) => Json(summary).into_response(),
+        Err(err) => json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_generated_skill_events_handler(
+    State(state): State<AppState>,
+    Query(query): Query<GeneratedSkillEventsQuery>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    match personal_preferences
+        .store
+        .list_generated_skill_events(query.limit.unwrap_or(50), query.offset.unwrap_or(0))
+    {
+        Ok(events) => Json(events).into_response(),
+        Err(err) => json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            ERR_INTERNAL_ERROR,
+            err.to_string(),
+        ),
+    }
+}
+
 fn clone_options_from_request(
-    body: PersonalPreferencesCloneRequest,
+    body: &PersonalPreferencesCloneRequest,
 ) -> (String, PersonalPreferencesCloneOptions) {
     (
         body.query.trim().to_string(),
         PersonalPreferencesCloneOptions {
             mode: body
                 .mode
+                .as_ref()
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty()),
             allow_sensitive: body.allow_sensitive.unwrap_or(false),
             current_repo_root: body
                 .current_repo_root
+                .as_ref()
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty()),
             max_records: body.max_records,
             budget_tokens: body.budget_tokens,
         },
     )
+}
+
+fn clone_options_from_replay_request(
+    body: &PersonalPreferencesCloneReplayRequest,
+) -> PersonalPreferencesCloneOptions {
+    PersonalPreferencesCloneOptions {
+        mode: body
+            .mode
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        allow_sensitive: body.allow_sensitive.unwrap_or(false),
+        current_repo_root: body
+            .current_repo_root
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        max_records: body.max_records,
+        budget_tokens: body.budget_tokens,
+    }
+}
+
+fn clone_options_from_replay_suite_request(
+    body: &PersonalPreferencesCloneReplaySuiteRequest,
+) -> PersonalPreferencesCloneOptions {
+    PersonalPreferencesCloneOptions {
+        mode: None,
+        allow_sensitive: body.allow_sensitive.unwrap_or(false),
+        current_repo_root: normalize_optional_string(body.current_repo_root.as_deref()),
+        max_records: body.max_records,
+        budget_tokens: body.budget_tokens,
+    }
+}
+
+fn normalize_optional_string(value: Option<&str>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 pub(crate) async fn personal_preferences_clone_context_handler(
@@ -647,7 +1499,7 @@ pub(crate) async fn personal_preferences_clone_context_handler(
             personal_preferences_disabled_message(),
         );
     };
-    let (query, options) = clone_options_from_request(body);
+    let (query, options) = clone_options_from_request(&body);
     if query.is_empty() {
         return json_error(
             StatusCode::BAD_REQUEST,
@@ -668,6 +1520,44 @@ pub(crate) async fn personal_preferences_clone_context_handler(
     }
 }
 
+pub(crate) async fn personal_preferences_clone_directive_handler(
+    State(state): State<AppState>,
+    Json(body): Json<PersonalPreferencesCloneRequest>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    let (query, options) = clone_options_from_request(&body);
+    if query.is_empty() {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "query must not be empty",
+        );
+    }
+    match personal_preferences.store.build_clone_directive(
+        &query,
+        options,
+        body.agent_id,
+        body.task_type,
+        body.risk_level,
+        body.current_files,
+        body.current_plan_path,
+        body.enforcement_level,
+    ) {
+        Ok(directive) => Json(directive).into_response(),
+        Err(err) => json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            err.to_string(),
+        ),
+    }
+}
+
 pub(crate) async fn personal_preferences_clone_explain_handler(
     State(state): State<AppState>,
     Json(body): Json<PersonalPreferencesCloneRequest>,
@@ -679,7 +1569,7 @@ pub(crate) async fn personal_preferences_clone_explain_handler(
             personal_preferences_disabled_message(),
         );
     };
-    let (query, options) = clone_options_from_request(body);
+    let (query, options) = clone_options_from_request(&body);
     if query.is_empty() {
         return json_error(
             StatusCode::BAD_REQUEST,
@@ -711,7 +1601,7 @@ pub(crate) async fn personal_preferences_clone_evaluate_handler(
             personal_preferences_disabled_message(),
         );
     };
-    let (query, options) = clone_options_from_request(body);
+    let (query, options) = clone_options_from_request(&body);
     if query.is_empty() {
         return json_error(
             StatusCode::BAD_REQUEST,
@@ -724,6 +1614,92 @@ pub(crate) async fn personal_preferences_clone_evaluate_handler(
         .evaluate_clone_context(&query, options)
     {
         Ok(evaluation) => Json(evaluation).into_response(),
+        Err(err) => json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_clone_replay_evaluate_handler(
+    State(state): State<AppState>,
+    Json(body): Json<PersonalPreferencesCloneReplayRequest>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    let query = body.query.trim().to_string();
+    if query.is_empty() {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "query must not be empty",
+        );
+    }
+    let options = clone_options_from_replay_request(&body);
+    match personal_preferences.store.evaluate_clone_replay(
+        &query,
+        options,
+        body.expected_categories,
+    ) {
+        Ok(evaluation) => Json(evaluation).into_response(),
+        Err(err) => json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_clone_replay_dataset_handler(
+    State(state): State<AppState>,
+    Json(body): Json<PersonalPreferencesCloneReplayDatasetRequest>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    match personal_preferences.store.build_clone_replay_dataset(
+        body.ci_subset.unwrap_or(false),
+        body.limit,
+        normalize_optional_string(body.current_repo_root.as_deref()),
+    ) {
+        Ok(dataset) => Json(dataset).into_response(),
+        Err(err) => json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            err.to_string(),
+        ),
+    }
+}
+
+pub(crate) async fn personal_preferences_clone_replay_suite_handler(
+    State(state): State<AppState>,
+    Json(body): Json<PersonalPreferencesCloneReplaySuiteRequest>,
+) -> Response {
+    let Some(personal_preferences) = state.personal_preferences.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            ERR_MEMORY_DISABLED,
+            personal_preferences_disabled_message(),
+        );
+    };
+    let options = clone_options_from_replay_suite_request(&body);
+    match personal_preferences.store.run_clone_replay_suite(
+        body.ci_subset.unwrap_or(false),
+        body.limit,
+        body.threshold,
+        options,
+    ) {
+        Ok(suite) => Json(suite).into_response(),
         Err(err) => json_error(
             StatusCode::BAD_REQUEST,
             ERR_INVALID_ARGUMENT,
@@ -914,14 +1890,31 @@ pub(crate) async fn personal_preferences_scan_handler(
             personal_preferences_disabled_message(),
         );
     };
-    if !personal_preferences
+    let terminal_capture_enabled = if personal_preferences
         .config
         .capture_supported_client_transcripts
     {
+        true
+    } else {
+        match personal_preferences
+            .store
+            .has_enabled_ai_terminal_capture_integrations()
+        {
+            Ok(enabled) => enabled,
+            Err(err) => {
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    ERR_INTERNAL_ERROR,
+                    err.to_string(),
+                );
+            }
+        }
+    };
+    if !terminal_capture_enabled {
         return json_error(
             StatusCode::CONFLICT,
             ERR_MEMORY_DISABLED,
-            "supported client transcript capture is disabled; enable [personal_preferences].capture_supported_client_transcripts",
+            "supported client transcript capture is disabled; enable [personal_preferences].capture_supported_client_transcripts or bootstrap an AI terminal integration",
         );
     }
     if let Some(limit) = payload.limit {

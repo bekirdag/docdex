@@ -20,7 +20,49 @@ fn write_repo(repo_root: &Path) -> Result<(), Box<dyn Error>> {
         repo_root.join("README.md"),
         "# Repo\n\nThis repo uses Rust and local-first tooling.\n",
     )?;
+    fs::create_dir_all(repo_root.join("docs/planning"))?;
+    fs::write(
+        repo_root.join("docs/planning/operator_progress.md"),
+        "# Progress\n\nOperator event capture is being implemented.\n",
+    )?;
     Ok(())
+}
+
+fn assert_generated_skill_quality_report(payload: &Value, skill_id: &str) {
+    let quality = payload
+        .get("quality")
+        .expect("missing generated skill quality report");
+    assert!(quality.get("total").and_then(Value::as_u64).unwrap_or(0) >= 1);
+    assert!(quality
+        .get("notes")
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
+    let quality_item = quality
+        .get("items")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|item| item.get("skill_id").and_then(Value::as_str) == Some(skill_id))
+        })
+        .expect("missing generated skill quality item");
+    assert!(matches!(
+        quality_item.get("recommendation").and_then(Value::as_str),
+        Some("promote" | "keep" | "review" | "demote" | "quarantine")
+    ));
+    assert!(quality_item
+        .get("reasons")
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
+    assert!(
+        quality_item
+            .get("confidence")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0)
+            > 0.0
+    );
 }
 
 fn seed_processed_personal_preferences(home_dir: &Path) -> Result<(), Box<dyn Error>> {
@@ -87,6 +129,54 @@ fn seed_processed_personal_preferences(home_dir: &Path) -> Result<(), Box<dyn Er
                             evidence: Some("private detail".to_string()),
                             metadata: Value::Null,
                         },
+                        PersonalPreferenceDigestRecord {
+                            record_type: "method".to_string(),
+                            category: "workflow_method".to_string(),
+                            subcategory: None,
+                            subject: "user".to_string(),
+                            attribute: Some("plan and progress".to_string()),
+                            value: "Create a docs/planning implementation plan and keep a separate progress markdown file.".to_string(),
+                            confidence: Some(0.95),
+                            sensitivity: Some("low".to_string()),
+                            evidence: Some("make an implementation plan and keep your progress on another md file".to_string()),
+                            metadata: Value::Null,
+                        },
+                        PersonalPreferenceDigestRecord {
+                            record_type: "method".to_string(),
+                            category: "workflow_method".to_string(),
+                            subcategory: None,
+                            subject: "user".to_string(),
+                            attribute: Some("repo inspection and DAG".to_string()),
+                            value: "Inspect the repo with Docdex search, symbols, impact graph, and DAG before code changes.".to_string(),
+                            confidence: Some(0.92),
+                            sensitivity: Some("low".to_string()),
+                            evidence: Some("use Docdex search, symbols, impact graph, and DAG before code changes".to_string()),
+                            metadata: Value::Null,
+                        },
+                        PersonalPreferenceDigestRecord {
+                            record_type: "method".to_string(),
+                            category: "quality_bar".to_string(),
+                            subcategory: None,
+                            subject: "user".to_string(),
+                            attribute: Some("tests and validation".to_string()),
+                            value: "Run targeted tests and record validation evidence before release work.".to_string(),
+                            confidence: Some(0.93),
+                            sensitivity: Some("low".to_string()),
+                            evidence: Some("run tests and record validation evidence".to_string()),
+                            metadata: Value::Null,
+                        },
+                        PersonalPreferenceDigestRecord {
+                            record_type: "method".to_string(),
+                            category: "delivery_preference".to_string(),
+                            subcategory: None,
+                            subject: "user".to_string(),
+                            attribute: Some("git deploy backup".to_string()),
+                            value: "After validation, use the git commit, tag, push, deploy, and backup routine when requested.".to_string(),
+                            confidence: Some(0.91),
+                            sensitivity: Some("low".to_string()),
+                            evidence: Some("commit, tag, push, deploy, and backup after validation".to_string()),
+                            metadata: Value::Null,
+                        },
                     ],
                 }))
             })
@@ -119,10 +209,15 @@ fn write_config(home_dir: &Path, global_state_dir: &Path) -> Result<(), Box<dyn 
 }
 
 fn create_codex_scan_transcript(home_dir: &Path) -> Result<(), Box<dyn Error>> {
-    let transcript_dir = home_dir.join(".codex").join("sessions");
+    let transcript_dir = home_dir
+        .join(".codex")
+        .join("sessions")
+        .join("2026")
+        .join("04")
+        .join("09");
     fs::create_dir_all(&transcript_dir)?;
     fs::write(
-        transcript_dir.join("scan-session.jsonl"),
+        transcript_dir.join("rollout-2026-04-09T00-00-00-scan-session.jsonl"),
         r#"{"type":"session_meta","timestamp":"2026-04-09T00:00:00Z","payload":{"id":"scan-session","title":"Scanned session"}}
 {"type":"event_msg","timestamp":"2026-04-09T00:00:01Z","payload":{"type":"user_message","text":"I prefer local-first Rust tooling and deterministic tests."}}
 "#,
@@ -205,6 +300,69 @@ fn personal_preferences_http_controls_cover_capture_lifecycle() -> Result<(), Bo
         .and_then(Value::as_str)
         .unwrap_or_default()
         .ends_with(".docdex/personal_preferences"));
+    let clone_readiness = status
+        .get("clone_readiness")
+        .and_then(Value::as_object)
+        .ok_or("missing clone readiness")?;
+    assert!(clone_readiness
+        .get("stage")
+        .and_then(Value::as_str)
+        .is_some());
+    assert!(clone_readiness
+        .get("metrics")
+        .and_then(Value::as_array)
+        .is_some_and(|items| !items.is_empty()));
+
+    let operator_event: Value = client
+        .post(format!(
+            "{base_url}/v1/personal-preferences/operator-events"
+        ))
+        .json(&json!({
+            "action": "cargo test personal_preferences::",
+            "summary": "Run targeted personal-preferences tests",
+            "command_text": "API_TOKEN=supersecret cargo test personal_preferences::",
+            "repo_root": repo.path().display().to_string()
+        }))
+        .send()?
+        .json()?;
+    assert_eq!(
+        operator_event.get("event_kind").and_then(Value::as_str),
+        Some("test_action")
+    );
+    assert!(!operator_event
+        .get("command_text")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .contains("supersecret"));
+
+    let artifact_scan: Value = client
+        .post(format!(
+            "{base_url}/v1/personal-preferences/operator-events/scan-artifacts"
+        ))
+        .json(&json!({}))
+        .send()?
+        .json()?;
+    assert!(
+        artifact_scan
+            .get("created_events")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            >= 1
+    );
+
+    let operator_events: Value = client
+        .get(format!(
+            "{base_url}/v1/personal-preferences/operator-events?limit=10"
+        ))
+        .send()?
+        .json()?;
+    assert!(
+        operator_events
+            .get("total")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            >= 2
+    );
 
     let captures: Value = client
         .get(format!(
@@ -296,6 +454,12 @@ fn personal_preferences_http_controls_cover_capture_lifecycle() -> Result<(), Bo
     assert_eq!(
         status_after_purge
             .get("captures_total")
+            .and_then(Value::as_u64),
+        Some(0)
+    );
+    assert_eq!(
+        status_after_purge
+            .get("operator_events_total")
             .and_then(Value::as_u64),
         Some(0)
     );
@@ -409,9 +573,12 @@ fn personal_preferences_http_categories_reviews_and_prune_work() -> Result<(), B
         .send()?
         .json()?;
     assert_eq!(applied.get("raw_redacted").and_then(Value::as_u64), Some(1));
-    assert_eq!(
-        applied.get("derived_deleted").and_then(Value::as_u64),
-        Some(1)
+    assert!(
+        applied
+            .get("derived_deleted")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            >= 1
     );
 
     server.shutdown();
@@ -537,6 +704,10 @@ fn personal_preferences_scan_handler_imports_supported_client_transcripts(
         second_scan.get("skipped_existing").and_then(Value::as_u64),
         Some(1)
     );
+    assert!(second_scan
+        .get("last_scan_at_ms")
+        .and_then(Value::as_i64)
+        .is_some());
 
     let status: Value = client
         .get(format!("{base_url}/v1/personal-preferences/status"))
@@ -550,6 +721,20 @@ fn personal_preferences_scan_handler_imports_supported_client_transcripts(
         .get("last_scan_at_ms")
         .and_then(Value::as_i64)
         .is_some());
+    assert_eq!(
+        status
+            .get("automation")
+            .and_then(|value| value.get("process_in_background"))
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        status
+            .get("automation")
+            .and_then(|value| value.get("freshness_risk"))
+            .and_then(Value::as_bool),
+        Some(true)
+    );
 
     let captures: Value = client
         .get(format!(
@@ -625,6 +810,20 @@ fn personal_preferences_http_mind_clone_surfaces_work() -> Result<(), Box<dyn Er
         claim.get("id").and_then(Value::as_str),
         Some(claim_id.as_str())
     );
+
+    let retention_policies: Value = client
+        .get(format!(
+            "{base_url}/v1/personal-preferences/retention-policies"
+        ))
+        .send()?
+        .json()?;
+    let retention_policy_items = retention_policies
+        .as_array()
+        .ok_or("retention policies response must be an array")?;
+    assert!(retention_policy_items.len() >= 3);
+    assert!(retention_policy_items
+        .iter()
+        .any(|policy| policy.get("lane").and_then(Value::as_str) == Some("raw_archive")));
 
     let reviewed: Value = client
         .post(format!(
@@ -729,6 +928,452 @@ fn personal_preferences_http_mind_clone_surfaces_work() -> Result<(), Box<dyn Er
         .json()?;
     assert_eq!(rebuilt.get("created").and_then(Value::as_u64), Some(1));
 
+    let routines: Value = client
+        .get(format!(
+            "{base_url}/v1/personal-preferences/routines?limit=10&offset=0"
+        ))
+        .send()?
+        .json()?;
+    assert!(routines.get("total").and_then(Value::as_u64).unwrap_or(0) >= 1);
+    let routine_id = routines
+        .get("items")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(|item| item.get("id"))
+        .and_then(Value::as_str)
+        .ok_or("missing routine id")?
+        .to_string();
+
+    let routine: Value = client
+        .get(format!(
+            "{base_url}/v1/personal-preferences/routines/{routine_id}"
+        ))
+        .send()?
+        .json()?;
+    assert_eq!(
+        routine.get("id").and_then(Value::as_str),
+        Some(routine_id.as_str())
+    );
+    assert!(routine
+        .get("steps")
+        .and_then(Value::as_array)
+        .map(|steps| !steps.is_empty())
+        .unwrap_or(false));
+    assert!(routine.get("purpose").and_then(Value::as_str).is_some());
+    assert!(routine.get("version").and_then(Value::as_u64).unwrap_or(0) >= 1);
+    assert!(routine.get("risk_level").and_then(Value::as_str).is_some());
+    assert!(routine
+        .get("applies_when")
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
+    let first_step = routine
+        .get("steps")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .ok_or("missing routine step")?;
+    assert_eq!(
+        first_step.get("required").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert!(first_step
+        .get("success_check")
+        .and_then(Value::as_str)
+        .map(|value| !value.is_empty())
+        .unwrap_or(false));
+
+    let routine_explain: Value = client
+        .get(format!(
+            "{base_url}/v1/personal-preferences/routines/{routine_id}/explain"
+        ))
+        .send()?
+        .json()?;
+    assert_eq!(
+        routine_explain
+            .get("routine")
+            .and_then(|routine| routine.get("id"))
+            .and_then(Value::as_str),
+        Some(routine_id.as_str())
+    );
+    assert!(routine_explain
+        .get("step_evidence")
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
+
+    let routines_rebuilt: Value = client
+        .post(format!(
+            "{base_url}/v1/personal-preferences/routines/rebuild"
+        ))
+        .send()?
+        .json()?;
+    assert!(
+        routines_rebuilt
+            .get("total")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            >= 1
+    );
+    assert!(
+        routines_rebuilt
+            .get("executable_total")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            >= 1
+    );
+
+    let mind_map: Value = client
+        .get(format!(
+            "{base_url}/v1/personal-preferences/mind-map?query=how%20does%20the%20user%20ship%20a%20product%20fix&limit=40"
+        ))
+        .send()?
+        .json()?;
+    assert!(mind_map
+        .get("nodes")
+        .and_then(Value::as_array)
+        .map(|nodes| !nodes.is_empty())
+        .unwrap_or(false));
+    assert!(mind_map
+        .get("edges")
+        .and_then(Value::as_array)
+        .map(|edges| {
+            edges.iter().any(|edge| {
+                matches!(
+                    edge.get("relation").and_then(Value::as_str),
+                    Some("runs_routine" | "validates_with" | "commits_after")
+                )
+            })
+        })
+        .unwrap_or(false));
+
+    let playbooks: Value = client
+        .get(format!(
+            "{base_url}/v1/personal-preferences/playbooks?min_confidence=0.7&min_support_count=2"
+        ))
+        .send()?
+        .json()?;
+    assert!(playbooks
+        .get("items")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items.iter().any(|item| {
+                item.get("skill_markdown")
+                    .and_then(Value::as_str)
+                    .map(|value| value.contains("SKILL.md") || value.contains("## Steps"))
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false));
+
+    let detected_integrations: Value = client
+        .post(format!("{base_url}/v1/ai-terminals/detect"))
+        .json(&json!({ "terminals": ["codex"] }))
+        .send()?
+        .json()?;
+    assert!(detected_integrations
+        .get("integrations")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .any(|item| item.get("terminal").and_then(Value::as_str) == Some("codex"))
+        })
+        .unwrap_or(false));
+    assert!(detected_integrations
+        .get("notes")
+        .and_then(Value::as_array)
+        .map(|notes| {
+            notes.iter().any(|note| {
+                note.as_str()
+                    .is_some_and(|text| text.contains("non-mutating"))
+            })
+        })
+        .unwrap_or(false));
+
+    let terminal_integrations: Value = client
+        .post(format!("{base_url}/v1/ai-terminals/integrations/bootstrap"))
+        .json(&json!({ "terminals": ["codex"] }))
+        .send()?
+        .json()?;
+    assert!(terminal_integrations
+        .get("integrations")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .any(|item| item.get("terminal").and_then(Value::as_str) == Some("codex"))
+        })
+        .unwrap_or(false));
+
+    let terminal_capture: Value = client
+        .post(format!("{base_url}/v1/ai-terminals/capture"))
+        .json(&json!({
+            "terminal": "codex",
+            "source_session_id": "http-ai-terminal-session",
+            "event_kind": "session_close",
+            "repo_scope": "/tmp/repo-one",
+            "agent_id": "codex",
+            "summary": "User asked for plan, progress markdown, and tests before completion.",
+            "metadata": { "test": "http" }
+        }))
+        .send()?
+        .json()?;
+    assert_eq!(
+        terminal_capture.get("terminal").and_then(Value::as_str),
+        Some("codex")
+    );
+    assert!(terminal_capture
+        .get("capture_id")
+        .and_then(Value::as_str)
+        .is_some());
+
+    let generated_sync: Value = client
+        .post(format!(
+            "{base_url}/v1/personal-preferences/generated-skills/sync"
+        ))
+        .json(&json!({
+            "min_confidence": 0.7,
+            "min_support_count": 2,
+            "include_sensitive": false,
+            "install": false,
+            "terminals": ["codex"]
+        }))
+        .send()?
+        .json()?;
+    assert!(
+        generated_sync
+            .get("rendered")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            >= 1
+    );
+    assert_eq!(
+        generated_sync.get("installed").and_then(Value::as_u64),
+        Some(0)
+    );
+    let generated_skill_id = generated_sync
+        .get("items")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(|item| item.get("skill_id"))
+        .and_then(Value::as_str)
+        .ok_or("missing generated skill id")?
+        .to_string();
+    assert_generated_skill_quality_report(&generated_sync, &generated_skill_id);
+    assert!(generated_sync
+        .get("items")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items.iter().any(|item| {
+                item.pointer("/current_version/skill_markdown")
+                    .and_then(Value::as_str)
+                    .map(|value| value.contains("name:") && value.contains("description:"))
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false));
+
+    let generated_list: Value = client
+        .get(format!(
+            "{base_url}/v1/personal-preferences/generated-skills"
+        ))
+        .send()?
+        .json()?;
+    assert!(generated_list
+        .get("items")
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
+    assert_generated_skill_quality_report(&generated_list, &generated_skill_id);
+
+    let generated_skill: Value = client
+        .get(format!(
+            "{base_url}/v1/personal-preferences/generated-skills/{generated_skill_id}"
+        ))
+        .send()?
+        .json()?;
+    assert_eq!(
+        generated_skill.get("skill_id").and_then(Value::as_str),
+        Some(generated_skill_id.as_str())
+    );
+
+    let terminal_status: Value = client
+        .get(format!("{base_url}/v1/ai-terminals/status"))
+        .send()?
+        .json()?;
+    assert!(
+        terminal_status
+            .get("capture_events_total")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            >= 1
+    );
+    assert!(
+        terminal_status
+            .get("generated_skills_total")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            >= 1
+    );
+
+    let terminal_events: Value = client
+        .get(format!("{base_url}/v1/ai-terminals/events?limit=10"))
+        .send()?
+        .json()?;
+    assert!(terminal_events
+        .get("items")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .any(|item| item.get("terminal").and_then(Value::as_str) == Some("codex"))
+        })
+        .unwrap_or(false));
+
+    let generated_preview: Value = client
+        .post(format!(
+            "{base_url}/v1/personal-preferences/generated-skills/preview"
+        ))
+        .json(&json!({
+            "min_confidence": 0.7,
+            "min_support_count": 2,
+            "include_sensitive": false,
+            "install": false,
+            "terminals": ["codex"]
+        }))
+        .send()?
+        .json()?;
+    assert!(
+        generated_preview
+            .get("rendered")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            >= 1
+    );
+    assert_eq!(
+        generated_preview.get("installed").and_then(Value::as_u64),
+        Some(0)
+    );
+
+    let generated_render: Value = client
+        .post(format!(
+            "{base_url}/v1/personal-preferences/generated-skills/render"
+        ))
+        .json(&json!({
+            "min_confidence": 0.7,
+            "min_support_count": 2,
+            "include_sensitive": false,
+            "install": false,
+            "terminals": ["codex"]
+        }))
+        .send()?
+        .json()?;
+    assert!(generated_render
+        .get("notes")
+        .and_then(Value::as_array)
+        .map(|notes| !notes.is_empty())
+        .unwrap_or(false));
+
+    let generated_autopilot: Value = client
+        .post(format!(
+            "{base_url}/v1/personal-preferences/generated-skills/autopilot"
+        ))
+        .json(&json!({
+            "min_confidence": 0.7,
+            "min_support_count": 2,
+            "include_sensitive": false,
+            "install": false,
+            "terminals": ["codex"]
+        }))
+        .send()?
+        .json()?;
+    assert_eq!(
+        generated_autopilot.get("installed").and_then(Value::as_u64),
+        Some(0)
+    );
+    assert!(generated_autopilot
+        .get("notes")
+        .and_then(Value::as_array)
+        .map(|notes| {
+            notes.iter().any(|note| {
+                note.as_str()
+                    .is_some_and(|text| text.contains("Autopilot one-shot processed"))
+            })
+        })
+        .unwrap_or(false));
+    assert_generated_skill_quality_report(&generated_autopilot, &generated_skill_id);
+
+    let generated_validation: Value = client
+        .post(format!(
+            "{base_url}/v1/personal-preferences/generated-skills/{generated_skill_id}/validate"
+        ))
+        .send()?
+        .json()?;
+    assert_eq!(
+        generated_validation.get("action").and_then(Value::as_str),
+        Some("validate")
+    );
+    assert_eq!(
+        generated_validation
+            .pointer("/validation/status")
+            .and_then(Value::as_str),
+        Some("passed")
+    );
+
+    let generated_events: Value = client
+        .get(format!(
+            "{base_url}/v1/personal-preferences/generated-skills/events?limit=20"
+        ))
+        .send()?
+        .json()?;
+    assert!(generated_events
+        .get("items")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items.iter().any(|item| {
+                item.get("skill_id").and_then(Value::as_str) == Some(generated_skill_id.as_str())
+                    && matches!(
+                        item.get("event_kind").and_then(Value::as_str),
+                        Some("rendered" | "validated")
+                    )
+            })
+        })
+        .unwrap_or(false));
+
+    let disabled_skill: Value = client
+        .post(format!(
+            "{base_url}/v1/personal-preferences/generated-skills/{generated_skill_id}/disable"
+        ))
+        .json(&json!({ "reason": "http integration test" }))
+        .send()?
+        .json()?;
+    assert_eq!(
+        disabled_skill.get("action").and_then(Value::as_str),
+        Some("disable")
+    );
+    assert_eq!(
+        disabled_skill
+            .pointer("/skill/status")
+            .and_then(Value::as_str),
+        Some("disabled")
+    );
+
+    let rollback_skill: Value = client
+        .post(format!(
+            "{base_url}/v1/personal-preferences/generated-skills/{generated_skill_id}/rollback"
+        ))
+        .json(&json!({ "terminals": ["codex"] }))
+        .send()?
+        .json()?;
+    assert_eq!(
+        rollback_skill.get("action").and_then(Value::as_str),
+        Some("rollback")
+    );
+    assert_eq!(
+        rollback_skill.get("rolled_back").and_then(Value::as_bool),
+        Some(false)
+    );
+
     let clone_context: Value = client
         .post(format!("{base_url}/v1/personal-preferences/clone/context"))
         .json(&json!({
@@ -748,6 +1393,41 @@ fn personal_preferences_http_mind_clone_surfaces_work() -> Result<(), Box<dyn Er
         .get("items")
         .and_then(Value::as_array)
         .map(|items| !items.is_empty())
+        .unwrap_or(false));
+
+    let clone_directive: Value = client
+        .post(format!(
+            "{base_url}/v1/personal-preferences/clone/directive"
+        ))
+        .json(&json!({
+            "query": "compare plan to codebase and complete missing gaps",
+            "agent_id": "codex",
+            "mode": "project_build",
+            "current_repo_root": "/tmp/repo-one",
+            "current_files": ["src/personal_preferences/mod.rs"],
+            "current_plan_path": "docs/planning/operator_progress.md",
+            "task_type": "implementation"
+        }))
+        .send()?
+        .json()?;
+    assert_eq!(
+        clone_directive.get("mode").and_then(Value::as_str),
+        Some("project_build")
+    );
+    assert!(clone_directive
+        .get("selected_routines")
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
+    assert!(clone_directive
+        .get("required_steps")
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
+    assert!(clone_directive
+        .get("memory_to_load")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().any(|item| item == "profile_memory:codex"))
         .unwrap_or(false));
 
     let clone_explain: Value = client
@@ -788,6 +1468,80 @@ fn personal_preferences_http_mind_clone_surfaces_work() -> Result<(), Box<dyn Er
             .unwrap_or(-1.0)
             >= 0.0
     );
+
+    let replay_eval: Value = client
+        .post(format!(
+            "{base_url}/v1/personal-preferences/clone/replay-evaluate"
+        ))
+        .json(&json!({
+            "query": "how does the user ship a product fix",
+            "mode": "project_build",
+            "current_repo_root": "/tmp/repo-one",
+            "expected_categories": ["plan", "progress_update", "repo_inspection", "tests", "commit"]
+        }))
+        .send()?
+        .json()?;
+    assert!(replay_eval
+        .get("expected_categories")
+        .and_then(Value::as_array)
+        .map(|items| items.len() >= 5)
+        .unwrap_or(false));
+    assert!(
+        replay_eval
+            .get("overall_score")
+            .and_then(Value::as_f64)
+            .unwrap_or(-1.0)
+            >= 0.0
+    );
+
+    let replay_dataset: Value = client
+        .post(format!(
+            "{base_url}/v1/personal-preferences/clone/replay-dataset"
+        ))
+        .json(&json!({
+            "ci_subset": true,
+            "limit": 3,
+            "current_repo_root": "/tmp/repo-one"
+        }))
+        .send()?
+        .json()?;
+    assert!(
+        replay_dataset
+            .get("total")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            >= 1
+    );
+    assert!(replay_dataset
+        .get("cases")
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
+
+    let replay_suite: Value = client
+        .post(format!(
+            "{base_url}/v1/personal-preferences/clone/replay-suite"
+        ))
+        .json(&json!({
+            "ci_subset": true,
+            "limit": 3,
+            "threshold": 0.0,
+            "current_repo_root": "/tmp/repo-one"
+        }))
+        .send()?
+        .json()?;
+    assert!(
+        replay_suite
+            .pointer("/metrics/case_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            >= 1
+    );
+    assert!(replay_suite
+        .get("results")
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
 
     server.shutdown();
     Ok(())

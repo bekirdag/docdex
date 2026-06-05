@@ -339,6 +339,20 @@ impl AppConfig {
             self.memory.personal_preferences.digest_interval_seconds =
                 default_personal_preferences_digest_interval_seconds();
         }
+        if self.memory.personal_preferences.enabled
+            && self.memory.personal_preferences.capture_enabled
+            && (self
+                .memory
+                .personal_preferences
+                .capture_supported_client_transcripts
+                || self.memory.personal_preferences.digest_enabled)
+            && !self.memory.personal_preferences.process_in_background
+        {
+            warn!(
+                target: "docdexd",
+                "personal preferences capture/digest automation is enabled but process_in_background is false; transcript scanning and digest processing require manual commands"
+            );
+        }
         self.memory
             .personal_preferences
             .source_allowlist

@@ -489,6 +489,42 @@ pub(crate) async fn chat_completions_handler(
                     );
                     None
                 });
+            let clone_directive_context = state
+                .personal_preferences
+                .as_ref()
+                .filter(|personal_preferences| {
+                    personal_preferences.config.context_injection_enabled
+                })
+                .map(|personal_preferences| {
+                    personal_preferences.store.build_clone_directive(
+                        &query,
+                        crate::personal_preferences::PersonalPreferencesCloneOptions {
+                            mode: Some(
+                                crate::personal_preferences::CLONE_MODE_PROJECT_BUILD.to_string(),
+                            ),
+                            allow_sensitive: personal_preferences.config.allow_sensitive_context,
+                            current_repo_root: Some(repo.indexer.repo_root().display().to_string()),
+                            max_records: Some(personal_preferences.config.max_context_records),
+                            budget_tokens: Some(personal_preferences.config.max_context_tokens),
+                        },
+                        profile_agent_id.clone(),
+                        Some("chat_completion".to_string()),
+                        None,
+                        Vec::new(),
+                        None,
+                        Some("advisory".to_string()),
+                    )
+                })
+                .transpose()
+                .unwrap_or_else(|err| {
+                    warn!(
+                        target: "docdexd",
+                        request_id = %request_id,
+                        error = ?err,
+                        "failed to assemble clone directive context"
+                    );
+                    None
+                });
             let project_map = if compress_results || !state.features.project_map {
                 None
             } else {
@@ -778,6 +814,7 @@ pub(crate) async fn chat_completions_handler(
                     wakeup_text.as_deref(),
                     wakeup_trace,
                     personal_preferences_context.as_ref(),
+                    clone_directive_context.as_ref(),
                     &result.search_response.hits,
                     result.search_response.symbols_context.as_ref(),
                     web_context.as_deref(),
@@ -1333,6 +1370,68 @@ fn render_chat_memory_route(
     lines
 }
 
+fn render_chat_clone_directive(
+    directive: Option<&crate::personal_preferences::PersonalPreferenceCloneDirective>,
+) -> Vec<String> {
+    let Some(directive) = directive else {
+        return Vec::new();
+    };
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "- mode={}, enforcement={}, phase={}, risk={}, confidence={:.2}",
+        directive.mode,
+        directive.enforcement_level,
+        directive.inferred_task_phase,
+        directive.risk_level,
+        directive.confidence
+    ));
+    if !directive.selected_routines.is_empty() {
+        lines.push("- selected routines:".to_string());
+        for routine in directive.selected_routines.iter().take(3) {
+            lines.push(format!(
+                "  - {}: {} (risk {}, autonomy {})",
+                routine.routine_key, routine.title, routine.risk_level, routine.autonomy_level
+            ));
+        }
+    }
+    if !directive.required_steps.is_empty() {
+        lines.push("- required steps:".to_string());
+        for step in directive.required_steps.iter().take(8) {
+            lines.push(format!(
+                "  - {}/{}: {}",
+                step.routine_key, step.step_key, step.instruction
+            ));
+        }
+        if directive.required_steps.len() > 8 {
+            lines.push(format!(
+                "  - ... {} more required step(s) omitted from prompt context",
+                directive.required_steps.len() - 8
+            ));
+        }
+    }
+    if !directive.approval_gates.is_empty() {
+        lines.push("- approval gates:".to_string());
+        for gate in directive.approval_gates.iter().take(4) {
+            lines.push(format!(
+                "  - {}/{}: {}",
+                gate.routine_key, gate.step_key, gate.reason
+            ));
+        }
+    }
+    if !directive.validation_plan.is_empty() {
+        lines.push("- validation plan:".to_string());
+        for item in directive.validation_plan.iter().take(4) {
+            lines.push(format!("  - {item}"));
+        }
+    }
+    lines.push(format!("- evidence: {}", directive.evidence_summary));
+    lines.push(
+        "- pre-final check: compare completed work against this clone directive and report skipped required steps with reasons."
+            .to_string(),
+    );
+    lines
+}
+
 fn select_memory_snippets(
     memory_context: Option<&crate::orchestrator::MemoryContextAssembly>,
     budget_tokens: usize,
@@ -1570,6 +1669,7 @@ fn build_context_summary(
     personal_preferences_context: Option<
         &crate::personal_preferences::PersonalPreferencesContextAssembly,
     >,
+    clone_directive_context: Option<&crate::personal_preferences::PersonalPreferenceCloneDirective>,
     hits: &[crate::index::Hit],
     symbols_context: Option<&SymbolContextAssembly>,
     web_context: Option<&[crate::orchestrator::web::WebFetchResult]>,
@@ -1594,6 +1694,12 @@ fn build_context_summary(
         .filter(|value| !value.is_empty())
     {
         lines.push(wakeup_context.to_string());
+    }
+
+    let clone_directive_lines = render_chat_clone_directive(clone_directive_context);
+    if !clone_directive_lines.is_empty() {
+        lines.push("Clone directive (pre-task, advisory):".to_string());
+        lines.extend(clone_directive_lines);
     }
 
     let personal_preferences_trace = personal_preferences_context

@@ -819,6 +819,11 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: PersonalPreferencesCommand,
     },
+    /// Manage AI-terminal capture and generated skill synchronization.
+    AiTerminals {
+        #[command(subcommand)]
+        command: AiTerminalsCommand,
+    },
     /// Run semantic gatekeeper hooks against staged changes (HTTP or Unix socket).
     Hook {
         #[command(subcommand)]
@@ -1179,6 +1184,8 @@ pub(crate) enum PersonalPreferencesCommand {
     Status,
     /// List configured personal-preferences categories and context policy.
     Categories,
+    /// List personal-preferences retention policies.
+    RetentionPolicies,
     /// List captured sessions.
     List {
         #[arg(long, value_parser = config::non_empty_string)]
@@ -1273,15 +1280,205 @@ pub(crate) enum PersonalPreferencesCommand {
         #[command(subcommand)]
         command: PersonalPreferencesFeedbackCommand,
     },
+    /// Capture and inspect first-class operator events.
+    OperatorEvents {
+        #[command(subcommand)]
+        command: PersonalPreferencesOperatorEventsCommand,
+    },
     /// Inspect temporal identity snapshots.
     Snapshots {
         #[command(subcommand)]
         command: PersonalPreferencesSnapshotsCommand,
     },
+    /// Inspect synthesized operator routines.
+    Routines {
+        #[command(subcommand)]
+        command: PersonalPreferencesRoutinesCommand,
+    },
+    /// Compile a queryable operator mind map from claims and routines.
+    MindMap {
+        #[arg(value_parser = config::non_empty_string)]
+        query: Option<String>,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        #[arg(long, default_value_t = false)]
+        include_sensitive: bool,
+    },
+    /// Compile SKILL.md-compatible operator playbooks from stable routines.
+    Playbooks {
+        #[arg(long, default_value_t = 0.7)]
+        min_confidence: f32,
+        #[arg(long, default_value_t = 2)]
+        min_support_count: usize,
+        #[arg(long, default_value_t = false)]
+        include_sensitive: bool,
+    },
+    /// List, read, and sync generated skills derived from the mind clone.
+    Skills {
+        #[command(subcommand)]
+        command: PersonalPreferencesSkillsCommand,
+    },
     /// Compile or evaluate a bounded mind-clone context pack.
     Clone {
         #[command(subcommand)]
         command: PersonalPreferencesCloneCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum AiTerminalsCommand {
+    /// Detect supported AI-terminal targets without persisting integration records.
+    Detect {
+        #[arg(long, default_value_t = false)]
+        all: bool,
+        #[arg(long = "terminal", value_parser = config::non_empty_string)]
+        terminals: Vec<String>,
+    },
+    /// List configured AI-terminal integrations.
+    List,
+    /// Show AI-terminal capture and generated-skill sync status.
+    Status,
+    /// List normalized AI-terminal capture events.
+    Events {
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+    },
+    /// Bootstrap Docdex-owned generated skill roots for supported terminals.
+    Integrate {
+        #[arg(long, default_value_t = false)]
+        all: bool,
+        #[arg(long = "terminal", value_parser = config::non_empty_string)]
+        terminals: Vec<String>,
+    },
+    /// Record a normalized AI-terminal session summary into personal preferences.
+    Capture {
+        #[arg(long, default_value = "codex", value_parser = config::non_empty_string)]
+        terminal: String,
+        #[arg(long, value_parser = config::non_empty_string)]
+        integration_id: Option<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        source_session_id: Option<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        event_kind: Option<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        repo_scope: Option<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        agent_id: Option<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        summary: String,
+        #[arg(long)]
+        transcript_text: Option<String>,
+        #[arg(long = "metadata-json")]
+        metadata_json: Option<String>,
+    },
+    /// Sync generated skills to enabled terminal integrations.
+    SyncSkills {
+        #[arg(long, default_value_t = 0.7)]
+        min_confidence: f32,
+        #[arg(long, default_value_t = 2)]
+        min_support_count: usize,
+        #[arg(long, default_value_t = false)]
+        include_sensitive: bool,
+        #[arg(long, default_value_t = false)]
+        no_install: bool,
+        #[arg(long = "terminal", value_parser = config::non_empty_string)]
+        terminals: Vec<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum PersonalPreferencesSkillsCommand {
+    /// List generated skills and their current versions/installations.
+    List,
+    /// List generated-skill registry events.
+    Events {
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+    },
+    /// Read one generated skill by id, slug, or skill name.
+    Read {
+        #[arg(value_parser = config::non_empty_string)]
+        skill_id: String,
+    },
+    /// Preview generated skill candidates without installing them.
+    Preview {
+        #[arg(long, default_value_t = 0.7)]
+        min_confidence: f32,
+        #[arg(long, default_value_t = 2)]
+        min_support_count: usize,
+        #[arg(long, default_value_t = false)]
+        include_sensitive: bool,
+        #[arg(long = "terminal", value_parser = config::non_empty_string)]
+        terminals: Vec<String>,
+    },
+    /// Render generated skill candidates without installing them.
+    Render {
+        #[arg(long, default_value_t = 0.7)]
+        min_confidence: f32,
+        #[arg(long, default_value_t = 2)]
+        min_support_count: usize,
+        #[arg(long, default_value_t = false)]
+        include_sensitive: bool,
+        #[arg(long = "terminal", value_parser = config::non_empty_string)]
+        terminals: Vec<String>,
+    },
+    /// Validate one generated skill's current version.
+    Validate {
+        #[arg(value_parser = config::non_empty_string)]
+        skill_id: String,
+    },
+    /// Install one generated skill to enabled terminal integrations.
+    Install {
+        #[arg(value_parser = config::non_empty_string)]
+        skill_id: String,
+        #[arg(long = "terminal", value_parser = config::non_empty_string)]
+        terminals: Vec<String>,
+    },
+    /// Disable one generated skill in the registry.
+    Disable {
+        #[arg(value_parser = config::non_empty_string)]
+        skill_id: String,
+        #[arg(long, value_parser = config::non_empty_string)]
+        reason: Option<String>,
+    },
+    /// Roll back one generated skill to the previous rendered version.
+    Rollback {
+        #[arg(value_parser = config::non_empty_string)]
+        skill_id: String,
+        #[arg(long = "terminal", value_parser = config::non_empty_string)]
+        terminals: Vec<String>,
+    },
+    /// Promote stable playbooks into generated skills and optionally install them.
+    Sync {
+        #[arg(long, default_value_t = 0.7)]
+        min_confidence: f32,
+        #[arg(long, default_value_t = 2)]
+        min_support_count: usize,
+        #[arg(long, default_value_t = false)]
+        include_sensitive: bool,
+        #[arg(long, default_value_t = false)]
+        no_install: bool,
+        #[arg(long = "terminal", value_parser = config::non_empty_string)]
+        terminals: Vec<String>,
+    },
+    /// Run the generated-skills autopilot once.
+    Autopilot {
+        #[arg(long, default_value_t = false)]
+        once: bool,
+        #[arg(long, default_value_t = 0.7)]
+        min_confidence: f32,
+        #[arg(long, default_value_t = 2)]
+        min_support_count: usize,
+        #[arg(long, default_value_t = false)]
+        include_sensitive: bool,
+        #[arg(long, default_value_t = false)]
+        no_install: bool,
+        #[arg(long = "terminal", value_parser = config::non_empty_string)]
+        terminals: Vec<String>,
     },
 }
 
@@ -1358,6 +1555,55 @@ pub(crate) enum PersonalPreferencesFeedbackCommand {
 }
 
 #[derive(Subcommand, Debug)]
+pub(crate) enum PersonalPreferencesOperatorEventsCommand {
+    /// List captured operator events.
+    List {
+        #[arg(long, value_parser = config::non_empty_string)]
+        event_kind: Option<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        action: Option<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        repo_root: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+    },
+    /// Record one manual operator event.
+    Record {
+        #[arg(long, value_parser = config::non_empty_string)]
+        event_kind: Option<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        action: String,
+        #[arg(long)]
+        summary: Option<String>,
+        #[arg(long)]
+        command_text: Option<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        source_session_id: Option<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        repo_id: Option<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        repo_root: Option<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        capture_id: Option<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        artifact_path: Option<String>,
+        #[arg(long)]
+        occurred_at_ms: Option<i64>,
+        #[arg(long = "metadata-json")]
+        metadata_json: Option<String>,
+    },
+    /// Scan repo planning/progress/SDS artifacts into operator events.
+    ScanArtifacts {
+        #[arg(long)]
+        repo_root: Option<PathBuf>,
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 pub(crate) enum PersonalPreferencesSnapshotsCommand {
     /// List identity snapshots.
     List {
@@ -1372,6 +1618,29 @@ pub(crate) enum PersonalPreferencesSnapshotsCommand {
         snapshot_id: String,
     },
     /// Rebuild the latest snapshot set from current claims.
+    Rebuild,
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum PersonalPreferencesRoutinesCommand {
+    /// List synthesized operator routines.
+    List {
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+    },
+    /// Read one routine by id or routine key.
+    Read {
+        #[arg(value_parser = config::non_empty_string)]
+        routine_id: String,
+    },
+    /// Explain one routine with source claims per step.
+    Explain {
+        #[arg(value_parser = config::non_empty_string)]
+        routine_id: String,
+    },
+    /// Rebuild synthesized routines from current claims.
     Rebuild,
 }
 
@@ -1391,6 +1660,33 @@ pub(crate) enum PersonalPreferencesCloneCommand {
         max_records: Option<usize>,
         #[arg(long)]
         budget_tokens: Option<usize>,
+    },
+    /// Compile an operator-clone directive checklist for an agent task.
+    Directive {
+        #[arg(value_parser = config::non_empty_string)]
+        query: String,
+        #[arg(long, value_parser = config::non_empty_string)]
+        agent_id: Option<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        mode: Option<String>,
+        #[arg(long, default_value_t = false)]
+        allow_sensitive: bool,
+        #[arg(long, value_parser = config::non_empty_string)]
+        current_repo_root: Option<String>,
+        #[arg(long)]
+        max_records: Option<usize>,
+        #[arg(long)]
+        budget_tokens: Option<usize>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        task_type: Option<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        risk_level: Option<String>,
+        #[arg(long = "current-file", value_parser = config::non_empty_string)]
+        current_files: Vec<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        current_plan_path: Option<String>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        enforcement_level: Option<String>,
     },
     /// Explain why a clone context pack was selected.
     Explain {
@@ -1413,6 +1709,49 @@ pub(crate) enum PersonalPreferencesCloneCommand {
         query: String,
         #[arg(long, value_parser = config::non_empty_string)]
         mode: Option<String>,
+        #[arg(long, default_value_t = false)]
+        allow_sensitive: bool,
+        #[arg(long, value_parser = config::non_empty_string)]
+        current_repo_root: Option<String>,
+        #[arg(long)]
+        max_records: Option<usize>,
+        #[arg(long)]
+        budget_tokens: Option<usize>,
+    },
+    /// Replay-score whether the clone pack predicts expected next-step categories.
+    ReplayEvaluate {
+        #[arg(value_parser = config::non_empty_string)]
+        query: String,
+        #[arg(long, value_parser = config::non_empty_string)]
+        mode: Option<String>,
+        #[arg(long, default_value_t = false)]
+        allow_sensitive: bool,
+        #[arg(long, value_parser = config::non_empty_string)]
+        current_repo_root: Option<String>,
+        #[arg(long)]
+        max_records: Option<usize>,
+        #[arg(long)]
+        budget_tokens: Option<usize>,
+        #[arg(long = "expected-category", value_parser = config::non_empty_string)]
+        expected_categories: Vec<String>,
+    },
+    /// Generate replay cases from executable operator routines.
+    ReplayDataset {
+        #[arg(long, default_value_t = false)]
+        ci_subset: bool,
+        #[arg(long)]
+        limit: Option<usize>,
+        #[arg(long, value_parser = config::non_empty_string)]
+        current_repo_root: Option<String>,
+    },
+    /// Run the replay suite and report aggregate clone-prediction metrics.
+    ReplaySuite {
+        #[arg(long, default_value_t = false)]
+        ci_subset: bool,
+        #[arg(long)]
+        limit: Option<usize>,
+        #[arg(long)]
+        threshold: Option<f32>,
         #[arg(long, default_value_t = false)]
         allow_sensitive: bool,
         #[arg(long, value_parser = config::non_empty_string)]

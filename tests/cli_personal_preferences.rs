@@ -16,7 +16,49 @@ use tempfile::TempDir;
 fn write_repo(repo_root: &Path) -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(repo_root.join(".git"))?;
     fs::write(repo_root.join("README.md"), "# Repo\n")?;
+    fs::create_dir_all(repo_root.join("docs/planning"))?;
+    fs::write(
+        repo_root.join("docs/planning/operator_progress.md"),
+        "# Progress\n\nOperator event capture CLI coverage.\n",
+    )?;
     Ok(())
+}
+
+fn assert_generated_skill_quality_report(payload: &Value, skill_id: &str) {
+    let quality = payload
+        .get("quality")
+        .expect("missing generated skill quality report");
+    assert!(quality.get("total").and_then(Value::as_u64).unwrap_or(0) >= 1);
+    assert!(quality
+        .get("notes")
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
+    let quality_item = quality
+        .get("items")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|item| item.get("skill_id").and_then(Value::as_str) == Some(skill_id))
+        })
+        .expect("missing generated skill quality item");
+    assert!(matches!(
+        quality_item.get("recommendation").and_then(Value::as_str),
+        Some("promote" | "keep" | "review" | "demote" | "quarantine")
+    ));
+    assert!(quality_item
+        .get("reasons")
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
+    assert!(
+        quality_item
+            .get("confidence")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0)
+            > 0.0
+    );
 }
 
 fn seed_processed_personal_preferences(home_dir: &Path) -> Result<(), Box<dyn Error>> {
@@ -79,6 +121,54 @@ fn seed_processed_personal_preferences(home_dir: &Path) -> Result<(), Box<dyn Er
                             confidence: Some(0.89),
                             sensitivity: Some("sensitive".to_string()),
                             evidence: Some("private detail".to_string()),
+                            metadata: Value::Null,
+                        },
+                        PersonalPreferenceDigestRecord {
+                            record_type: "method".to_string(),
+                            category: "workflow_method".to_string(),
+                            subcategory: None,
+                            subject: "user".to_string(),
+                            attribute: Some("plan and progress".to_string()),
+                            value: "Create a docs/planning implementation plan and keep a separate progress markdown file.".to_string(),
+                            confidence: Some(0.95),
+                            sensitivity: Some("low".to_string()),
+                            evidence: Some("make an implementation plan and keep your progress on another md file".to_string()),
+                            metadata: Value::Null,
+                        },
+                        PersonalPreferenceDigestRecord {
+                            record_type: "method".to_string(),
+                            category: "workflow_method".to_string(),
+                            subcategory: None,
+                            subject: "user".to_string(),
+                            attribute: Some("repo inspection and DAG".to_string()),
+                            value: "Inspect the repo with Docdex search, symbols, impact graph, and DAG before code changes.".to_string(),
+                            confidence: Some(0.92),
+                            sensitivity: Some("low".to_string()),
+                            evidence: Some("use Docdex search, symbols, impact graph, and DAG before code changes".to_string()),
+                            metadata: Value::Null,
+                        },
+                        PersonalPreferenceDigestRecord {
+                            record_type: "method".to_string(),
+                            category: "quality_bar".to_string(),
+                            subcategory: None,
+                            subject: "user".to_string(),
+                            attribute: Some("tests and validation".to_string()),
+                            value: "Run targeted tests and record validation evidence before release work.".to_string(),
+                            confidence: Some(0.93),
+                            sensitivity: Some("low".to_string()),
+                            evidence: Some("run tests and record validation evidence".to_string()),
+                            metadata: Value::Null,
+                        },
+                        PersonalPreferenceDigestRecord {
+                            record_type: "method".to_string(),
+                            category: "delivery_preference".to_string(),
+                            subcategory: None,
+                            subject: "user".to_string(),
+                            attribute: Some("git deploy backup".to_string()),
+                            value: "After validation, use the git commit, tag, push, deploy, and backup routine when requested.".to_string(),
+                            confidence: Some(0.91),
+                            sensitivity: Some("low".to_string()),
+                            evidence: Some("commit, tag, push, deploy, and backup after validation".to_string()),
                             metadata: Value::Null,
                         },
                     ],
@@ -161,6 +251,20 @@ fn cli_personal_preferences_commands_work_against_http_daemon() -> Result<(), Bo
         status.get("captures_total").and_then(Value::as_u64),
         Some(2)
     );
+    let clone_readiness = status
+        .get("clone_readiness")
+        .and_then(Value::as_object)
+        .ok_or("missing clone readiness")?;
+    assert_eq!(
+        clone_readiness
+            .get("autonomy_ready")
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+    assert!(clone_readiness
+        .get("warnings")
+        .and_then(Value::as_array)
+        .is_some_and(|items| !items.is_empty()));
 
     let categories = run_docdex_json(
         home_dir.path(),
@@ -172,6 +276,79 @@ fn cli_personal_preferences_commands_work_against_http_daemon() -> Result<(), Bo
         .unwrap_or(&Vec::new())
         .iter()
         .any(|item| item.get("category").and_then(Value::as_str) == Some("tech_stack")));
+    let retention_policies = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        ["personal-preferences", "retention-policies"],
+    )?;
+    assert!(retention_policies
+        .as_array()
+        .unwrap_or(&Vec::new())
+        .iter()
+        .any(|item| item.get("lane").and_then(Value::as_str) == Some("raw_archive")));
+
+    let operator_event = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        [
+            "personal-preferences",
+            "operator-events",
+            "record",
+            "--action",
+            "cargo test personal_preferences::",
+            "--summary",
+            "Run targeted personal-preferences tests",
+            "--command-text",
+            "API_TOKEN=supersecret cargo test personal_preferences::",
+        ],
+    )?;
+    assert_eq!(
+        operator_event.get("event_kind").and_then(Value::as_str),
+        Some("test_action")
+    );
+    assert!(!operator_event
+        .get("command_text")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .contains("supersecret"));
+
+    let artifact_scan = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        [
+            "personal-preferences",
+            "operator-events",
+            "scan-artifacts",
+            "--limit",
+            "10",
+        ],
+    )?;
+    assert!(
+        artifact_scan
+            .get("created_events")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            >= 1
+    );
+
+    let operator_events = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        [
+            "personal-preferences",
+            "operator-events",
+            "list",
+            "--limit",
+            "10",
+        ],
+    )?;
+    assert!(
+        operator_events
+            .get("total")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            >= 2
+    );
 
     let list = run_docdex_json(
         home_dir.path(),
@@ -286,6 +463,13 @@ fn cli_personal_preferences_commands_work_against_http_daemon() -> Result<(), Bo
             .get("captures_total")
             .and_then(Value::as_u64),
         Some(2)
+    );
+    assert!(
+        status_after_delete
+            .get("operator_events_total")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            >= 2
     );
 
     server.shutdown();
@@ -459,6 +643,475 @@ fn cli_personal_preferences_mind_clone_commands_work() -> Result<(), Box<dyn Err
     )?;
     assert_eq!(rebuilt.get("created").and_then(Value::as_u64), Some(1));
 
+    let routines = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        ["personal-preferences", "routines", "list", "--limit", "10"],
+    )?;
+    assert!(routines.get("total").and_then(Value::as_u64).unwrap_or(0) >= 1);
+    let routine_id = routines
+        .get("items")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(|item| item.get("id"))
+        .and_then(Value::as_str)
+        .ok_or("missing routine id")?
+        .to_string();
+
+    let routine = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        [
+            "personal-preferences",
+            "routines",
+            "read",
+            routine_id.as_str(),
+        ],
+    )?;
+    assert_eq!(
+        routine.get("id").and_then(Value::as_str),
+        Some(routine_id.as_str())
+    );
+    assert!(routine
+        .get("steps")
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
+    assert!(routine.get("purpose").and_then(Value::as_str).is_some());
+    assert!(routine.get("version").and_then(Value::as_u64).unwrap_or(0) >= 1);
+    assert!(routine.get("risk_level").and_then(Value::as_str).is_some());
+    assert!(routine
+        .get("applies_when")
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
+    let first_step = routine
+        .get("steps")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .ok_or("missing routine step")?;
+    assert_eq!(
+        first_step.get("required").and_then(Value::as_bool),
+        Some(true)
+    );
+    assert!(first_step
+        .get("success_check")
+        .and_then(Value::as_str)
+        .map(|value| !value.is_empty())
+        .unwrap_or(false));
+
+    let routine_explain = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        [
+            "personal-preferences",
+            "routines",
+            "explain",
+            routine_id.as_str(),
+        ],
+    )?;
+    assert_eq!(
+        routine_explain
+            .get("routine")
+            .and_then(|routine| routine.get("id"))
+            .and_then(Value::as_str),
+        Some(routine_id.as_str())
+    );
+    assert!(routine_explain
+        .get("step_evidence")
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
+
+    let routines_rebuilt = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        ["personal-preferences", "routines", "rebuild"],
+    )?;
+    assert!(
+        routines_rebuilt
+            .get("total")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            >= 1
+    );
+    assert!(
+        routines_rebuilt
+            .get("executable_total")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            >= 1
+    );
+
+    let mind_map = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        [
+            "personal-preferences",
+            "mind-map",
+            "how does the user ship a product fix",
+            "--limit",
+            "40",
+        ],
+    )?;
+    assert!(mind_map
+        .get("nodes")
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
+    assert!(mind_map
+        .get("edges")
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
+
+    let playbooks = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        [
+            "personal-preferences",
+            "playbooks",
+            "--min-confidence",
+            "0.7",
+            "--min-support-count",
+            "2",
+        ],
+    )?;
+    assert!(playbooks
+        .get("items")
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
+
+    let detected_integrations = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        ["ai-terminals", "detect", "--all"],
+    )?;
+    assert!(detected_integrations
+        .get("integrations")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .any(|item| item.get("terminal").and_then(Value::as_str) == Some("codex"))
+        })
+        .unwrap_or(false));
+    assert!(detected_integrations
+        .get("notes")
+        .and_then(Value::as_array)
+        .map(|notes| {
+            notes.iter().any(|note| {
+                note.as_str()
+                    .is_some_and(|text| text.contains("non-mutating"))
+            })
+        })
+        .unwrap_or(false));
+
+    let terminal_integrations = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        ["ai-terminals", "integrate", "--all"],
+    )?;
+    assert!(terminal_integrations
+        .get("integrations")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .any(|item| item.get("terminal").and_then(Value::as_str) == Some("codex"))
+        })
+        .unwrap_or(false));
+
+    let terminal_capture = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        [
+            "ai-terminals",
+            "capture",
+            "--terminal",
+            "codex",
+            "--source-session-id",
+            "cli-ai-terminal-session",
+            "--event-kind",
+            "session-close",
+            "--repo-scope",
+            "/tmp/repo-one",
+            "--agent-id",
+            "codex",
+            "--summary",
+            "User asked for plan, progress markdown, and tests before completion.",
+        ],
+    )?;
+    assert_eq!(
+        terminal_capture.get("terminal").and_then(Value::as_str),
+        Some("codex")
+    );
+    assert!(terminal_capture
+        .get("capture_id")
+        .and_then(Value::as_str)
+        .is_some());
+
+    let generated_sync = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        [
+            "personal-preferences",
+            "skills",
+            "sync",
+            "--min-confidence",
+            "0.7",
+            "--min-support-count",
+            "2",
+            "--no-install",
+            "--terminal",
+            "codex",
+        ],
+    )?;
+    assert!(
+        generated_sync
+            .get("rendered")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            >= 1
+    );
+    assert_eq!(
+        generated_sync.get("installed").and_then(Value::as_u64),
+        Some(0)
+    );
+    let generated_skill_id = generated_sync
+        .get("items")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(|item| item.get("skill_id"))
+        .and_then(Value::as_str)
+        .ok_or("missing generated skill id")?
+        .to_string();
+    assert_generated_skill_quality_report(&generated_sync, &generated_skill_id);
+
+    let generated_list = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        ["personal-preferences", "skills", "list"],
+    )?;
+    assert!(generated_list
+        .get("items")
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
+    assert_generated_skill_quality_report(&generated_list, &generated_skill_id);
+
+    let generated_skill = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        [
+            "personal-preferences",
+            "skills",
+            "read",
+            generated_skill_id.as_str(),
+        ],
+    )?;
+    assert_eq!(
+        generated_skill.get("skill_id").and_then(Value::as_str),
+        Some(generated_skill_id.as_str())
+    );
+
+    let terminal_status = run_docdex_json(home_dir.path(), &base_url, ["ai-terminals", "status"])?;
+    assert!(
+        terminal_status
+            .get("capture_events_total")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            >= 1
+    );
+    assert!(
+        terminal_status
+            .get("generated_skills_total")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            >= 1
+    );
+
+    let terminal_events = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        ["ai-terminals", "events", "--limit", "10"],
+    )?;
+    assert!(terminal_events
+        .get("items")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .any(|item| item.get("terminal").and_then(Value::as_str) == Some("codex"))
+        })
+        .unwrap_or(false));
+
+    let generated_preview = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        [
+            "personal-preferences",
+            "skills",
+            "preview",
+            "--min-confidence",
+            "0.7",
+            "--min-support-count",
+            "2",
+            "--terminal",
+            "codex",
+        ],
+    )?;
+    assert!(
+        generated_preview
+            .get("rendered")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            >= 1
+    );
+    assert_eq!(
+        generated_preview.get("installed").and_then(Value::as_u64),
+        Some(0)
+    );
+
+    let generated_render = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        [
+            "personal-preferences",
+            "skills",
+            "render",
+            "--min-confidence",
+            "0.7",
+            "--min-support-count",
+            "2",
+            "--terminal",
+            "codex",
+        ],
+    )?;
+    assert_eq!(
+        generated_render.get("installed").and_then(Value::as_u64),
+        Some(0)
+    );
+    assert!(generated_render
+        .get("notes")
+        .and_then(Value::as_array)
+        .map(|notes| !notes.is_empty())
+        .unwrap_or(false));
+
+    let generated_autopilot = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        [
+            "personal-preferences",
+            "skills",
+            "autopilot",
+            "--once",
+            "--no-install",
+            "--terminal",
+            "codex",
+        ],
+    )?;
+    assert_eq!(
+        generated_autopilot.get("installed").and_then(Value::as_u64),
+        Some(0)
+    );
+    assert!(generated_autopilot
+        .get("notes")
+        .and_then(Value::as_array)
+        .map(|notes| {
+            notes.iter().any(|note| {
+                note.as_str()
+                    .is_some_and(|text| text.contains("Autopilot one-shot processed"))
+            })
+        })
+        .unwrap_or(false));
+    assert_generated_skill_quality_report(&generated_autopilot, &generated_skill_id);
+
+    let generated_validation = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        [
+            "personal-preferences",
+            "skills",
+            "validate",
+            generated_skill_id.as_str(),
+        ],
+    )?;
+    assert_eq!(
+        generated_validation.get("action").and_then(Value::as_str),
+        Some("validate")
+    );
+    assert_eq!(
+        generated_validation
+            .pointer("/validation/status")
+            .and_then(Value::as_str),
+        Some("passed")
+    );
+
+    let generated_events = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        ["personal-preferences", "skills", "events", "--limit", "20"],
+    )?;
+    assert!(generated_events
+        .get("items")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items.iter().any(|item| {
+                item.get("skill_id").and_then(Value::as_str) == Some(generated_skill_id.as_str())
+                    && matches!(
+                        item.get("event_kind").and_then(Value::as_str),
+                        Some("rendered" | "validated")
+                    )
+            })
+        })
+        .unwrap_or(false));
+
+    let disabled_skill = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        [
+            "personal-preferences",
+            "skills",
+            "disable",
+            generated_skill_id.as_str(),
+            "--reason",
+            "cli integration test",
+        ],
+    )?;
+    assert_eq!(
+        disabled_skill.get("action").and_then(Value::as_str),
+        Some("disable")
+    );
+    assert_eq!(
+        disabled_skill
+            .pointer("/skill/status")
+            .and_then(Value::as_str),
+        Some("disabled")
+    );
+
+    let rollback_skill = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        [
+            "personal-preferences",
+            "skills",
+            "rollback",
+            generated_skill_id.as_str(),
+            "--terminal",
+            "codex",
+        ],
+    )?;
+    assert_eq!(
+        rollback_skill.get("action").and_then(Value::as_str),
+        Some("rollback")
+    );
+    assert_eq!(
+        rollback_skill.get("rolled_back").and_then(Value::as_bool),
+        Some(false)
+    );
+
     let clone_context = run_docdex_json(
         home_dir.path(),
         &base_url,
@@ -475,6 +1128,39 @@ fn cli_personal_preferences_mind_clone_commands_work() -> Result<(), Box<dyn Err
     )?;
     assert!(clone_context
         .get("items")
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
+
+    let clone_directive = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        [
+            "personal-preferences",
+            "clone",
+            "directive",
+            "compare plan to codebase and complete missing gaps",
+            "--agent-id",
+            "codex",
+            "--mode",
+            "project_build",
+            "--current-repo-root",
+            "/tmp/repo-one",
+            "--current-file",
+            "src/personal_preferences/mod.rs",
+            "--current-plan-path",
+            "docs/planning/operator_progress.md",
+            "--task-type",
+            "implementation",
+        ],
+    )?;
+    assert!(clone_directive
+        .get("selected_routines")
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
+    assert!(clone_directive
+        .get("required_steps")
         .and_then(Value::as_array)
         .map(|items| !items.is_empty())
         .unwrap_or(false));
@@ -527,6 +1213,88 @@ fn cli_personal_preferences_mind_clone_commands_work() -> Result<(), Box<dyn Err
             .unwrap_or(-1.0)
             >= 0.0
     );
+
+    let replay_evaluate = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        [
+            "personal-preferences",
+            "clone",
+            "replay-evaluate",
+            "how does the user ship a product fix",
+            "--mode",
+            "project_build",
+            "--current-repo-root",
+            "/tmp/repo-one",
+            "--expected-category",
+            "plan",
+            "--expected-category",
+            "tests",
+        ],
+    )?;
+    assert!(
+        replay_evaluate
+            .get("overall_score")
+            .and_then(Value::as_f64)
+            .unwrap_or(-1.0)
+            >= 0.0
+    );
+
+    let replay_dataset = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        [
+            "personal-preferences",
+            "clone",
+            "replay-dataset",
+            "--ci-subset",
+            "--limit",
+            "3",
+            "--current-repo-root",
+            "/tmp/repo-one",
+        ],
+    )?;
+    assert!(
+        replay_dataset
+            .get("total")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            >= 1
+    );
+    assert!(replay_dataset
+        .get("cases")
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
+
+    let replay_suite = run_docdex_json(
+        home_dir.path(),
+        &base_url,
+        [
+            "personal-preferences",
+            "clone",
+            "replay-suite",
+            "--ci-subset",
+            "--limit",
+            "3",
+            "--threshold",
+            "0",
+            "--current-repo-root",
+            "/tmp/repo-one",
+        ],
+    )?;
+    assert!(
+        replay_suite
+            .pointer("/metrics/case_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            >= 1
+    );
+    assert!(replay_suite
+        .get("results")
+        .and_then(Value::as_array)
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
 
     server.shutdown();
     Ok(())

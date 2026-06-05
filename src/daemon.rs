@@ -806,36 +806,29 @@ pub async fn serve(
                 ));
                 loop {
                     ticker.tick().await;
-                    if personal_preferences
-                        .config
-                        .capture_supported_client_transcripts
+                    match personal_preferences
+                        .store
+                        .scan_supported_client_transcripts(&personal_preferences.config, None)
                     {
-                        match personal_preferences
-                            .store
-                            .scan_supported_client_transcripts(&personal_preferences.config, None)
-                        {
-                            Ok(scan_summary) => {
-                                if scan_summary.captures_created > 0
-                                    || scan_summary.parse_errors > 0
-                                {
-                                    info!(
-                                        target: "docdexd",
-                                        scanned_files = scan_summary.scanned_files,
-                                        sessions_detected = scan_summary.sessions_detected,
-                                        captures_created = scan_summary.captures_created,
-                                        skipped_existing = scan_summary.skipped_existing,
-                                        parse_errors = scan_summary.parse_errors,
-                                        "personal preferences transcript scan completed"
-                                    );
-                                }
-                            }
-                            Err(err) => {
-                                warn!(
+                        Ok(scan_summary) => {
+                            if scan_summary.captures_created > 0 || scan_summary.parse_errors > 0 {
+                                info!(
                                     target: "docdexd",
-                                    error = ?err,
-                                    "personal preferences transcript scan failed"
+                                    scanned_files = scan_summary.scanned_files,
+                                    sessions_detected = scan_summary.sessions_detected,
+                                    captures_created = scan_summary.captures_created,
+                                    skipped_existing = scan_summary.skipped_existing,
+                                    parse_errors = scan_summary.parse_errors,
+                                    "personal preferences transcript scan completed"
                                 );
                             }
+                        }
+                        Err(err) => {
+                            warn!(
+                                target: "docdexd",
+                                error = ?err,
+                                "personal preferences transcript scan failed"
+                            );
                         }
                     }
                     match crate::personal_preferences::process_pending_with_local_agents(
@@ -866,6 +859,41 @@ pub async fn serve(
                                             target: "docdexd",
                                             error = ?err,
                                             "personal preferences profile projection failed"
+                                        );
+                                    }
+                                }
+                            }
+                            if summary.records_written > 0 || summary.completed_captures > 0 {
+                                match personal_preferences.store.sync_generated_skills(
+                                    crate::personal_preferences::PersonalPreferenceGeneratedSkillsSyncOptions {
+                                        min_confidence: None,
+                                        min_support_count: None,
+                                        include_sensitive: Some(false),
+                                        install: Some(true),
+                                        terminals: Vec::new(),
+                                    },
+                                ) {
+                                    Ok(sync_summary) => {
+                                        if sync_summary.rendered > 0
+                                            || sync_summary.installed > 0
+                                            || sync_summary.validation_failures > 0
+                                        {
+                                            info!(
+                                                target: "docdexd",
+                                                rendered = sync_summary.rendered,
+                                                installed = sync_summary.installed,
+                                                auto_installed = sync_summary.auto_installed,
+                                                review_required = sync_summary.review_required,
+                                                validation_failures = sync_summary.validation_failures,
+                                                "personal preferences generated-skill sync completed"
+                                            );
+                                        }
+                                    }
+                                    Err(err) => {
+                                        warn!(
+                                            target: "docdexd",
+                                            error = ?err,
+                                            "personal preferences generated-skill sync failed"
                                         );
                                     }
                                 }

@@ -4,6 +4,11 @@ use crate::index::{DocumentKind, Hit};
 use crate::memory::{MemoryContextItem, MemoryContextPruneTrace};
 use crate::orchestrator::MemoryContextAssembly;
 use crate::orchestrator::ProfileContextAssembly;
+use crate::personal_preferences::{
+    PersonalPreferenceCloneApprovalGate, PersonalPreferenceCloneContextPack,
+    PersonalPreferenceCloneDirective, PersonalPreferenceCloneDirectiveRoutine,
+    PersonalPreferenceCloneDirectiveStep,
+};
 use crate::profiles::{PreferenceCategory, ProfileContextItem, ProfileContextPruneTrace};
 use serde_json::json;
 
@@ -84,6 +89,7 @@ fn diff_context_ordering_and_budgeting() {
             truncated: 0,
             budget_tokens: 0,
         },
+        None,
         None,
         &hits,
         None,
@@ -198,6 +204,7 @@ fn profile_context_ordering_and_budgeting() {
             truncated: 0,
             budget_tokens: 0,
         },
+        None,
         None,
         &hits,
         None,
@@ -325,6 +332,7 @@ fn personal_preferences_context_precedes_profile_and_memory() {
             budget_tokens: 0,
         },
         Some(&personal_preferences_context),
+        None,
         &hits,
         None,
         None,
@@ -369,6 +377,7 @@ fn history_budget_reuses_repo_unused_tokens() {
             truncated: 0,
             budget_tokens: 0,
         },
+        None,
         None,
         &[],
         None,
@@ -519,6 +528,7 @@ fn automatic_memory_route_precedes_core_memory_sections() {
             budget_tokens: 0,
         },
         None,
+        None,
         &hits,
         None,
         None,
@@ -541,6 +551,123 @@ fn automatic_memory_route_precedes_core_memory_sections() {
     assert!(core_pos < memory_pos);
     assert!(context.contains("Start with core lanes: Repo memory, Profile memory."));
     assert!(context.contains("Escalate to retrievable lanes only if needed: Conversation memory."));
+}
+
+#[test]
+fn clone_directive_context_renders_pre_task_and_pre_final_guidance() {
+    let directive = PersonalPreferenceCloneDirective {
+        agent_id: Some("codex".to_string()),
+        mode: "project_build".to_string(),
+        enforcement_level: "checklist".to_string(),
+        query: "complete phase 4".to_string(),
+        task_type: Some("implementation".to_string()),
+        risk_level: "medium".to_string(),
+        inferred_task_phase: "implementation".to_string(),
+        current_repo_root: Some("/tmp/repo".to_string()),
+        current_files: vec!["src/personal_preferences/mod.rs".to_string()],
+        current_plan_path: Some("docs/planning/progress.md".to_string()),
+        selected_routines: vec![PersonalPreferenceCloneDirectiveRoutine {
+            routine_id: "routine-1".to_string(),
+            routine_key: "product_development_loop".to_string(),
+            title: "Product Development Loop".to_string(),
+            summary: "Plan, implement, validate.".to_string(),
+            purpose: "Drive product work.".to_string(),
+            confidence: 0.9,
+            support_count: 4,
+            cross_project_support_count: 2,
+            event_support_count: 3,
+            risk_level: "medium".to_string(),
+            autonomy_level: "assisted".to_string(),
+            status: "stable".to_string(),
+            version: 2,
+            drift_status: "current".to_string(),
+            applies_when: vec!["Implementation work".to_string()],
+        }],
+        required_steps: vec![PersonalPreferenceCloneDirectiveStep {
+            step_order: 1,
+            routine_id: "routine-1".to_string(),
+            routine_key: "product_development_loop".to_string(),
+            step_key: "plan_and_progress_docs".to_string(),
+            title: "Plan and progress docs".to_string(),
+            instruction: "Keep progress on another markdown file.".to_string(),
+            required: true,
+            approval_required: false,
+            tool_hints: vec!["docdex_open".to_string()],
+            expected_artifacts: vec!["docs/planning/progress.md".to_string()],
+            success_check: "Progress doc updated.".to_string(),
+            failure_recovery: "Document skipped reason.".to_string(),
+            evidence_claim_ids: vec!["claim-1".to_string()],
+            event_evidence_ids: vec!["event-1".to_string()],
+            confidence: 0.88,
+        }],
+        optional_steps: Vec::new(),
+        required_artifacts: vec!["docs/planning/progress.md".to_string()],
+        approval_gates: vec![PersonalPreferenceCloneApprovalGate {
+            gate_key: "product_development_loop:release".to_string(),
+            routine_key: "product_development_loop".to_string(),
+            step_key: "release".to_string(),
+            title: "Release".to_string(),
+            reason: "Approval required before release.".to_string(),
+            risk_level: "high".to_string(),
+            required: true,
+        }],
+        validation_plan: vec!["Run targeted tests.".to_string()],
+        memory_to_load: vec!["profile_memory:codex".to_string()],
+        stop_conditions: vec!["Stop before production action.".to_string()],
+        avoidances: vec!["Do not skip validation.".to_string()],
+        confidence: 0.77,
+        evidence_summary: "Selected 1 routine.".to_string(),
+        pack: PersonalPreferenceCloneContextPack {
+            mode: "project_build".to_string(),
+            query: "complete phase 4".to_string(),
+            summary: "summary".to_string(),
+            items: Vec::new(),
+            trace: Vec::new(),
+            excluded_by_policy: 0,
+            truncated_items: 0,
+            created_at_ms: 0,
+        },
+        generated_at_ms: 0,
+        notes: Vec::new(),
+    };
+    let budgets = ChatContextBudgets {
+        system_tokens: 0,
+        wakeup_tokens: 0,
+        profile_tokens: 0,
+        map_tokens: 0,
+        memory_tokens: 0,
+        diff_tokens: 0,
+        repo_tokens: 0,
+        history_tokens: 0,
+    };
+    let (context, _) = build_context_summary(
+        "complete phase 4",
+        None,
+        None,
+        WakeupContextTrace {
+            available: 0,
+            selected: 0,
+            truncated: 0,
+            budget_tokens: 0,
+        },
+        None,
+        Some(&directive),
+        &[],
+        None,
+        None,
+        None,
+        None,
+        false,
+        None,
+        None,
+        &budgets,
+    );
+
+    assert!(context.contains("Clone directive (pre-task, advisory):"));
+    assert!(context.contains("product_development_loop/plan_and_progress_docs"));
+    assert!(
+        context.contains("pre-final check: compare completed work against this clone directive")
+    );
 }
 
 #[test]

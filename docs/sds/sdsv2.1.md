@@ -428,9 +428,9 @@ The Chat API is updated to accept an agent\_id context, enabling the **Waterfall
   * If ready, returns status "ready" and the repo_id for subsequent requests.
   * The singleton daemon runs as `docdexd daemon` and uses a lockfile at `~/.docdex/daemon.lock`; CLI entrypoints auto-start it when missing.
   * The npm installer uses fixed port `28491`, updates `~/.docdex/config.toml`, and injects MCP config into supported clients. It does not start the daemon during npm install; OS startup registration happens during `docdex setup`. If the port is already in use, installation still succeeds and configs are updated, but daemon startup may fail until the port is freed or reconfigured.
-  * The npm installer **does not** install Ollama/models directly. It launches a setup wizard (`docdex setup`) that requests user consent before installing Ollama and models.
-  * If Ollama is installed but not running, the setup wizard will attempt to start it before pulling models.
-  * Setup overrides: `DOCDEX_SETUP_FORCE`, `DOCDEX_OLLAMA_INSTALL`, `DOCDEX_OLLAMA_MODEL_PROMPT`, `DOCDEX_OLLAMA_MODEL_ASSUME_Y`.
+  * The npm installer **does not** install Ollama/models directly. It launches a setup wizard (`docdex setup`) that first detects supported local LLM services/models and only requests consent before installing the optional Ollama fallback or pulling fallback models.
+  * When the user chooses the Ollama fallback and Ollama is installed but not running, the setup wizard will attempt to start it before pulling models.
+  * Setup overrides: `DOCDEX_SETUP_FORCE` plus fallback-specific `DOCDEX_OLLAMA_INSTALL`, `DOCDEX_OLLAMA_MODEL_PROMPT`, `DOCDEX_OLLAMA_MODEL_ASSUME_Y`.
 
 ### **6.3 MCP Tooling**
 

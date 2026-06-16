@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.77
+- Fix setup CLI help so `docdexd setup --help` describes provider-neutral local LLM service detection and optional fallbacks instead of an Ollama-first wizard.
+- Sync `.well-known/mcp/server-card.json` release metadata with the package version and add regression coverage for MCP/package metadata drift.
+- Bump release metadata to 0.2.77.
+
 ## 0.2.76
 - Add provider-neutral local LLM setup, diagnostics, and migration coverage so Docdex can reuse existing Ollama, vLLM, llama.cpp-compatible, OpenAI-compatible local services, and mcoda agents before offering the Ollama fallback.
 - Add fixture coverage for the observed local LLM environment and guard setup migration so explicit user model/provider/agent settings are not overwritten.

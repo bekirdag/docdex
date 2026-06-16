@@ -21,6 +21,22 @@ test("postinstall banner describes provider-neutral local LLM setup", () => {
   assert.equal(source.includes("offers the Ollama fallback"), true);
 });
 
+test("release version metadata stays in sync across package and MCP files", () => {
+  const repoRoot = path.join(__dirname, "..", "..");
+  const rootPackage = JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf8"));
+  const npmPackage = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
+  const serverManifest = JSON.parse(fs.readFileSync(path.join(repoRoot, "server.json"), "utf8"));
+  const serverCard = JSON.parse(
+    fs.readFileSync(path.join(repoRoot, ".well-known", "mcp", "server-card.json"), "utf8")
+  );
+
+  assert.equal(npmPackage.version, rootPackage.version);
+  assert.equal(serverManifest.version, rootPackage.version);
+  assert.equal(serverManifest.packages[0].version, rootPackage.version);
+  assert.equal(serverCard.version, rootPackage.version);
+  assert.equal(serverCard.serverInfo.version, rootPackage.version);
+});
+
 test("describeFatalError: unsupported platform includes detected OS/arch and no-download note", () => {
   let err;
   try {

@@ -411,7 +411,7 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: DelegationCommand,
     },
-    /// Run the interactive setup wizard for Ollama and models.
+    /// Run the interactive setup wizard for local LLM services and optional fallbacks.
     #[command(visible_alias = "llm-setup")]
     Setup {
         #[command(flatten)]
@@ -965,7 +965,7 @@ pub(crate) struct SetupArgs {
         long,
         env = "DOCDEX_OLLAMA_PATH",
         value_name = "PATH",
-        help = "Explicit path to the Ollama binary (falls back to PATH)"
+        help = "Explicit path to the Ollama binary for fallback setup (falls back to PATH)"
     )]
     pub ollama_path: Option<PathBuf>,
 }

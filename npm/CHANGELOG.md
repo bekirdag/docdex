@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.77
+- Fix packaged setup CLI help so `docdexd setup --help` describes provider-neutral local LLM service detection and optional fallbacks instead of an Ollama-first wizard.
+- Sync packaged MCP server-card release metadata with the package version and add regression coverage for MCP/package metadata drift.
+- Bump packaged release metadata to 0.2.77.
+
 ## 0.2.76
 - Add packaged provider-neutral local LLM setup and diagnostics guidance so npm installs do not imply Ollama is mandatory when another supported local service or mcoda agent already exists.
 - Add packaged migration/test coverage notes for preserving explicit user model/provider/agent settings while replacing generated legacy Ollama defaults.

@@ -34,7 +34,7 @@ use tantivy::{
     doc, Document, Index, IndexReader, IndexWriter, ReloadPolicy, SnippetGenerator, Term,
 };
 use thiserror::Error;
-use tracing::warn;
+use tracing::{debug, warn};
 use walkdir::WalkDir;
 
 const MAX_INDEX_RAM_BYTES: usize = 50 * 1024 * 1024;
@@ -1070,6 +1070,16 @@ impl Indexer {
         Ok(hits)
     }
 
+    fn search_hit_still_exists(&self, rel_path: &str) -> bool {
+        if self.config.repo_encryption().is_enabled() {
+            return true;
+        }
+        if !is_safe_rel_path(rel_path) {
+            return false;
+        }
+        self.repo_root.join(rel_path).is_file()
+    }
+
     fn searchable_fields(&self) -> Result<Vec<tantivy::schema::Field>> {
         if !self.config.repo_encryption().is_enabled() {
             return Ok(vec![self.body_field, self.summary_field, self.path_field]);
@@ -1182,6 +1192,14 @@ impl Indexer {
                 .get_first(self.path_field)
                 .and_then(|v| v.as_text().map(|s| s.to_string()))
                 .unwrap_or_default();
+            if !self.search_hit_still_exists(&rel_path) {
+                debug!(
+                    target: "docdexd",
+                    %rel_path,
+                    "skipping stale search hit for missing repo file"
+                );
+                continue;
+            }
             let path = rel_path.clone();
             let body_text = self.document_body_text(&retrieved, &rel_path)?;
             let summary = self.document_summary_text(&retrieved, &rel_path)?;
@@ -3423,7 +3441,9 @@ fn sort_hits_deterministically(hits: &mut [Hit]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{sort_hits_deterministically, DocumentKind, Hit};
+    use super::{sort_hits_deterministically, DocumentKind, Hit, IndexConfig, Indexer};
+    use anyhow::Result;
+    use tempfile::TempDir;
 
     fn hit(doc_id: &str, rel_path: &str, score: f32) -> Hit {
         Hit {
@@ -3468,6 +3488,32 @@ mod tests {
                 (1.0, "docs/b.md", "b"),
             ]
         );
+    }
+
+    #[test]
+    fn search_filters_missing_repo_docs() -> Result<()> {
+        let repo = TempDir::new()?;
+        let state = TempDir::new()?;
+        let docs = repo.path().join("docs");
+        std::fs::create_dir_all(&docs)?;
+        let doomed = docs.join("deleted.md");
+        std::fs::write(&doomed, "# Deleted\nSTALE_SEARCH_NEEDLE\n")?;
+        let config = IndexConfig::with_overrides(
+            repo.path(),
+            Some(state.path().to_path_buf()),
+            Vec::new(),
+            Vec::new(),
+            true,
+        )?;
+        let indexer = Indexer::with_config(repo.path().to_path_buf(), config)?;
+        indexer.ensure_indexed_blocking()?;
+
+        assert_eq!(indexer.search("STALE_SEARCH_NEEDLE", 5)?.len(), 1);
+
+        std::fs::remove_file(&doomed)?;
+
+        assert!(indexer.search("STALE_SEARCH_NEEDLE", 5)?.is_empty());
+        Ok(())
     }
 }
 

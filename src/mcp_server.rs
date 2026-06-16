@@ -3,6 +3,7 @@ use crate::config;
 use crate::dag::logging as dag_logging;
 use crate::delegation_telemetry;
 use crate::diff;
+use crate::embeddings::{self, EmbeddingTargetHints, DEFAULT_PROFILE_EMBEDDING_MODEL};
 use crate::error::{
     repo_resolution_details, AppError, RateLimited, ERR_BACKOFF_REQUIRED,
     ERR_CONVERSATION_NOT_FOUND, ERR_DELEGATION_LOCAL_REQUIRED, ERR_EMBEDDING_FAILED,
@@ -26,7 +27,7 @@ use crate::llm::delegation::{
     TaskType,
 };
 use crate::llm::local_library::{
-    delegation_is_enabled, load_local_library, refresh_local_library,
+    delegation_is_enabled, load_local_library, local_library_diagnostics, refresh_local_library,
     refresh_local_library_if_stale, refresh_local_library_if_stale_with_web,
     refresh_local_library_with_web, resolve_local_ollama_base_url,
 };
@@ -701,6 +702,7 @@ impl McpService {
         let global_state_dir = config
             .as_ref()
             .and_then(|cfg| cfg.core.global_state_dir.clone());
+        let local_model_library = load_local_library(global_state_dir.as_deref()).ok();
         let memory_enabled = if std::env::var_os("DOCDEX_ENABLE_MEMORY").is_some() {
             env_flag_enabled("DOCDEX_ENABLE_MEMORY")
         } else {
@@ -710,21 +712,6 @@ impl McpService {
                 .unwrap_or(false)
         };
         let memory = if memory_enabled {
-            let base_url = std::env::var("DOCDEX_EMBEDDING_BASE_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty())
-                .or_else(|| {
-                    std::env::var("DOCDEX_OLLAMA_BASE_URL")
-                        .ok()
-                        .filter(|v| !v.trim().is_empty())
-                })
-                .or_else(|| config.as_ref().map(|cfg| cfg.llm.base_url.clone()))
-                .unwrap_or_else(|| "http://127.0.0.1:11434".to_string());
-            let model = std::env::var("DOCDEX_EMBEDDING_MODEL")
-                .ok()
-                .filter(|v| !v.trim().is_empty())
-                .or_else(|| config.as_ref().map(|cfg| cfg.llm.embedding_model.clone()))
-                .unwrap_or_else(|| "nomic-embed-text".to_string());
             let timeout_ms = std::env::var("DOCDEX_EMBEDDING_TIMEOUT_MS")
                 .ok()
                 .and_then(|v| v.trim().parse::<u64>().ok())
@@ -734,9 +721,31 @@ impl McpService {
                 .map(|cfg| cfg.memory.profile.embedding_dim)
                 .unwrap_or(DEFAULT_FALLBACK_EMBED_DIM)
                 .max(1);
+            let default_llm_config;
+            let llm_config_ref = match config.as_ref() {
+                Some(cfg) => &cfg.llm,
+                None => {
+                    default_llm_config = config::LlmConfig::default();
+                    &default_llm_config
+                }
+            };
+            let model = embeddings::env_non_empty("DOCDEX_EMBEDDING_MODEL");
+            let hints = EmbeddingTargetHints::repo()
+                .explicit_provider(embeddings::env_non_empty("DOCDEX_EMBEDDING_PROVIDER"))
+                .explicit_base_url(
+                    embeddings::env_non_empty("DOCDEX_EMBEDDING_BASE_URL"),
+                    embeddings::env_present("DOCDEX_EMBEDDING_BASE_URL"),
+                )
+                .explicit_model(model, embeddings::env_present("DOCDEX_EMBEDDING_MODEL"))
+                .legacy_ollama_base_url(embeddings::env_non_empty("DOCDEX_OLLAMA_BASE_URL"));
+            let target = embeddings::resolve_embedding_target(
+                llm_config_ref,
+                local_model_library.as_ref(),
+                hints,
+            )?;
             Some(McpMemoryState {
                 store: MemoryStore::new(indexer.state_dir()),
-                embedder: OllamaEmbedder::new(base_url, model, Duration::from_millis(timeout_ms))?,
+                embedder: OllamaEmbedder::with_target(target, Duration::from_millis(timeout_ms))?,
                 fallback_dim,
             })
         } else {
@@ -785,20 +794,16 @@ impl McpService {
         } else {
             None
         };
-        let profile_embedding_base_url = std::env::var("DOCDEX_EMBEDDING_BASE_URL")
-            .ok()
-            .filter(|v| !v.trim().is_empty())
+        let profile_embedding_model = embeddings::env_non_empty("DOCDEX_PROFILE_EMBEDDING_MODEL")
             .or_else(|| {
-                std::env::var("DOCDEX_OLLAMA_BASE_URL")
-                    .ok()
-                    .filter(|v| !v.trim().is_empty())
+                config
+                    .as_ref()
+                    .map(|cfg| cfg.memory.profile.embedding_model.clone())
             })
-            .or_else(|| config.as_ref().map(|cfg| cfg.llm.base_url.clone()))
-            .unwrap_or_else(|| "http://127.0.0.1:11434".to_string());
-        let profile_embedding_model = config
-            .as_ref()
-            .map(|cfg| cfg.memory.profile.embedding_model.clone())
-            .unwrap_or_else(|| "nomic-embed-text".to_string());
+            .unwrap_or_else(|| DEFAULT_PROFILE_EMBEDDING_MODEL.to_string());
+        let profile_embedding_model_explicit =
+            embeddings::env_present("DOCDEX_PROFILE_EMBEDDING_MODEL")
+                || profile_embedding_model.trim() != DEFAULT_PROFILE_EMBEDDING_MODEL;
         let profile_embedding_dim = config
             .as_ref()
             .map(|cfg| cfg.memory.profile.embedding_dim)
@@ -823,13 +828,47 @@ impl McpService {
             }
             manager.map(|manager| search::ProfileState {
                 manager,
-                embedder: ProfileEmbedder::new(
-                    profile_embedding_base_url.clone(),
-                    profile_embedding_model.clone(),
-                    Duration::from_millis(profile_embedding_timeout_ms),
-                    profile_embedding_dim,
-                )
-                .ok(),
+                embedder: {
+                    let default_llm_config;
+                    let llm_config_ref = match config.as_ref() {
+                        Some(cfg) => &cfg.llm,
+                        None => {
+                            default_llm_config = config::LlmConfig::default();
+                            &default_llm_config
+                        }
+                    };
+                    let hints = EmbeddingTargetHints::profile()
+                        .explicit_provider(
+                            embeddings::env_non_empty("DOCDEX_PROFILE_EMBEDDING_PROVIDER")
+                                .or_else(|| embeddings::env_non_empty("DOCDEX_EMBEDDING_PROVIDER")),
+                        )
+                        .explicit_base_url(
+                            embeddings::env_non_empty("DOCDEX_PROFILE_EMBEDDING_BASE_URL")
+                                .or_else(|| embeddings::env_non_empty("DOCDEX_EMBEDDING_BASE_URL")),
+                            embeddings::env_present("DOCDEX_PROFILE_EMBEDDING_BASE_URL")
+                                || embeddings::env_present("DOCDEX_EMBEDDING_BASE_URL"),
+                        )
+                        .explicit_model(
+                            Some(profile_embedding_model.clone()),
+                            profile_embedding_model_explicit,
+                        )
+                        .legacy_ollama_base_url(embeddings::env_non_empty(
+                            "DOCDEX_OLLAMA_BASE_URL",
+                        ));
+                    embeddings::resolve_embedding_target(
+                        llm_config_ref,
+                        local_model_library.as_ref(),
+                        hints,
+                    )
+                    .and_then(|target| {
+                        ProfileEmbedder::with_target(
+                            target,
+                            Duration::from_millis(profile_embedding_timeout_ms),
+                            profile_embedding_dim,
+                        )
+                    })
+                    .ok()
+                },
             })
         };
         let effective_burst = if rate_limit_per_min > 0 && rate_limit_burst == 0 {
@@ -2927,6 +2966,45 @@ impl McpServer {
                                     error: Some(rpc_tool_error(
                                         &err,
                                         Some("docdex_local_completion"),
+                                    )),
+                                }))
+                            }
+                        }
+                    }
+                    "docdex_llm_diagnostics" | "docdex.llm_diagnostics" => {
+                        let args_res: Result<LlmDiagnosticsArgs, _> =
+                            serde_json::from_value(params.arguments.clone());
+                        let args = match args_res {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_error(
+                                        ERR_INVALID_PARAMS,
+                                        default_message_for_code("invalid_params"),
+                                        "invalid_params",
+                                        Some(err.to_string()),
+                                        Some("docdex_llm_diagnostics"),
+                                        Some(json!({
+                                            "validation": "serde",
+                                            "tool": "docdex_llm_diagnostics"
+                                        })),
+                                    )),
+                                }))
+                            }
+                        };
+                        match self.handle_llm_diagnostics(args).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(Some(RpcResponse {
+                                    jsonrpc: JSONRPC_VERSION,
+                                    id: id.clone(),
+                                    result: None,
+                                    error: Some(rpc_tool_error(
+                                        &err,
+                                        Some("docdex_llm_diagnostics"),
                                     )),
                                 }))
                             }
@@ -5128,6 +5206,7 @@ impl McpServer {
                                         "docdex_kg_rebuild",
                                         "docdex_kg_clear",
                                         "docdex_local_completion",
+                                        "docdex_llm_diagnostics",
                                         "docdex_personal_preferences_status",
                                         "docdex_personal_preferences_categories",
                                         "docdex_personal_preferences_retention_policies",
@@ -6078,6 +6157,20 @@ impl McpServer {
                         "repo_path": { "type": "string", "description": "Alias for project_root (optional)" }
                     },
                     "required": ["task_type", "instruction", "context"]
+                }),
+            },
+            ToolDefinition {
+                name: "docdex_llm_diagnostics",
+                title: "LLM Diagnostics",
+                description: "Return local LLM service detection/default-selection diagnostics and status messages.",
+                annotations: Some(annotations_with_priority(0.4)),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "refresh": { "type": "boolean", "description": "When true or omitted, refresh the cached local LLM library if it is stale without starting installers" },
+                        "project_root": { "type": "string", "description": "Repo root; must match the MCP server repo (required unless initialize set a default)" },
+                        "repo_path": { "type": "string", "description": "Alias for project_root (same rules)" }
+                    }
                 }),
             },
             ToolDefinition {

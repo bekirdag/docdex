@@ -10,6 +10,7 @@ pub mod daemon;
 pub mod dag;
 pub mod delegation_telemetry;
 pub mod diff;
+pub mod embeddings;
 pub mod error;
 pub mod hardware;
 pub mod http_api;

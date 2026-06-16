@@ -21,12 +21,7 @@ pub struct OllamaClient {
     path_prefix: String,
 }
 
-#[derive(Clone)]
-pub struct OllamaEmbedder {
-    client: OllamaClient,
-    model: String,
-    timeout: Duration,
-}
+pub type OllamaEmbedder = crate::embeddings::EmbeddingEmbedder;
 
 impl OllamaClient {
     pub fn new(base_url: String) -> Result<Self, anyhow::Error> {
@@ -412,34 +407,6 @@ fn env_usize(key: &str) -> Option<usize> {
         return None;
     }
     trimmed.parse::<usize>().ok()
-}
-
-impl OllamaEmbedder {
-    pub fn new(base_url: String, model: String, timeout: Duration) -> Result<Self, anyhow::Error> {
-        let model = model.trim().to_string();
-        if model.is_empty() {
-            return Err(
-                AppError::new(ERR_EMBEDDING_FAILED, "embedding model is not configured").into(),
-            );
-        }
-        Ok(Self {
-            client: OllamaClient::new(base_url)?,
-            model,
-            timeout,
-        })
-    }
-
-    pub fn provider(&self) -> &'static str {
-        "ollama"
-    }
-
-    pub fn model(&self) -> &str {
-        &self.model
-    }
-
-    pub async fn embed(&self, prompt: &str) -> Result<Vec<f32>, anyhow::Error> {
-        self.client.embed(&self.model, prompt, self.timeout).await
-    }
 }
 
 fn parse_authority(authority: &str) -> Result<(String, String), anyhow::Error> {

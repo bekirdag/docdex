@@ -20,7 +20,10 @@ use crate::config::{DelegationConfig, LlmConfig};
 use crate::hardware::{GraphicsInfo, HardwareProfile};
 use crate::llm::adapter::{LlmClient, LlmCompletion, LlmFuture};
 use crate::llm::local_library::{
-    CachedLocalAgentSelection, LocalAgentEntry, LocalModelEntry, LocalModelLibrary,
+    CachedLocalAgentSelection, LocalAgentEntry, LocalCapabilityFlags, LocalDefaultCandidate,
+    LocalDefaultCandidateKind, LocalDefaultChoice, LocalDefaultSelection, LocalLlmProvider,
+    LocalModelEntry, LocalModelLibrary, LocalServiceEntry, LocalServiceHealth,
+    LocalServiceModelEntry,
 };
 use crate::mcoda::ratings::{apply_agent_rating, AgentRunRating};
 use crate::setup::test_support::ENV_LOCK;
@@ -328,6 +331,46 @@ fn make_local_agent(
         classification_method: "registry".to_string(),
         last_seen_at_ms: 0,
         last_classified_at_ms: None,
+        ..LocalAgentEntry::default()
+    }
+}
+
+fn make_service_model(name: &str, capabilities: &[&str]) -> LocalServiceModelEntry {
+    let capabilities: Vec<String> = capabilities
+        .iter()
+        .map(|value| (*value).to_string())
+        .collect();
+    LocalServiceModelEntry {
+        name: name.to_string(),
+        raw_name: Some(name.to_string()),
+        capabilities,
+        capability_flags: LocalCapabilityFlags {
+            chat: true,
+            code: true,
+            reasoning: true,
+            ..LocalCapabilityFlags::default()
+        },
+        delegation_ready: true,
+        delegation_readiness_reason: Some(
+            "healthy service with non-embedding chat/code-capable model".to_string(),
+        ),
+        ..LocalServiceModelEntry::default()
+    }
+}
+
+fn make_service(
+    provider: LocalLlmProvider,
+    base_url: &str,
+    models: Vec<LocalServiceModelEntry>,
+) -> LocalServiceEntry {
+    LocalServiceEntry {
+        service_id: format!("{}:{base_url}", provider.as_str()),
+        provider,
+        base_url: Some(base_url.to_string()),
+        health: LocalServiceHealth::Healthy,
+        models,
+        last_seen_at_ms: 0,
+        ..LocalServiceEntry::default()
     }
 }
 
@@ -1011,11 +1054,81 @@ fn parse_local_target_override_matches_model_name() {
         classification_method: "heuristic".to_string(),
         last_seen_at_ms: 0,
         last_classified_at_ms: None,
+        ..LocalModelEntry::default()
     });
     let target = parse_local_target_override("phi3.5:3.8b", Some(&library)).expect("target");
     match target {
         LocalTarget::OllamaModel(name) => assert_eq!(name, "phi3.5:3.8b"),
         _ => panic!("expected ollama model target"),
+    }
+}
+
+#[test]
+fn parse_local_target_override_uses_raw_ollama_name_and_skips_non_ollama_models() {
+    let mut library = LocalModelLibrary::default();
+    library.models.push(LocalModelEntry {
+        name: "qwen2.5-coder:7b".to_string(),
+        raw_name: Some("models/qwen2.5-coder:7b".to_string()),
+        source: "ollama".to_string(),
+        capabilities: vec!["code_writer".to_string()],
+        delegation_ready: true,
+        delegation_readiness_reason: Some(
+            "healthy service with non-embedding chat/code-capable model".to_string(),
+        ),
+        notes: None,
+        classification_method: "known_map".to_string(),
+        last_seen_at_ms: 0,
+        last_classified_at_ms: None,
+        ..LocalModelEntry::default()
+    });
+    library.models.push(LocalModelEntry {
+        name: "qwen3:8b".to_string(),
+        raw_name: Some("qwen3:8b".to_string()),
+        source: "vllm".to_string(),
+        capabilities: vec!["code_writer".to_string()],
+        delegation_ready: true,
+        delegation_readiness_reason: Some(
+            "healthy service with non-embedding chat/code-capable model".to_string(),
+        ),
+        notes: None,
+        classification_method: "known_map".to_string(),
+        last_seen_at_ms: 0,
+        last_classified_at_ms: None,
+        ..LocalModelEntry::default()
+    });
+
+    let target = parse_local_target_override("qwen2.5-coder:7b", Some(&library)).expect("target");
+    match target {
+        LocalTarget::OllamaModel(name) => assert_eq!(name, "models/qwen2.5-coder:7b"),
+        _ => panic!("expected ollama model target"),
+    }
+    assert!(parse_local_target_override("qwen3:8b", Some(&library)).is_none());
+}
+
+#[test]
+fn parse_local_target_override_matches_provider_neutral_service_model() {
+    let mut library = LocalModelLibrary::default();
+    library.services.push(make_service(
+        LocalLlmProvider::LlamaCpp,
+        "http://127.0.0.1:8080",
+        vec![make_service_model(
+            "qwen3.6-coder",
+            &["code_writer", "code_reviewer", "general_chat"],
+        )],
+    ));
+
+    let target = parse_local_target_override("qwen3.6-coder", Some(&library)).expect("target");
+    match target {
+        LocalTarget::LocalServiceModel {
+            provider,
+            base_url,
+            model,
+        } => {
+            assert_eq!(provider, LocalLlmProvider::LlamaCpp);
+            assert_eq!(base_url, "http://127.0.0.1:8080");
+            assert_eq!(model, "qwen3.6-coder");
+        }
+        _ => panic!("expected provider-neutral service target"),
     }
 }
 
@@ -1039,6 +1152,7 @@ fn parse_local_target_override_matches_agent_slug() {
         classification_method: "registry".to_string(),
         last_seen_at_ms: 0,
         last_classified_at_ms: None,
+        ..LocalAgentEntry::default()
     });
     let target = parse_local_target_override("devstral-local", Some(&library)).expect("target");
     match target {
@@ -1067,6 +1181,7 @@ fn delegation_selects_local_healthy_mcoda_agent() {
         classification_method: "registry".to_string(),
         last_seen_at_ms: 0,
         last_classified_at_ms: None,
+        ..LocalAgentEntry::default()
     });
     library.agents.push(LocalAgentEntry {
         agent_id: "agent-healthy".to_string(),
@@ -1085,6 +1200,7 @@ fn delegation_selects_local_healthy_mcoda_agent() {
         classification_method: "registry".to_string(),
         last_seen_at_ms: 0,
         last_classified_at_ms: None,
+        ..LocalAgentEntry::default()
     });
 
     let selected = select_local_target(TaskType::GenerateTests, &library).expect("selection");
@@ -1115,6 +1231,7 @@ fn delegation_cost_filter_skips_paid_candidate_when_not_cheaper_than_primary() {
         classification_method: "registry".to_string(),
         last_seen_at_ms: 0,
         last_classified_at_ms: None,
+        ..LocalAgentEntry::default()
     });
     let local_targets = vec![LocalTarget::McodaAgent("agent-claude".to_string())];
     let filtered = filter_automatic_local_targets_by_cost(
@@ -1146,6 +1263,7 @@ fn delegation_prefers_local_candidates_before_cloud_fallback() {
         classification_method: "heuristic".to_string(),
         last_seen_at_ms: 0,
         last_classified_at_ms: None,
+        ..LocalModelEntry::default()
     });
     library.agents.push(LocalAgentEntry {
         agent_id: "cloud-1".to_string(),
@@ -1164,6 +1282,7 @@ fn delegation_prefers_local_candidates_before_cloud_fallback() {
         classification_method: "registry".to_string(),
         last_seen_at_ms: 0,
         last_classified_at_ms: None,
+        ..LocalAgentEntry::default()
     });
 
     let targets = build_local_target_candidates_with_config(
@@ -1179,6 +1298,152 @@ fn delegation_prefers_local_candidates_before_cloud_fallback() {
             LocalTarget::McodaAgent("cloud-1".to_string()),
         ]
     );
+}
+
+#[test]
+fn build_local_target_candidates_uses_provider_neutral_default_service_model() {
+    let config = LlmConfig::default();
+    let service_target = LocalDefaultCandidate {
+        kind: LocalDefaultCandidateKind::LocalServiceModel,
+        provider: Some(LocalLlmProvider::LlamaCpp),
+        service_id: Some("llama-cpp:http://127.0.0.1:8080".to_string()),
+        model: Some("qwen3.6-coder".to_string()),
+        raw_model: Some("qwen3.6-coder".to_string()),
+        base_url: Some("http://127.0.0.1:8080".to_string()),
+        reason: Some("healthy local service model with code/chat capability".to_string()),
+        ..LocalDefaultCandidate::default()
+    };
+    let mut library = LocalModelLibrary {
+        services: vec![make_service(
+            LocalLlmProvider::LlamaCpp,
+            "http://127.0.0.1:8080",
+            vec![make_service_model(
+                "qwen3.6-coder",
+                &["code_writer", "code_reviewer", "general_chat"],
+            )],
+        )],
+        models: vec![LocalModelEntry {
+            name: "qwen3-coder".to_string(),
+            raw_name: Some("qwen3-coder".to_string()),
+            source: "ollama".to_string(),
+            capabilities: vec!["code_writer".to_string()],
+            delegation_ready: true,
+            delegation_readiness_reason: Some("healthy legacy Ollama delegation model".to_string()),
+            classification_method: "test".to_string(),
+            ..LocalModelEntry::default()
+        }],
+        defaults: LocalDefaultSelection {
+            delegation: LocalDefaultChoice {
+                selected: Some(service_target.clone()),
+                candidates: vec![service_target],
+                setup_hint: None,
+            },
+            ..LocalDefaultSelection::default()
+        },
+        ..LocalModelLibrary::default()
+    };
+
+    let targets = build_local_target_candidates_with_config(
+        None,
+        &config,
+        TaskType::GenerateTests,
+        &mut library,
+    );
+
+    assert!(matches!(
+        targets.first(),
+        Some(LocalTarget::LocalServiceModel {
+            provider,
+            base_url,
+            model
+        }) if *provider == LocalLlmProvider::LlamaCpp
+            && base_url == "http://127.0.0.1:8080"
+            && model == "qwen3.6-coder"
+    ));
+    assert!(targets.contains(&LocalTarget::OllamaModel("qwen3-coder".to_string())));
+}
+
+#[test]
+fn build_local_target_candidates_skips_provider_neutral_service_after_recent_failures() {
+    let temp = TempDir::new().expect("temp dir");
+    write_recent_local_failures(
+        temp.path(),
+        &[
+            (
+                "service:llama-cpp:qwen3.6-coder@http://127.0.0.1:8080",
+                "local_completion_failed",
+                "local service chat completion failed",
+            ),
+            (
+                "service:llama-cpp:qwen3.6-coder@http://127.0.0.1:8080",
+                "local_completion_failed",
+                "local service chat completion failed",
+            ),
+        ],
+    );
+
+    let config = LlmConfig::default();
+    let service_target = LocalDefaultCandidate {
+        kind: LocalDefaultCandidateKind::LocalServiceModel,
+        provider: Some(LocalLlmProvider::LlamaCpp),
+        service_id: Some("llama-cpp:http://127.0.0.1:8080".to_string()),
+        model: Some("qwen3.6-coder".to_string()),
+        raw_model: Some("qwen3.6-coder".to_string()),
+        base_url: Some("http://127.0.0.1:8080".to_string()),
+        reason: Some("healthy local service model with code/chat capability".to_string()),
+        ..LocalDefaultCandidate::default()
+    };
+    let mut library = LocalModelLibrary {
+        services: vec![make_service(
+            LocalLlmProvider::LlamaCpp,
+            "http://127.0.0.1:8080",
+            vec![make_service_model(
+                "qwen3.6-coder",
+                &["code_writer", "code_reviewer", "general_chat"],
+            )],
+        )],
+        models: vec![LocalModelEntry {
+            name: "qwen3-coder".to_string(),
+            raw_name: Some("qwen3-coder".to_string()),
+            source: "ollama".to_string(),
+            capabilities: vec!["code_writer".to_string()],
+            delegation_ready: true,
+            delegation_readiness_reason: Some("healthy legacy Ollama delegation model".to_string()),
+            classification_method: "test".to_string(),
+            ..LocalModelEntry::default()
+        }],
+        defaults: LocalDefaultSelection {
+            delegation: LocalDefaultChoice {
+                selected: Some(service_target.clone()),
+                candidates: vec![service_target],
+                setup_hint: None,
+            },
+            ..LocalDefaultSelection::default()
+        },
+        ..LocalModelLibrary::default()
+    };
+
+    let targets = build_local_target_candidates_with_config(
+        Some(temp.path()),
+        &config,
+        TaskType::GenerateTests,
+        &mut library,
+    );
+
+    assert!(matches!(
+        targets.first(),
+        Some(LocalTarget::OllamaModel(model)) if model == "qwen3-coder"
+    ));
+    assert!(!targets.iter().any(|target| matches!(
+        target,
+        LocalTarget::LocalServiceModel {
+            provider,
+            base_url,
+            model
+        } if *provider == LocalLlmProvider::LlamaCpp
+            && base_url == "http://127.0.0.1:8080"
+            && model == "qwen3.6-coder"
+    )));
 }
 
 #[test]
@@ -1371,6 +1636,7 @@ fn delegation_zero_cost_policy_falls_back_when_no_zero_cost_mcoda_agent(
         classification_method: "heuristic".to_string(),
         last_seen_at_ms: 0,
         last_classified_at_ms: None,
+        ..LocalModelEntry::default()
     });
 
     let selected = select_local_target_with_config(
@@ -1422,6 +1688,7 @@ fn delegation_updates_cached_zero_cost_agent_after_successful_alternate_completi
         classification_method: "mcoda".to_string(),
         last_seen_at_ms: 0,
         last_classified_at_ms: None,
+        ..LocalAgentEntry::default()
     });
     library.agents.push(LocalAgentEntry {
         agent_id: "agent-local-alt".to_string(),
@@ -1440,6 +1707,7 @@ fn delegation_updates_cached_zero_cost_agent_after_successful_alternate_completi
         classification_method: "mcoda".to_string(),
         last_seen_at_ms: 0,
         last_classified_at_ms: None,
+        ..LocalAgentEntry::default()
     });
     library.cached_local_agent_selection =
         Some(crate::llm::local_library::CachedLocalAgentSelection {
@@ -1498,6 +1766,7 @@ fn delegation_does_not_cache_expensive_mcoda_completion() -> Result<(), Box<dyn 
         classification_method: "mcoda".to_string(),
         last_seen_at_ms: 0,
         last_classified_at_ms: None,
+        ..LocalAgentEntry::default()
     });
     library.agents.push(LocalAgentEntry {
         agent_id: "agent-claude".to_string(),
@@ -1516,6 +1785,7 @@ fn delegation_does_not_cache_expensive_mcoda_completion() -> Result<(), Box<dyn 
         classification_method: "mcoda".to_string(),
         last_seen_at_ms: 0,
         last_classified_at_ms: None,
+        ..LocalAgentEntry::default()
     });
     library.cached_local_agent_selection =
         Some(crate::llm::local_library::CachedLocalAgentSelection {
@@ -1562,6 +1832,7 @@ fn delegation_selects_code_writer() {
         classification_method: "heuristic".to_string(),
         last_seen_at_ms: 0,
         last_classified_at_ms: None,
+        ..LocalModelEntry::default()
     });
     library.models.push(LocalModelEntry {
         name: "code-model".to_string(),
@@ -1571,12 +1842,73 @@ fn delegation_selects_code_writer() {
         classification_method: "heuristic".to_string(),
         last_seen_at_ms: 0,
         last_classified_at_ms: None,
+        ..LocalModelEntry::default()
     });
     let selected = select_local_target(TaskType::GenerateTests, &library).expect("selection");
     match selected {
         LocalTarget::OllamaModel(name) => assert_eq!(name, "code-model"),
         _ => panic!("unexpected target selection"),
     }
+}
+
+#[test]
+fn delegation_selection_uses_ready_ollama_raw_name_and_skips_non_ollama_models() {
+    let mut library = LocalModelLibrary::default();
+    library.models.push(LocalModelEntry {
+        name: "qwen3-vllm:8b".to_string(),
+        source: "vllm".to_string(),
+        capabilities: vec!["code_writer".to_string()],
+        delegation_ready: true,
+        delegation_readiness_reason: Some(
+            "healthy service with non-embedding chat/code-capable model".to_string(),
+        ),
+        notes: None,
+        classification_method: "known_map".to_string(),
+        last_seen_at_ms: 0,
+        last_classified_at_ms: None,
+        ..LocalModelEntry::default()
+    });
+    library.models.push(LocalModelEntry {
+        name: "qwen2.5-coder:7b".to_string(),
+        raw_name: Some("models/qwen2.5-coder:7b".to_string()),
+        source: "ollama".to_string(),
+        capabilities: vec!["code_writer".to_string()],
+        delegation_ready: true,
+        delegation_readiness_reason: Some(
+            "healthy service with non-embedding chat/code-capable model".to_string(),
+        ),
+        notes: None,
+        classification_method: "known_map".to_string(),
+        last_seen_at_ms: 0,
+        last_classified_at_ms: None,
+        ..LocalModelEntry::default()
+    });
+
+    let selected = select_local_target(TaskType::GenerateTests, &library).expect("selection");
+    match selected {
+        LocalTarget::OllamaModel(name) => assert_eq!(name, "models/qwen2.5-coder:7b"),
+        _ => panic!("unexpected target selection"),
+    }
+}
+
+#[test]
+fn delegation_selection_skips_phase3_not_ready_models() {
+    let mut library = LocalModelLibrary::default();
+    library.models.push(LocalModelEntry {
+        name: "qwen2.5-coder:7b".to_string(),
+        source: "ollama".to_string(),
+        capabilities: vec!["code_writer".to_string()],
+        delegation_ready: false,
+        delegation_readiness_reason: Some("service health is unavailable".to_string()),
+        notes: None,
+        classification_method: "known_map".to_string(),
+        last_seen_at_ms: 0,
+        last_classified_at_ms: None,
+        ..LocalModelEntry::default()
+    });
+
+    let selected = select_local_target(TaskType::GenerateTests, &library);
+    assert!(selected.is_none());
 }
 
 #[test]
@@ -1590,6 +1922,7 @@ fn delegation_selects_general_chat_for_general_questions() {
         classification_method: "heuristic".to_string(),
         last_seen_at_ms: 0,
         last_classified_at_ms: None,
+        ..LocalModelEntry::default()
     });
     library.models.push(LocalModelEntry {
         name: "chat-model".to_string(),
@@ -1599,6 +1932,7 @@ fn delegation_selects_general_chat_for_general_questions() {
         classification_method: "heuristic".to_string(),
         last_seen_at_ms: 0,
         last_classified_at_ms: None,
+        ..LocalModelEntry::default()
     });
 
     let selected = select_local_target(TaskType::GeneralQuestion, &library).expect("selection");
@@ -1643,6 +1977,7 @@ fn delegation_selects_falls_back_without_candidates() {
         classification_method: "heuristic".to_string(),
         last_seen_at_ms: 0,
         last_classified_at_ms: None,
+        ..LocalModelEntry::default()
     });
     let selected = select_local_target(TaskType::GenerateTests, &library);
     assert!(selected.is_none());
@@ -1659,6 +1994,7 @@ fn delegation_selects_primary_prefers_mcoda_on_tie() {
         classification_method: "heuristic".to_string(),
         last_seen_at_ms: 0,
         last_classified_at_ms: None,
+        ..LocalModelEntry::default()
     });
     library.agents.push(LocalAgentEntry {
         agent_id: "agent-1".to_string(),
@@ -1677,6 +2013,7 @@ fn delegation_selects_primary_prefers_mcoda_on_tie() {
         classification_method: "registry".to_string(),
         last_seen_at_ms: 0,
         last_classified_at_ms: None,
+        ..LocalAgentEntry::default()
     });
     let selected =
         select_primary_target(TaskType::GenerateTests, &library, None).expect("selection");
@@ -1697,6 +2034,7 @@ fn delegation_selects_primary_avoids_local_target_when_possible() {
         classification_method: "heuristic".to_string(),
         last_seen_at_ms: 0,
         last_classified_at_ms: None,
+        ..LocalModelEntry::default()
     });
     library.agents.push(LocalAgentEntry {
         agent_id: "agent-1".to_string(),
@@ -1715,6 +2053,7 @@ fn delegation_selects_primary_avoids_local_target_when_possible() {
         classification_method: "registry".to_string(),
         last_seen_at_ms: 0,
         last_classified_at_ms: None,
+        ..LocalAgentEntry::default()
     });
     let local_target = LocalTarget::OllamaModel("local-model".to_string());
     let selected = select_primary_target(TaskType::GenerateTests, &library, Some(&local_target))
@@ -1736,6 +2075,7 @@ fn delegation_selects_primary_skips_embedding_only_models() {
         classification_method: "heuristic".to_string(),
         last_seen_at_ms: 0,
         last_classified_at_ms: None,
+        ..LocalModelEntry::default()
     });
     let selected = select_primary_target(TaskType::GenerateTests, &library, None);
     assert!(selected.is_none());

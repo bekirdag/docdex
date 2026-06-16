@@ -1,6 +1,11 @@
+use crate::cli::LlmCommand;
 use crate::config;
 use crate::hardware;
 use crate::llm;
+use crate::llm::local_library::{
+    detect_local_service_report, load_local_library, local_library_diagnostics,
+    refresh_local_library_if_stale, service_probe_timeout, LocalDefaultCandidate,
+};
 use crate::setup::ollama as setup_ollama;
 use crate::util;
 use anyhow::{Context, Result};
@@ -8,6 +13,14 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command as StdCommand;
 use which::which;
+
+pub(crate) async fn run_command(command: LlmCommand) -> Result<()> {
+    match command {
+        LlmCommand::List => run_list(),
+        LlmCommand::Detect { json } => run_detect(json).await,
+        LlmCommand::Diagnostics { json } => run_diagnostics(json).await,
+    }
+}
 
 pub fn run_list() -> Result<()> {
     util::init_logging("warn")?;
@@ -47,6 +60,130 @@ pub fn run_list() -> Result<()> {
         }
     }
     Ok(())
+}
+
+pub async fn run_detect(json: bool) -> Result<()> {
+    util::init_logging("warn")?;
+    let config_data = config::AppConfig::load_default()?;
+    let report =
+        detect_local_service_report(None, &config_data.llm, service_probe_timeout()).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("local LLM service detection:");
+    for probe in &report.probes {
+        let provider = probe
+            .display_name
+            .as_deref()
+            .unwrap_or_else(|| probe.provider.as_str());
+        let health = serde_json::to_string(&probe.health)
+            .unwrap_or_else(|_| "\"unknown\"".to_string())
+            .trim_matches('"')
+            .to_string();
+        let binary_count = probe.found_binaries.len();
+        println!(
+            "- {provider}: health={health}, models={}, binaries_found={binary_count}",
+            probe.model_count
+        );
+        if let Some(notes) = probe.notes.as_deref() {
+            println!("  notes: {notes}");
+        }
+    }
+    println!(
+        "detected services: {}, models: {}, mcoda agents: {}",
+        report.library.services.len(),
+        report.library.models.len(),
+        report.library.agents.len()
+    );
+    Ok(())
+}
+
+pub async fn run_diagnostics(json: bool) -> Result<()> {
+    util::init_logging("warn")?;
+    let config_data = config::AppConfig::load_default()?;
+    let library = match refresh_local_library_if_stale(None, &config_data.llm, false).await {
+        Ok(library) => library,
+        Err(err) => {
+            eprintln!("local model library refresh failed: {err}; using cached library");
+            load_local_library(None).context("load cached local model library")?
+        }
+    };
+    let diagnostics = local_library_diagnostics(&library, &config_data.llm);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&diagnostics)?);
+        return Ok(());
+    }
+
+    println!("local LLM diagnostics:");
+    println!(
+        "detected services: {}, models: {}, mcoda agents: {}",
+        diagnostics.services_detected, diagnostics.models_detected, diagnostics.agents_detected
+    );
+    println!(
+        "library updated_at_ms: {} (ttl_ms={}, stale={})",
+        diagnostics.updated_at_ms, diagnostics.ttl_ms, diagnostics.stale
+    );
+    println!(
+        "embedding default: {}",
+        diagnostics
+            .defaults
+            .embedding
+            .selected
+            .as_ref()
+            .map(format_candidate)
+            .unwrap_or_else(|| "none".to_string())
+    );
+    println!(
+        "delegation default: {}",
+        diagnostics
+            .defaults
+            .delegation
+            .selected
+            .as_ref()
+            .map(format_candidate)
+            .unwrap_or_else(|| "none".to_string())
+    );
+    if diagnostics.status_messages.is_empty() {
+        println!("status messages: none");
+    } else {
+        println!("status messages:");
+        for status in diagnostics.status_messages {
+            println!(
+                "- [{}] {}: {}",
+                status.severity, status.code, status.message
+            );
+        }
+    }
+    Ok(())
+}
+
+fn format_candidate(candidate: &LocalDefaultCandidate) -> String {
+    if let Some(agent_slug) = candidate
+        .agent_slug
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return format!("agent:{agent_slug}");
+    }
+    if let Some(agent_id) = candidate
+        .agent_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return format!("agent:{agent_id}");
+    }
+    let model = candidate
+        .raw_model
+        .as_deref()
+        .or(candidate.model.as_deref())
+        .unwrap_or("unknown");
+    match candidate.provider.as_ref() {
+        Some(provider) => format!("{}:{model}", provider.as_str()),
+        None => model.to_string(),
+    }
 }
 
 pub fn run_setup(ollama_path: Option<PathBuf>) -> Result<()> {

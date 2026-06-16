@@ -1,6 +1,39 @@
 use super::*;
 
 impl McpServer {
+    pub(super) async fn handle_llm_diagnostics(
+        &self,
+        args: LlmDiagnosticsArgs,
+    ) -> Result<serde_json::Value> {
+        let project_root = self.resolve_project_root_arg(args.project_root, args.repo_path)?;
+        if project_root.is_some() {
+            self.ensure_project_root(project_root.as_deref())?;
+        }
+        let library = if args.refresh.unwrap_or(true) {
+            match refresh_local_library_if_stale(
+                self.global_state_dir.as_deref(),
+                &self.llm_config,
+                false,
+            )
+            .await
+            {
+                Ok(library) => library,
+                Err(err) => {
+                    warn!(
+                        target: "docdexd",
+                        error = ?err,
+                        "local model library diagnostics refresh failed"
+                    );
+                    load_local_library(self.global_state_dir.as_deref())?
+                }
+            }
+        } else {
+            load_local_library(self.global_state_dir.as_deref())?
+        };
+        let diagnostics = local_library_diagnostics(&library, &self.llm_config);
+        Ok(json!({ "diagnostics": diagnostics }))
+    }
+
     pub(super) async fn handle_search(
         &self,
         request_id: String,
@@ -453,6 +486,7 @@ impl McpServer {
         }
         let local_agent_override = match (&override_target, agent_override) {
             (Some(LocalTarget::OllamaModel(model)), _) => Some(format!("model:{model}")),
+            (Some(LocalTarget::LocalServiceModel { .. }), _) => None,
             (Some(LocalTarget::McodaAgent(_)), Some(value)) => Some(value.to_string()),
             (None, Some(value)) => Some(value.to_string()),
             _ => None,

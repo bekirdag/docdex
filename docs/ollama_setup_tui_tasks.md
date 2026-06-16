@@ -1,4 +1,6 @@
-# Ollama Setup TUI Tasks (Expanded)
+# Local LLM Setup TUI Tasks (Expanded)
+
+Historical note: this task list was originally written for an Ollama-first wizard. Current acceptance is provider-neutral: setup detects supported local services and models first, then offers Ollama only as the fallback setup path.
 
 Each task includes: slug, title, deep description, dependencies, files to touch, acceptance criteria, documentation updates, and tests.
 
@@ -18,6 +20,7 @@ Each task includes: slug, title, deep description, dependencies, files to touch,
   - `npm i -g docdex` does not call Ollama installers or model pulls.
   - Postinstall never attempts to install Chromium.
   - Postinstall still prints instructions or launches setup.
+  - Setup can reuse an existing local LLM service without prompting to install Ollama.
 - **Docs to Touch:**
   - `docs/usage.md`
 - **Tests to Write:**
@@ -125,9 +128,9 @@ Each task includes: slug, title, deep description, dependencies, files to touch,
 
 ## Task 6
 - **Slug:** `setup-ollama-core`
-- **Title:** Ollama install + model pull (Rust)
+- **Title:** Ollama fallback install + model pull (Rust)
 - **Description:**  
-  Implement OS-specific commands to install Ollama (brew/winget/curl|wget). Ensure these run only with explicit consent. Provide functions to:
+  Implement OS-specific commands to install the Ollama fallback (brew/winget/curl|wget). Ensure these run only with explicit consent and only after provider-neutral detection fails to find usable defaults. Provide functions to:
   - Check if `ollama` exists.
   - Run `ollama pull` for `nomic-embed-text` and `phi3.5:3.8b`.
   - Validate model list output.
@@ -139,6 +142,7 @@ Each task includes: slug, title, deep description, dependencies, files to touch,
 - **Acceptance Criteria:**
   - Detects `ollama` on PATH.
   - `ollama pull` results recorded for summary.
+  - Existing vLLM, llama.cpp-compatible OpenAI endpoints, LM Studio, LocalAI, SGLang, TGI-compatible deployments, or healthy local mcoda agents can be selected without entering the Ollama fallback path.
   - Errors include copy/paste remediation.
 - **Docs to Touch:** None
 - **Tests to Write:**
@@ -149,9 +153,9 @@ Each task includes: slug, title, deep description, dependencies, files to touch,
 
 ## Task 7
 - **Slug:** `setup-config-write`
-- **Title:** Write default model to config.toml
+- **Title:** Write provider-neutral defaults to config.toml
 - **Description:**  
-  Update config handling so the setup wizard can set `[llm].default_model` when the user chooses a model. Preserve existing config unless user overrides. Follow existing TOML update patterns in npm helper to avoid breaking formatting.
+  Update config handling so the setup wizard can set provider, base URL, embedding model, default model, and lane-specific delegation defaults when the user chooses detected candidates. Preserve explicit existing config unless user overrides; migrate only old generated Ollama defaults. Follow existing TOML update patterns in npm helper to avoid breaking formatting.
 - **Dependencies:** `setup-state-machine-core`
 - **Files to Touch:**
   - `src/setup/config.rs` (new)
@@ -159,6 +163,8 @@ Each task includes: slug, title, deep description, dependencies, files to touch,
 - **Acceptance Criteria:**
   - Config updated only when user opts in.
   - Existing values preserved if user skips.
+  - Explicit custom provider/base/model/delegation settings are preserved.
+  - Old generated Ollama defaults can migrate to better detected local defaults.
 - **Docs to Touch:** None
 - **Tests to Write:**
   - Unit: config update preserves unrelated sections.
@@ -191,7 +197,7 @@ Each task includes: slug, title, deep description, dependencies, files to touch,
 - **Slug:** `setup-runner`
 - **Title:** Orchestrate TUI + state + installer
 - **Description:**  
-  Wire up the TUI runner that drives the state machine, calls Ollama install, triggers model pulls, writes markers, and prints final summary. Must honor `--json`, `--non-interactive`, and `--force`.
+  Wire up the TUI runner that drives the state machine, applies detected local defaults, calls Ollama fallback install only when chosen, triggers fallback model pulls, writes markers, and prints final summary. Must honor `--json`, `--non-interactive`, and `--force`.
 - **Dependencies:** `tui-renderer-core`, `setup-ollama-core`, `setup-status-store`
 - **Files to Touch:**
   - `src/setup/mod.rs`

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+## 0.2.76
+- Add provider-neutral local LLM setup, diagnostics, and migration coverage so Docdex can reuse existing Ollama, vLLM, llama.cpp-compatible, OpenAI-compatible local services, and mcoda agents before offering the Ollama fallback.
+- Add fixture coverage for the observed local LLM environment and guard setup migration so explicit user model/provider/agent settings are not overwritten.
+- Bump release metadata to 0.2.76.
+
 ## 0.2.75
 - Add automatic AI-terminal capture, generated-skill registry, validation, sync, install, rollback, and context-hint surfaces for personal-preferences and mind-clone workflows.
 - Add generated-skill quality reports with replay, drift, stale-source, activation feedback, and promote/keep/review/demote/quarantine recommendations.

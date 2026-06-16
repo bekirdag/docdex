@@ -76,6 +76,7 @@ fn ensure_schema(conn: &Connection, embedding_dim: Option<usize>) -> Result<Opti
         );",
     )
     .context("ensure profile schema")?;
+    ensure_embedding_metadata_columns(conn)?;
 
     ensure_schema_version(conn)?;
 
@@ -109,6 +110,32 @@ fn ensure_schema(conn: &Connection, embedding_dim: Option<usize>) -> Result<Opti
     }
 
     Ok(inferred)
+}
+
+fn ensure_embedding_metadata_columns(conn: &Connection) -> Result<()> {
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(preferences)")
+        .context("inspect preferences schema")?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .context("read preferences schema")?;
+    let mut columns = Vec::new();
+    for row in rows {
+        columns.push(row.context("read preferences column")?);
+    }
+    if !columns.iter().any(|column| column == "embedding_provider") {
+        conn.execute_batch("ALTER TABLE preferences ADD COLUMN embedding_provider TEXT;")
+            .context("add preferences.embedding_provider")?;
+    }
+    if !columns.iter().any(|column| column == "embedding_model") {
+        conn.execute_batch("ALTER TABLE preferences ADD COLUMN embedding_model TEXT;")
+            .context("add preferences.embedding_model")?;
+    }
+    if !columns.iter().any(|column| column == "embedding_dim") {
+        conn.execute_batch("ALTER TABLE preferences ADD COLUMN embedding_dim INTEGER;")
+            .context("add preferences.embedding_dim")?;
+    }
+    Ok(())
 }
 
 fn ensure_schema_version(conn: &Connection) -> Result<()> {

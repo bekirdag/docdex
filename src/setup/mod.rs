@@ -74,8 +74,9 @@ fn run_with_options(options: &SetupOptions) -> Result<SetupSummary> {
     if options.non_interactive {
         return Ok(SetupSummary {
             status: "skipped".to_string(),
-            message: "Run `docdex setup` in a terminal to install Ollama, Chromium, and models."
-                .to_string(),
+            message:
+                "Run `docdex setup` in a terminal to choose a local LLM service, optional Ollama fallback, Chromium, and models."
+                    .to_string(),
             models_installed: Vec::new(),
             default_model: None,
             timestamp_ms: now_ms(),

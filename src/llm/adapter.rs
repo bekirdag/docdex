@@ -160,6 +160,32 @@ pub fn resolve_agent_adapter(agent: &McodaAgent) -> Result<LlmAdapter> {
     Ok(adapter)
 }
 
+pub(crate) fn resolve_local_openai_compatible_adapter(
+    base_url: &str,
+    model: &str,
+    adapter: &str,
+) -> Result<LlmAdapter> {
+    let base_url = base_url.trim();
+    if base_url.is_empty() {
+        return Err(anyhow!("local OpenAI-compatible base_url missing"));
+    }
+    let model = model.trim();
+    if model.is_empty() {
+        return Err(anyhow!("local OpenAI-compatible model missing"));
+    }
+    let adapter = adapter.trim();
+    if adapter.is_empty() {
+        return Err(anyhow!("local OpenAI-compatible adapter name missing"));
+    }
+    let config = json!({ "baseUrl": base_url });
+    Ok(LlmAdapter::OpenAiApi(OpenAiApiClient::new(
+        Some(model.to_string()),
+        adapter.to_string(),
+        Some(&config),
+        String::new(),
+    )?))
+}
+
 fn resolve_model(agent: &McodaAgent) -> Option<String> {
     if let Some(model) = agent.default_model.as_ref() {
         if !model.trim().is_empty() {
@@ -1054,7 +1080,7 @@ fn config_headers(config: Option<&Value>) -> HashMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::StatusCode;
+    use axum::http::{HeaderMap, StatusCode};
     use axum::response::IntoResponse;
     use axum::routing::post;
     use axum::{Json, Router};
@@ -1277,12 +1303,55 @@ mod tests {
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
         server.abort();
     }
+
+    #[tokio::test]
+    async fn local_openai_compatible_adapter_omits_authorization_when_api_key_is_empty() {
+        let app = Router::new().route(
+            "/chat/completions",
+            post(|headers: HeaderMap| async move {
+                assert!(headers.get("authorization").is_none());
+                (
+                    StatusCode::OK,
+                    Json(json!({
+                        "choices": [{
+                            "message": { "content": "local-ok" }
+                        }]
+                    })),
+                )
+                    .into_response()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
+        let address = listener.local_addr().expect("listener addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve test app");
+        });
+
+        let client = resolve_local_openai_compatible_adapter(
+            &format!("http://{address}"),
+            "qwen3.6-coder",
+            "llama-cpp",
+        )
+        .expect("local adapter");
+        let completion = client
+            .generate("hello", 32, Duration::from_secs(2))
+            .await
+            .expect("completion");
+
+        assert_eq!(completion.output, "local-ok");
+        server.abort();
+    }
 }
 
 fn build_auth_headers(headers: &HashMap<String, String>, api_key: &str) -> HashMap<String, String> {
     let mut out = headers.clone();
-    out.entry("Authorization".to_string())
-        .or_insert_with(|| format!("Bearer {api_key}"));
+    let api_key = api_key.trim();
+    if !api_key.is_empty() {
+        out.entry("Authorization".to_string())
+            .or_insert_with(|| format!("Bearer {api_key}"));
+    }
     out.entry("Content-Type".to_string())
         .or_insert_with(|| "application/json".to_string());
     out

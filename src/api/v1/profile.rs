@@ -107,6 +107,12 @@ pub struct PreferenceRecord {
     pub id: String,
     pub agent_id: String,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_dim: Option<usize>,
     pub category: PreferenceCategory,
     pub last_updated: i64,
 }
@@ -117,6 +123,9 @@ impl From<Preference> for PreferenceRecord {
             id: pref.id,
             agent_id: pref.agent_id,
             content: pref.content,
+            embedding_provider: pref.embedding_provider,
+            embedding_model: pref.embedding_model,
+            embedding_dim: pref.embedding_dim,
             category: pref.category,
             last_updated: pref.last_updated,
         }
@@ -208,7 +217,7 @@ pub async fn profile_add_handler(
         }
     }
     let embedding = if let Some(embedder) = profile_state.embedder.as_ref() {
-        match embedder.embed(content).await {
+        match embedder.embed_with_metadata(content).await {
             Ok(embedding) => embedding,
             Err(err) => {
                 state.metrics.inc_error();
@@ -217,19 +226,37 @@ pub async fn profile_add_handler(
                     error = ?err,
                     "profile embedding failed; falling back to local hash"
                 );
-                ProfileEmbedder::fallback_embedding(content, profile_state.manager.embedding_dim())
+                crate::profiles::embedder::ProfileEmbedding {
+                    embedding: ProfileEmbedder::fallback_embedding(
+                        content,
+                        profile_state.manager.embedding_dim(),
+                    ),
+                    provider: "fallback".to_string(),
+                    model: "hash-embed-v1".to_string(),
+                }
             }
         }
     } else {
-        ProfileEmbedder::fallback_embedding(content, profile_state.manager.embedding_dim())
+        crate::profiles::embedder::ProfileEmbedding {
+            embedding: ProfileEmbedder::fallback_embedding(
+                content,
+                profile_state.manager.embedding_dim(),
+            ),
+            provider: "fallback".to_string(),
+            model: "hash-embed-v1".to_string(),
+        }
     };
-    let preference = match profile_state.manager.add_preference(
-        agent_id,
-        content,
-        &embedding,
-        payload.category,
-        now_ms,
-    ) {
+    let preference = match profile_state
+        .manager
+        .add_preference_with_embedding_metadata(
+            agent_id,
+            content,
+            &embedding.embedding,
+            payload.category,
+            now_ms,
+            Some(&embedding.provider),
+            Some(&embedding.model),
+        ) {
         Ok(pref) => pref,
         Err(err) => {
             state.metrics.inc_error();
@@ -392,13 +419,17 @@ pub async fn profile_save_handler(
     let seed_embedding =
         ProfileEmbedder::fallback_embedding(content, profile_state.manager.embedding_dim());
     let category = payload.category;
-    let seed_pref = match profile_state.manager.add_preference(
-        agent_id,
-        content,
-        &seed_embedding,
-        category.clone(),
-        now_ms,
-    ) {
+    let seed_pref = match profile_state
+        .manager
+        .add_preference_with_embedding_metadata(
+            agent_id,
+            content,
+            &seed_embedding,
+            category.clone(),
+            now_ms,
+            Some("fallback"),
+            Some("hash-embed-v1"),
+        ) {
         Ok(pref) => pref,
         Err(err) => {
             state.metrics.inc_error();
@@ -533,7 +564,7 @@ pub async fn profile_import_handler(
     let mut preferences = Vec::with_capacity(payload.preferences.len());
     for pref in payload.preferences {
         let embedding = if let Some(embedder) = profile_state.embedder.as_ref() {
-            match embedder.embed(pref.content.trim()).await {
+            match embedder.embed_with_metadata(pref.content.trim()).await {
                 Ok(embedding) => embedding,
                 Err(err) => {
                     state.metrics.inc_error();
@@ -542,23 +573,35 @@ pub async fn profile_import_handler(
                         error = ?err,
                         "profile embedding failed; falling back to local hash"
                     );
-                    ProfileEmbedder::fallback_embedding(
-                        pref.content.trim(),
-                        profile_state.manager.embedding_dim(),
-                    )
+                    crate::profiles::embedder::ProfileEmbedding {
+                        embedding: ProfileEmbedder::fallback_embedding(
+                            pref.content.trim(),
+                            profile_state.manager.embedding_dim(),
+                        ),
+                        provider: "fallback".to_string(),
+                        model: "hash-embed-v1".to_string(),
+                    }
                 }
             }
         } else {
-            ProfileEmbedder::fallback_embedding(
-                pref.content.trim(),
-                profile_state.manager.embedding_dim(),
-            )
+            crate::profiles::embedder::ProfileEmbedding {
+                embedding: ProfileEmbedder::fallback_embedding(
+                    pref.content.trim(),
+                    profile_state.manager.embedding_dim(),
+                ),
+                provider: "fallback".to_string(),
+                model: "hash-embed-v1".to_string(),
+            }
         };
+        let embedding_dim = embedding.embedding.len();
         preferences.push(Preference {
             id: pref.id,
             agent_id: pref.agent_id,
             content: pref.content,
-            embedding: Some(embedding),
+            embedding: Some(embedding.embedding),
+            embedding_provider: Some(embedding.provider),
+            embedding_model: Some(embedding.model),
+            embedding_dim: Some(embedding_dim),
             category: pref.category,
             last_updated: pref.last_updated,
         });

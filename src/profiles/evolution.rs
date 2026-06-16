@@ -155,13 +155,15 @@ impl EvolutionEngine {
         match decision.action {
             EvolutionAction::Add => {
                 let content = decision.new_content.as_deref().unwrap_or(new_fact).trim();
-                let embedding = self.embedder.embed(content).await?;
-                let preference = self.manager.add_preference(
+                let embedding = self.embedder.embed_with_metadata(content).await?;
+                let preference = self.manager.add_preference_with_embedding_metadata(
                     agent_id,
                     content,
-                    &embedding,
+                    &embedding.embedding,
                     category,
                     now_epoch_ms(),
+                    Some(&embedding.provider),
+                    Some(&embedding.model),
                 )?;
                 let outcome = EvolutionOutcome {
                     action: EvolutionAction::Add,
@@ -207,9 +209,15 @@ impl EvolutionEngine {
                     }
                 }
                 let content = decision.new_content.as_deref().unwrap_or(new_fact).trim();
-                let embedding = self.embedder.embed(content).await?;
-                self.manager
-                    .update_preference(&target, content, &embedding, now_epoch_ms())?;
+                let embedding = self.embedder.embed_with_metadata(content).await?;
+                self.manager.update_preference_with_embedding_metadata(
+                    &target,
+                    content,
+                    &embedding.embedding,
+                    now_epoch_ms(),
+                    Some(&embedding.provider),
+                    Some(&embedding.model),
+                )?;
                 let outcome = EvolutionOutcome {
                     action: EvolutionAction::Update,
                     preference_id: Some(target),

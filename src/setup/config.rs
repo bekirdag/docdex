@@ -3,9 +3,17 @@ use std::path::Path;
 use uuid::Uuid;
 
 use crate::config::{self, AppConfig};
+use crate::llm::local_library::{
+    LocalDefaultCandidate, LocalDefaultCandidateKind, LocalLlmProvider,
+};
 use crate::mswarm;
 
 const LEGACY_MSWARM_BASE_URL: &str = "http://127.0.0.1:8080";
+const LEGACY_LLM_PROVIDER: &str = "ollama";
+const LEGACY_LLM_BASE_URL: &str = "http://127.0.0.1:11434";
+const LEGACY_LLM_DEFAULT_MODEL: &str = "phi3.5:3.8b";
+const LEGACY_LLM_EMBED_MODEL: &str = "nomic-embed-text";
+const LEGACY_LLM_EMBED_MODEL_WITH_TAG: &str = "nomic-embed-text:latest";
 
 pub fn set_default_model(model: &str) -> Result<bool> {
     if model.trim().is_empty() {
@@ -35,6 +43,132 @@ pub fn set_embedding_model(model: &str) -> Result<bool> {
     config_data.llm.embedding_model = model.to_string();
     config::write_config(&path, &config_data).context("write config")?;
     Ok(true)
+}
+
+pub fn apply_embedding_candidate(candidate: &LocalDefaultCandidate) -> Result<bool> {
+    let Some(model) = candidate_model(candidate) else {
+        return Ok(false);
+    };
+    std::env::set_var("DOCDEX_BROWSER_AUTO_INSTALL", "0");
+    let path = config::default_config_path()?;
+    let mut config_data = load_config_no_browser(&path)?;
+    let mut changed = false;
+    let endpoint_is_legacy = llm_endpoint_is_legacy_default(&config_data);
+    let endpoint_matches_candidate = llm_endpoint_matches_candidate(&config_data, candidate);
+    let may_apply_candidate = endpoint_is_legacy || endpoint_matches_candidate;
+
+    if may_apply_candidate && is_legacy_or_empty_embedding_model(&config_data.llm.embedding_model) {
+        changed |= set_string_if_changed(&mut config_data.llm.embedding_model, &model);
+    }
+    if endpoint_is_legacy && candidate.kind != LocalDefaultCandidateKind::OllamaSetupFallback {
+        if let Some(provider) = candidate.provider.as_ref() {
+            changed |= set_string_if_changed(&mut config_data.llm.provider, provider.as_str());
+        }
+        if let Some(base_url) = candidate
+            .base_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            changed |= set_string_if_changed(&mut config_data.llm.base_url, base_url);
+        }
+    }
+
+    if changed {
+        config::write_config(&path, &config_data).context("write config")?;
+    }
+    Ok(changed)
+}
+
+pub fn apply_delegation_candidate(candidate: &LocalDefaultCandidate) -> Result<bool> {
+    let agent = candidate_agent(candidate);
+    let model = candidate_model(candidate);
+    if agent.is_none() && model.is_none() {
+        return Ok(false);
+    }
+
+    std::env::set_var("DOCDEX_BROWSER_AUTO_INSTALL", "0");
+    let path = config::default_config_path()?;
+    let mut config_data = load_config_no_browser(&path)?;
+    let mut changed = false;
+    if !config_data.llm.delegation.auto_enable {
+        config_data.llm.delegation.auto_enable = true;
+        changed = true;
+    }
+
+    if let Some(agent) = agent.as_deref() {
+        changed |= set_string_if_legacy_delegation_agent(
+            &mut config_data.llm.delegation.local_agent_id,
+            agent,
+        );
+        changed |= set_string_if_legacy_delegation_agent(
+            &mut config_data.llm.delegation.code.local_agent_id,
+            agent,
+        );
+        changed |= set_string_if_legacy_delegation_agent(
+            &mut config_data.llm.delegation.general.local_agent_id,
+            agent,
+        );
+    }
+
+    let endpoint_is_legacy = llm_endpoint_is_legacy_default(&config_data);
+    let endpoint_matches_candidate = llm_endpoint_matches_candidate(&config_data, candidate);
+    let may_apply_candidate = endpoint_is_legacy || endpoint_matches_candidate;
+    let candidate_has_endpoint = candidate.provider.is_some()
+        || candidate
+            .base_url
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty());
+    let may_apply_default_model = if agent.is_some() {
+        candidate_has_endpoint && endpoint_matches_candidate
+    } else {
+        may_apply_candidate
+    };
+    if let Some(model) = model.as_deref() {
+        if may_apply_default_model
+            && is_legacy_or_empty_default_model(&config_data.llm.default_model)
+        {
+            changed |= set_string_if_changed(&mut config_data.llm.default_model, model);
+        }
+        if agent.is_none() && candidate.provider.as_ref() == Some(&LocalLlmProvider::Ollama) {
+            let model_agent = format!("model:{model}");
+            changed |= set_string_if_legacy_delegation_agent(
+                &mut config_data.llm.delegation.local_agent_id,
+                &model_agent,
+            );
+            changed |= set_string_if_legacy_delegation_agent(
+                &mut config_data.llm.delegation.code.local_agent_id,
+                &model_agent,
+            );
+            changed |= set_string_if_legacy_delegation_agent(
+                &mut config_data.llm.delegation.general.local_agent_id,
+                &model_agent,
+            );
+        }
+    }
+
+    if agent.is_none()
+        && endpoint_is_legacy
+        && candidate.kind != LocalDefaultCandidateKind::OllamaSetupFallback
+    {
+        if let Some(provider) = candidate.provider.as_ref() {
+            changed |= set_string_if_changed(&mut config_data.llm.provider, provider.as_str());
+        }
+        if let Some(base_url) = candidate
+            .base_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            changed |= set_string_if_changed(&mut config_data.llm.base_url, base_url);
+        }
+    }
+
+    if changed {
+        config::write_config(&path, &config_data).context("write config")?;
+    }
+    Ok(changed)
 }
 
 pub fn set_browser_path(path: &Path, kind: &str) -> Result<bool> {
@@ -376,6 +510,104 @@ fn is_legacy_or_empty_mswarm_base_url(value: &str) -> bool {
         || trimmed.trim_end_matches('/') == LEGACY_MSWARM_BASE_URL.trim_end_matches('/')
 }
 
+fn llm_endpoint_is_legacy_default(config_data: &AppConfig) -> bool {
+    is_legacy_or_empty_llm_provider(&config_data.llm.provider)
+        && is_legacy_or_empty_llm_base_url(&config_data.llm.base_url)
+}
+
+fn llm_endpoint_matches_candidate(
+    config_data: &AppConfig,
+    candidate: &LocalDefaultCandidate,
+) -> bool {
+    let provider_matches = candidate
+        .provider
+        .as_ref()
+        .map(|provider| {
+            config_data
+                .llm
+                .provider
+                .trim()
+                .eq_ignore_ascii_case(provider.as_str())
+        })
+        .unwrap_or(true);
+    let base_url_matches = candidate
+        .base_url
+        .as_deref()
+        .map(|base_url| normalized_url(&config_data.llm.base_url) == normalized_url(base_url))
+        .unwrap_or(true);
+    provider_matches && base_url_matches
+}
+
+fn is_legacy_or_empty_llm_provider(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.is_empty() || trimmed.eq_ignore_ascii_case(LEGACY_LLM_PROVIDER)
+}
+
+fn is_legacy_or_empty_llm_base_url(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.is_empty() || normalized_url(trimmed) == normalized_url(LEGACY_LLM_BASE_URL)
+}
+
+fn is_legacy_or_empty_default_model(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.is_empty() || trimmed.eq_ignore_ascii_case(LEGACY_LLM_DEFAULT_MODEL)
+}
+
+fn is_legacy_or_empty_embedding_model(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case(LEGACY_LLM_EMBED_MODEL)
+        || trimmed.eq_ignore_ascii_case(LEGACY_LLM_EMBED_MODEL_WITH_TAG)
+}
+
+fn is_legacy_or_empty_delegation_agent(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case(LEGACY_LLM_DEFAULT_MODEL)
+        || trimmed.eq_ignore_ascii_case(&format!("model:{LEGACY_LLM_DEFAULT_MODEL}"))
+        || trimmed.eq_ignore_ascii_case(&format!("ollama:{LEGACY_LLM_DEFAULT_MODEL}"))
+}
+
+fn normalized_url(value: &str) -> String {
+    value.trim().trim_end_matches('/').to_ascii_lowercase()
+}
+
+fn candidate_model(candidate: &LocalDefaultCandidate) -> Option<String> {
+    candidate
+        .raw_model
+        .as_deref()
+        .or(candidate.model.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn candidate_agent(candidate: &LocalDefaultCandidate) -> Option<String> {
+    candidate
+        .agent_id
+        .as_deref()
+        .or(candidate.agent_slug.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn set_string_if_changed(target: &mut String, next: &str) -> bool {
+    let trimmed = next.trim();
+    if trimmed.is_empty() || target == trimmed {
+        return false;
+    }
+    *target = trimmed.to_string();
+    true
+}
+
+fn set_string_if_legacy_delegation_agent(target: &mut String, next: &str) -> bool {
+    if !is_legacy_or_empty_delegation_agent(target) {
+        return false;
+    }
+    set_string_if_changed(target, next)
+}
+
 fn load_config_no_browser(path: &std::path::Path) -> Result<AppConfig> {
     if !path.exists() {
         let mut config = AppConfig::default();
@@ -516,6 +748,202 @@ mod tests {
         assert!(changed);
         let contents = std::fs::read_to_string(&path)?;
         assert!(contents.contains("nomic-embed-text-v1.5"));
+        std::env::remove_var("DOCDEX_CONFIG_PATH");
+        Ok(())
+    }
+
+    #[test]
+    fn apply_embedding_candidate_updates_provider_base_and_model() -> Result<()> {
+        let _guard = ENV_LOCK.lock();
+        let dir = TempDir::new()?;
+        let path = dir.path().join("config.toml");
+        std::env::set_var("DOCDEX_CONFIG_PATH", &path);
+        let changed = apply_embedding_candidate(&LocalDefaultCandidate {
+            kind: LocalDefaultCandidateKind::LocalServiceModel,
+            provider: Some(LocalLlmProvider::Vllm),
+            model: Some("bge-m3".to_string()),
+            raw_model: Some("bge-m3".to_string()),
+            base_url: Some("http://127.0.0.1:8000/v1".to_string()),
+            ..LocalDefaultCandidate::default()
+        })?;
+        assert!(changed);
+        let contents = std::fs::read_to_string(&path)?;
+        assert!(contents.contains("provider = \"vllm\""));
+        assert!(contents.contains("base_url = \"http://127.0.0.1:8000/v1\""));
+        assert!(contents.contains("embedding_model = \"bge-m3\""));
+        std::env::remove_var("DOCDEX_CONFIG_PATH");
+        Ok(())
+    }
+
+    #[test]
+    fn apply_delegation_candidate_updates_lane_local_agents() -> Result<()> {
+        let _guard = ENV_LOCK.lock();
+        let dir = TempDir::new()?;
+        let path = dir.path().join("config.toml");
+        std::env::set_var("DOCDEX_CONFIG_PATH", &path);
+        let changed = apply_delegation_candidate(&LocalDefaultCandidate {
+            kind: LocalDefaultCandidateKind::McodaLocalAgent,
+            provider: Some(LocalLlmProvider::LlamaCpp),
+            model: Some("qwen3.6".to_string()),
+            agent_id: Some("local-qwen".to_string()),
+            agent_slug: Some("local-qwen".to_string()),
+            base_url: Some("http://127.0.0.1:8080".to_string()),
+            ..LocalDefaultCandidate::default()
+        })?;
+        assert!(changed);
+        let contents = std::fs::read_to_string(&path)?;
+        assert!(contents.contains("provider = \"ollama\""));
+        assert!(contents.contains("base_url = \"http://127.0.0.1:11434\""));
+        assert!(contents.contains("default_model = \"phi3.5:3.8b\""));
+        assert!(!contents.contains("default_model = \"qwen3.6\""));
+        assert!(contents.contains("local_agent_id = \"local-qwen\""));
+        assert!(contents.contains("[llm.delegation.code]"));
+        assert!(contents.contains("[llm.delegation.general]"));
+        std::env::remove_var("DOCDEX_CONFIG_PATH");
+        Ok(())
+    }
+
+    #[test]
+    fn apply_delegation_candidate_updates_default_model_when_agent_endpoint_matches() -> Result<()>
+    {
+        let _guard = ENV_LOCK.lock();
+        let dir = TempDir::new()?;
+        let path = dir.path().join("config.toml");
+        std::env::set_var("DOCDEX_CONFIG_PATH", &path);
+        std::fs::write(
+            &path,
+            r#"[llm]
+provider = "llama-cpp"
+base_url = "http://127.0.0.1:8080"
+default_model = "phi3.5:3.8b"
+embedding_model = "nomic-embed-text"
+"#,
+        )?;
+
+        let changed = apply_delegation_candidate(&LocalDefaultCandidate {
+            kind: LocalDefaultCandidateKind::McodaLocalAgent,
+            provider: Some(LocalLlmProvider::LlamaCpp),
+            model: Some("qwen3.6".to_string()),
+            agent_id: Some("local-qwen".to_string()),
+            agent_slug: Some("local-qwen".to_string()),
+            base_url: Some("http://127.0.0.1:8080/".to_string()),
+            ..LocalDefaultCandidate::default()
+        })?;
+        assert!(changed);
+
+        let contents = std::fs::read_to_string(&path)?;
+        assert!(contents.contains("provider = \"llama-cpp\""));
+        assert!(contents.contains("base_url = \"http://127.0.0.1:8080\""));
+        assert!(contents.contains("default_model = \"qwen3.6\""));
+        assert!(contents.contains("local_agent_id = \"local-qwen\""));
+
+        std::env::remove_var("DOCDEX_CONFIG_PATH");
+        Ok(())
+    }
+
+    #[test]
+    fn apply_candidates_migrate_only_legacy_ollama_defaults() -> Result<()> {
+        let _guard = ENV_LOCK.lock();
+        let dir = TempDir::new()?;
+        let path = dir.path().join("config.toml");
+        std::env::set_var("DOCDEX_CONFIG_PATH", &path);
+        std::fs::write(
+            &path,
+            r#"[llm]
+provider = "ollama"
+base_url = "http://127.0.0.1:11434"
+default_model = "phi3.5:3.8b"
+embedding_model = "nomic-embed-text"
+"#,
+        )?;
+
+        let embedding_changed = apply_embedding_candidate(&LocalDefaultCandidate {
+            kind: LocalDefaultCandidateKind::LocalServiceModel,
+            provider: Some(LocalLlmProvider::Vllm),
+            model: Some("bge-m3".to_string()),
+            raw_model: Some("bge-m3".to_string()),
+            base_url: Some("http://127.0.0.1:8000/v1".to_string()),
+            ..LocalDefaultCandidate::default()
+        })?;
+        assert!(embedding_changed);
+        let delegation_changed = apply_delegation_candidate(&LocalDefaultCandidate {
+            kind: LocalDefaultCandidateKind::LocalServiceModel,
+            provider: Some(LocalLlmProvider::Vllm),
+            model: Some("qwen3.6-coder".to_string()),
+            raw_model: Some("qwen3.6-coder".to_string()),
+            base_url: Some("http://127.0.0.1:8000/v1".to_string()),
+            ..LocalDefaultCandidate::default()
+        })?;
+        assert!(delegation_changed);
+
+        let contents = std::fs::read_to_string(&path)?;
+        assert!(contents.contains("provider = \"vllm\""));
+        assert!(contents.contains("base_url = \"http://127.0.0.1:8000/v1\""));
+        assert!(contents.contains("embedding_model = \"bge-m3\""));
+        assert!(contents.contains("default_model = \"qwen3.6-coder\""));
+        assert!(contents.contains("local_agent_id = \"\""));
+
+        std::env::remove_var("DOCDEX_CONFIG_PATH");
+        Ok(())
+    }
+
+    #[test]
+    fn apply_candidates_preserve_explicit_llm_settings() -> Result<()> {
+        let _guard = ENV_LOCK.lock();
+        let dir = TempDir::new()?;
+        let path = dir.path().join("config.toml");
+        std::env::set_var("DOCDEX_CONFIG_PATH", &path);
+        std::fs::write(
+            &path,
+            r#"[llm]
+provider = "custom-openai-compatible"
+base_url = "http://127.0.0.1:9999/v1"
+default_model = "custom-chat"
+embedding_model = "custom-embed"
+
+[llm.delegation]
+local_agent_id = "custom-agent"
+
+[llm.delegation.code]
+local_agent_id = "custom-code-agent"
+
+[llm.delegation.general]
+local_agent_id = "custom-general-agent"
+"#,
+        )?;
+
+        let embedding_changed = apply_embedding_candidate(&LocalDefaultCandidate {
+            kind: LocalDefaultCandidateKind::LocalServiceModel,
+            provider: Some(LocalLlmProvider::Vllm),
+            model: Some("bge-m3".to_string()),
+            raw_model: Some("bge-m3".to_string()),
+            base_url: Some("http://127.0.0.1:8000/v1".to_string()),
+            ..LocalDefaultCandidate::default()
+        })?;
+        assert!(!embedding_changed);
+        let delegation_changed = apply_delegation_candidate(&LocalDefaultCandidate {
+            kind: LocalDefaultCandidateKind::McodaLocalAgent,
+            provider: Some(LocalLlmProvider::LlamaCpp),
+            model: Some("qwen3.6-coder".to_string()),
+            agent_id: Some("detected-qwen".to_string()),
+            agent_slug: Some("detected-qwen".to_string()),
+            base_url: Some("http://127.0.0.1:8080".to_string()),
+            ..LocalDefaultCandidate::default()
+        })?;
+        assert!(!delegation_changed);
+
+        let contents = std::fs::read_to_string(&path)?;
+        assert!(contents.contains("provider = \"custom-openai-compatible\""));
+        assert!(contents.contains("base_url = \"http://127.0.0.1:9999/v1\""));
+        assert!(contents.contains("default_model = \"custom-chat\""));
+        assert!(contents.contains("embedding_model = \"custom-embed\""));
+        assert!(contents.contains("local_agent_id = \"custom-agent\""));
+        assert!(contents.contains("local_agent_id = \"custom-code-agent\""));
+        assert!(contents.contains("local_agent_id = \"custom-general-agent\""));
+        assert!(!contents.contains("detected-qwen"));
+        assert!(!contents.contains("qwen3.6-coder"));
+        assert!(!contents.contains("bge-m3"));
+
         std::env::remove_var("DOCDEX_CONFIG_PATH");
         Ok(())
     }

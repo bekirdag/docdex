@@ -119,6 +119,8 @@ fn start_blocking_watcher(
     tx: mpsc::UnboundedSender<WatchAction>,
     stop_flag: Arc<AtomicBool>,
 ) -> Result<std::thread::JoinHandle<()>> {
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let wait_repo_root = repo_root.clone();
     let handle = std::thread::Builder::new()
         .name("docdexd-watcher".into())
         .spawn(move || {
@@ -138,6 +140,7 @@ fn start_blocking_watcher(
                         repo = %repo_root.display(),
                         "failed to initialise filesystem watcher"
                     );
+                    let _ = ready_tx.send(());
                     return;
                 }
             };
@@ -150,8 +153,10 @@ fn start_blocking_watcher(
                     repo = %repo_root.display(),
                     "failed to watch repository"
                 );
+                let _ = ready_tx.send(());
                 return;
             }
+            let _ = ready_tx.send(());
             loop {
                 if stop_flag.load(Ordering::Relaxed) {
                     break;
@@ -172,6 +177,14 @@ fn start_blocking_watcher(
                 }
             }
         })?;
+    if let Err(err) = ready_rx.recv_timeout(std::time::Duration::from_secs(2)) {
+        warn!(
+            target: "docdexd",
+            error = ?err,
+            repo = %wait_repo_root.display(),
+            "filesystem watcher readiness wait ended without signal"
+        );
+    }
     Ok(handle)
 }
 

@@ -36,8 +36,12 @@ impl McpServer {
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_millis() as i64;
-        let metadata =
-            inject_embedding_metadata(args.metadata, &embedding.provider, &embedding.model);
+        let metadata = inject_embedding_metadata(
+            args.metadata,
+            &embedding.provider,
+            &embedding.model,
+            Some(embedding.embedding.len()),
+        );
         let store = memory.store.clone();
         let text_owned = text.to_string();
         let stored = tokio::task::spawn_blocking(move || {

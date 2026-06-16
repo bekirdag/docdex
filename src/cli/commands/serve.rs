@@ -194,6 +194,7 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
         !expose,
         !is_loopback,
     )?;
+    let embedding_base_url_explicit = embedding_base_url.is_some();
     let embedding_base_url = embedding_base_url.unwrap_or(ollama_base_url);
     let enable_memory = if enable_memory_explicit {
         enable_memory
@@ -299,6 +300,7 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
         mcp_rate_limit_burst,
         config.llm.provider.clone(),
         embedding_base_url,
+        embedding_base_url_explicit,
         embedding_model,
         config.memory.profile.embedding_model.clone(),
         config.memory.profile.embedding_dim,

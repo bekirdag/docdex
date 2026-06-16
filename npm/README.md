@@ -34,7 +34,7 @@ Most AI tools rely on "grep" (fast but dumb) or hosted RAG (slow and requires up
 * **💾 Repo Memory:** Stores project facts, decisions, and notes locally.
 * **👤 Agent Memory:** Remembers user preferences (e.g., "Use concise bullet points") across different repositories.
 * **🔌 MCP Native:** Auto-configures for tools like Claude Desktop, Cursor, and Windsurf.
-* **🌐 Web Enrichment:** Optional web search with local LLM filtering (via Ollama).
+* **🌐 Web Enrichment:** Optional web search with local LLM filtering through detected local LLM services.
 
 ---
 
@@ -212,13 +212,14 @@ docdexd profile add --agent-id "default" --category style --content "Use concise
 
 ```
 
-### 3. Local LLM (Ollama)
+### 3. Local LLM Services
 
-Docdex uses Ollama for embeddings and optional local chat.
+Docdex detects supported local LLM services before it suggests installing anything. It can reuse Ollama, vLLM, llama.cpp-compatible OpenAI endpoints, LM Studio, LocalAI, SGLang, TGI-compatible deployments, and healthy local mcoda agents when they are already present. Ollama remains the recommended fallback because it is the easiest guided setup path.
 
-* **Setup:** Run `docdex setup` for an interactive wizard.
-* **Manual:** Ensure `nomic-embed-text` is pulled in Ollama (`ollama pull nomic-embed-text`).
-* **Custom URL:**
+* **Setup:** Run `docdex setup` for an interactive wizard that lists detected services, models, embedding candidates, and local delegation agents.
+* **Inspect:** Run `docdexd llm detect --json` or `docdexd llm diagnostics --json` to see why a service/model was selected, skipped, or marked unhealthy.
+* **Manual Ollama fallback:** If no usable service is installed, pull the fallback embedding model with `ollama pull nomic-embed-text`.
+* **Custom Ollama URL:**
 ```bash
 DOCDEX_OLLAMA_BASE_URL=http://127.0.0.1:11434 docdexd daemon --host 127.0.0.1 --port 28491
 

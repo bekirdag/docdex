@@ -13,4 +13,6 @@ fn setup_non_interactive_prints_hint() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("docdex setup"));
+    assert!(stdout.contains("local LLM service"));
+    assert!(stdout.contains("optional Ollama fallback"));
 }

@@ -3,10 +3,12 @@ use crate::cli::CliDiffMode;
 use crate::config::{self, RepoArgs};
 use crate::dag::logging as dag_logging;
 use crate::diff;
+use crate::embeddings::{self, EmbeddingTargetHints};
 use crate::error::{AppError, ERR_REPO_ENCRYPTION_UNSUPPORTED};
 use crate::index;
 use crate::index::Hit;
 use crate::libs;
+use crate::llm::local_library::load_local_library;
 use crate::memory::repo_state_root_from_state_dir;
 use crate::memory::MemoryStore;
 use crate::ollama::OllamaEmbedder;
@@ -410,19 +412,30 @@ pub(crate) fn resolve_memory_state(
         return Ok(None);
     }
 
-    let base_url = env_non_empty("DOCDEX_EMBEDDING_BASE_URL")
-        .or_else(|| env_non_empty("DOCDEX_OLLAMA_BASE_URL"))
-        .or_else(|| config.map(|cfg| cfg.llm.base_url.clone()))
-        .unwrap_or_else(|| "http://127.0.0.1:11434".to_string());
-    let model = env_non_empty("DOCDEX_EMBEDDING_MODEL")
-        .or_else(|| config.map(|cfg| cfg.llm.embedding_model.clone()))
-        .unwrap_or_else(|| "nomic-embed-text".to_string());
-    if model.trim().is_empty() {
-        anyhow::bail!("embedding model is not configured");
-    }
+    let default_llm_config;
+    let llm_config = match config {
+        Some(cfg) => &cfg.llm,
+        None => {
+            default_llm_config = config::LlmConfig::default();
+            &default_llm_config
+        }
+    };
+    let library =
+        config.and_then(|cfg| load_local_library(cfg.core.global_state_dir.as_deref()).ok());
+    let base_url = env_non_empty("DOCDEX_EMBEDDING_BASE_URL");
+    let model = env_non_empty("DOCDEX_EMBEDDING_MODEL");
+    let hints = EmbeddingTargetHints::repo()
+        .explicit_provider(embeddings::env_non_empty("DOCDEX_EMBEDDING_PROVIDER"))
+        .explicit_base_url(
+            base_url,
+            embeddings::env_present("DOCDEX_EMBEDDING_BASE_URL"),
+        )
+        .explicit_model(model, embeddings::env_present("DOCDEX_EMBEDDING_MODEL"))
+        .legacy_ollama_base_url(env_non_empty("DOCDEX_OLLAMA_BASE_URL"));
+    let target = embeddings::resolve_embedding_target(llm_config, library.as_ref(), hints)?;
     let timeout_ms = env_u64("DOCDEX_EMBEDDING_TIMEOUT_MS").unwrap_or(0);
     let timeout = Duration::from_millis(timeout_ms);
-    let embedder = OllamaEmbedder::new(base_url, model, timeout)?;
+    let embedder = OllamaEmbedder::with_target(target, timeout)?;
     let repo_id = crate::repo_manager::repo_fingerprint_sha256(repo_root)?;
     Ok(Some(MemoryState {
         store: MemoryStore::new(state_dir),

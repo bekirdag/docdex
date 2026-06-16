@@ -18,6 +18,9 @@ fn profile_import_last_write_wins() -> Result<(), Box<dyn Error>> {
         agent_id: agent.id.clone(),
         content: "old content".to_string(),
         embedding: Some(vec![0.1, 0.1, 0.1]),
+        embedding_provider: Some("ollama".to_string()),
+        embedding_model: Some("old-model".to_string()),
+        embedding_dim: Some(3),
         category: PreferenceCategory::Constraint,
         last_updated: 1000,
     };
@@ -26,6 +29,9 @@ fn profile_import_last_write_wins() -> Result<(), Box<dyn Error>> {
         agent_id: agent.id.clone(),
         content: "new content".to_string(),
         embedding: Some(vec![0.2, 0.2, 0.2]),
+        embedding_provider: Some("vllm".to_string()),
+        embedding_model: Some("new-model".to_string()),
+        embedding_dim: Some(3),
         category: PreferenceCategory::Constraint,
         last_updated: 2000,
     };
@@ -43,6 +49,9 @@ fn profile_import_last_write_wins() -> Result<(), Box<dyn Error>> {
         .ok_or("missing preference after import")?;
     assert_eq!(stored.content, "new content");
     assert_eq!(stored.last_updated, 2000);
+    assert_eq!(stored.embedding_provider.as_deref(), Some("vllm"));
+    assert_eq!(stored.embedding_model.as_deref(), Some("new-model"));
+    assert_eq!(stored.embedding_dim, Some(3));
     Ok(())
 }
 
@@ -62,6 +71,9 @@ fn profile_import_rejects_embedding_dim_mismatch() -> Result<(), Box<dyn Error>>
         agent_id: agent.id.clone(),
         content: "content".to_string(),
         embedding: Some(vec![0.1, 0.2]),
+        embedding_provider: None,
+        embedding_model: None,
+        embedding_dim: None,
         category: PreferenceCategory::Constraint,
         last_updated: 1000,
     };
@@ -87,6 +99,9 @@ fn profile_import_skips_older_or_equal_updates() -> Result<(), Box<dyn Error>> {
         agent_id: agent.id.clone(),
         content: "base content".to_string(),
         embedding: Some(vec![0.1, 0.1, 0.1]),
+        embedding_provider: Some("llama.cpp".to_string()),
+        embedding_model: Some("base-model".to_string()),
+        embedding_dim: Some(3),
         category: PreferenceCategory::Constraint,
         last_updated: 2000,
     };
@@ -95,6 +110,9 @@ fn profile_import_skips_older_or_equal_updates() -> Result<(), Box<dyn Error>> {
         agent_id: agent.id.clone(),
         content: "older content".to_string(),
         embedding: Some(vec![0.2, 0.2, 0.2]),
+        embedding_provider: Some("vllm".to_string()),
+        embedding_model: Some("older-model".to_string()),
+        embedding_dim: Some(3),
         category: PreferenceCategory::Constraint,
         last_updated: 1000,
     };
@@ -103,6 +121,9 @@ fn profile_import_skips_older_or_equal_updates() -> Result<(), Box<dyn Error>> {
         agent_id: agent.id.clone(),
         content: "equal content".to_string(),
         embedding: Some(vec![0.3, 0.3, 0.3]),
+        embedding_provider: Some("ollama".to_string()),
+        embedding_model: Some("equal-model".to_string()),
+        embedding_dim: Some(3),
         category: PreferenceCategory::Constraint,
         last_updated: 2000,
     };
@@ -125,5 +146,8 @@ fn profile_import_skips_older_or_equal_updates() -> Result<(), Box<dyn Error>> {
         .ok_or("missing preference after import")?;
     assert_eq!(stored.content, "base content");
     assert_eq!(stored.last_updated, 2000);
+    assert_eq!(stored.embedding_provider.as_deref(), Some("llama.cpp"));
+    assert_eq!(stored.embedding_model.as_deref(), Some("base-model"));
+    assert_eq!(stored.embedding_dim, Some(3));
     Ok(())
 }

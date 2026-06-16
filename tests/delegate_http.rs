@@ -102,6 +102,7 @@ fn spawn_server(
         .env("DOCDEX_STATE_DIR", state_root)
         .env("DOCDEX_CONFIG_PATH", config_path)
         .env("DOCDEX_DAEMON_LOCK_PATH", &lock_path)
+        .env("HOME", state_root)
         .args([
             "serve",
             "--repo",

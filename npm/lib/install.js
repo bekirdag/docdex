@@ -2433,7 +2433,7 @@ function printPostInstallBanner() {
     const plain = [
       "[docdex] Docdex installed successfully.",
       "[docdex] Next step: run `docdex setup` to complete the installation.",
-      "[docdex] Setup configures Ollama/models + browser."
+      "[docdex] Setup detects local LLM services, offers the Ollama fallback, and configures browser."
     ].join("\r\n") + "\r\n";
     if (!writeDirect(plain)) {
       writeStderr(plain);
@@ -2449,7 +2449,7 @@ function printPostInstallBanner() {
     "",
     "\x1b[32mDocdex installed successfully!\x1b[0m",
     "\x1b[41m\x1b[97m IMPORTANT \x1b[0m \x1b[33mNext step:\x1b[0m run \x1b[32m`docdex setup`\x1b[0m to complete the installation.",
-    "\x1b[33mSetup:\x1b[0m configures Ollama/models + browser.",
+    "\x1b[33mSetup:\x1b[0m detects local LLM services, offers the Ollama fallback, and configures browser.",
     "\x1b[34mTip:\x1b[0m after setup, the daemon should auto-start; if not, run \x1b[36m`docdexd daemon`\x1b[0m"
   ];
   if (process.platform === "win32") {

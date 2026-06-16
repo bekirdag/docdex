@@ -1,9 +1,11 @@
 use crate::cli::http_client::CliHttpClient;
 use crate::config::{self, RepoArgs};
+use crate::embeddings::{self, EmbeddingTargetHints, DEFAULT_REPO_EMBEDDING_MODEL};
 use crate::error;
 use crate::index;
+use crate::llm::local_library::load_local_library;
 use crate::memory;
-use crate::ollama;
+use crate::ollama::OllamaEmbedder;
 use crate::repo_manager;
 use crate::util;
 use anyhow::Result;
@@ -22,15 +24,6 @@ pub async fn run_store(
         return run_store_via_http(repo, text, metadata).await;
     }
     let config = config::AppConfig::load_default()?;
-    let provider = config.llm.provider.trim();
-    if !provider.eq_ignore_ascii_case("ollama") {
-        return Err(error::StartupError::new(
-            "startup_config_invalid",
-            format!("unsupported llm provider `{provider}`; only ollama is supported"),
-        )
-        .with_hint("Set [llm].provider = \"ollama\" in ~/.docdex/config.toml.")
-        .into());
-    }
     let repo_root = repo.repo_root();
     let index_config = index::IndexConfig::with_overrides(
         &repo_root,
@@ -43,8 +36,13 @@ pub async fn run_store(
     index::ensure_state_dir_secure(index_config.state_dir())?;
 
     let timeout = std::time::Duration::from_millis(embedding_timeout_ms);
-    let embedding_base_url = embedding_base_url.unwrap_or(ollama_base_url);
-    let embedder = ollama::OllamaEmbedder::new(embedding_base_url, embedding_model, timeout)?;
+    let embedder = resolve_memory_embedder(
+        &config,
+        embedding_base_url,
+        ollama_base_url,
+        embedding_model,
+        timeout,
+    )?;
     let embedding = embedder.embed(&text).await?;
     let user_metadata = match metadata {
         None => None,
@@ -57,8 +55,12 @@ pub async fn run_store(
             })?,
         ),
     };
-    let metadata =
-        memory::inject_embedding_metadata(user_metadata, embedder.provider(), embedder.model());
+    let metadata = memory::inject_embedding_metadata(
+        user_metadata,
+        embedder.provider(),
+        embedder.model(),
+        Some(embedding.len()),
+    );
     let repo_id = repo_manager::repo_fingerprint_sha256(&repo_root)?;
     let metadata = memory::inject_repo_metadata(metadata, &repo_id);
     let store = memory::MemoryStore::new(index_config.state_dir());
@@ -93,15 +95,6 @@ pub async fn run_recall(
         return run_recall_via_http(repo, query, top_k).await;
     }
     let config = config::AppConfig::load_default()?;
-    let provider = config.llm.provider.trim();
-    if !provider.eq_ignore_ascii_case("ollama") {
-        return Err(error::StartupError::new(
-            "startup_config_invalid",
-            format!("unsupported llm provider `{provider}`; only ollama is supported"),
-        )
-        .with_hint("Set [llm].provider = \"ollama\" in ~/.docdex/config.toml.")
-        .into());
-    }
     let repo_root = repo.repo_root();
     let index_config = index::IndexConfig::with_overrides(
         &repo_root,
@@ -114,8 +107,13 @@ pub async fn run_recall(
     index::ensure_state_dir_secure(index_config.state_dir())?;
 
     let timeout = std::time::Duration::from_millis(embedding_timeout_ms);
-    let embedding_base_url = embedding_base_url.unwrap_or(ollama_base_url);
-    let embedder = ollama::OllamaEmbedder::new(embedding_base_url, embedding_model, timeout)?;
+    let embedder = resolve_memory_embedder(
+        &config,
+        embedding_base_url,
+        ollama_base_url,
+        embedding_model,
+        timeout,
+    )?;
     let embedding = embedder.embed(&query).await?;
     let store = memory::MemoryStore::new(index_config.state_dir());
     let top_k = top_k.max(1).min(50);
@@ -133,6 +131,26 @@ pub async fn run_recall(
         }))?
     );
     Ok(())
+}
+
+fn resolve_memory_embedder(
+    config: &config::AppConfig,
+    embedding_base_url: Option<String>,
+    ollama_base_url: String,
+    embedding_model: String,
+    timeout: std::time::Duration,
+) -> Result<OllamaEmbedder> {
+    let library = load_local_library(config.core.global_state_dir.as_deref()).ok();
+    let base_url_explicit = embedding_base_url.is_some();
+    let model_explicit = embeddings::env_present("DOCDEX_EMBEDDING_MODEL")
+        || embedding_model.trim() != DEFAULT_REPO_EMBEDDING_MODEL;
+    let hints = EmbeddingTargetHints::repo()
+        .explicit_provider(embeddings::env_non_empty("DOCDEX_EMBEDDING_PROVIDER"))
+        .explicit_base_url(embedding_base_url, base_url_explicit)
+        .explicit_model(Some(embedding_model), model_explicit)
+        .legacy_ollama_base_url(Some(ollama_base_url));
+    let target = embeddings::resolve_embedding_target(&config.llm, library.as_ref(), hints)?;
+    OllamaEmbedder::with_target(target, timeout)
 }
 
 pub async fn run_compact(repo: RepoArgs, apply: bool) -> Result<()> {

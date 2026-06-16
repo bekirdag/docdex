@@ -203,6 +203,7 @@ async fn route_repo_memory_candidate(
         })),
         &embedding.provider,
         &embedding.model,
+        Some(embedding.embedding.len()),
     );
     let metadata = inject_repo_metadata(metadata, &target.repo_id);
     let text = candidate.content.clone();
@@ -250,8 +251,15 @@ async fn route_profile_memory_candidate(
         if duplicate {
             return Ok(None);
         }
-        let stored =
-            manager.add_preference(&agent_id, &content, &embedding, category, last_updated_ms)?;
+        let stored = manager.add_preference_with_embedding_metadata(
+            &agent_id,
+            &content,
+            &embedding.embedding,
+            category,
+            last_updated_ms,
+            Some(&embedding.provider),
+            Some(&embedding.model),
+        )?;
         Ok(Some(stored.id))
     })
     .await
@@ -309,14 +317,25 @@ async fn embed_repo_memory_text(
     }
 }
 
-async fn embed_profile_memory_text(target: &ConversationProfileTarget, text: &str) -> Vec<f32> {
+async fn embed_profile_memory_text(
+    target: &ConversationProfileTarget,
+    text: &str,
+) -> crate::profiles::embedder::ProfileEmbedding {
     let expected = target.manager.embedding_dim().max(1);
     let Some(embedder) = target.embedder.as_ref() else {
-        return ProfileEmbedder::fallback_embedding(text, expected);
+        return crate::profiles::embedder::ProfileEmbedding {
+            embedding: ProfileEmbedder::fallback_embedding(text, expected),
+            provider: "fallback".to_string(),
+            model: "hash-embed-v1".to_string(),
+        };
     };
-    match embedder.embed(text).await {
-        Ok(embedding) if embedding.len() == expected => embedding,
-        Ok(_) | Err(_) => ProfileEmbedder::fallback_embedding(text, expected),
+    match embedder.embed_with_metadata(text).await {
+        Ok(embedding) if embedding.embedding.len() == expected => embedding,
+        Ok(_) | Err(_) => crate::profiles::embedder::ProfileEmbedding {
+            embedding: ProfileEmbedder::fallback_embedding(text, expected),
+            provider: "fallback".to_string(),
+            model: "hash-embed-v1".to_string(),
+        },
     }
 }
 

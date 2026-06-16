@@ -44,7 +44,7 @@ Postinstall behavior:
 - Startup registration now applies conservative FD-pressure controls by default: `DOCDEX_REPO_IDLE_SECONDS=300`, `DOCDEX_REPO_HIBERNATE_SECONDS=1800`, `DOCDEX_REPO_CLEANUP_INTERVAL_SECONDS=60`, `DOCDEX_WEB_MAX_CONCURRENT_BROWSER_FETCHES=1`, and `DOCDEX_WEB_MAX_CONCURRENT_LLM=1` (plus `DOCDEX_BROWSER_AUTO_INSTALL=0`).
 - On macOS, the generated LaunchAgent plist sets `SoftResourceLimits/NumberOfFiles=65536` and `HardResourceLimits/NumberOfFiles=200000` to reduce launchd `EMFILE` incidents under multi-repo load.
 - Start the daemon with `docdex start` (alias: `docdexd daemon`) or run the setup wizard (`docdex setup`) if startup registration fails. Windows uses `%LOCALAPPDATA%\\docdex\\run-daemon.cmd` for the scheduled task.
-- If Ollama is missing, the setup wizard can prompt to install it and the default embedding model.
+- If no supported local LLM service is usable, the setup wizard can prompt to install the Ollama fallback and the default embedding model.
 - Skip prompts with `DOCDEX_OLLAMA_INSTALL=0` or `DOCDEX_OLLAMA_MODEL_PROMPT=0`.
 - Force with `DOCDEX_OLLAMA_INSTALL=1` or `DOCDEX_OLLAMA_MODEL=<model>`.
 
@@ -435,16 +435,22 @@ Notes:
 - `docdexd search` defaults to HTTP; set `DOCDEX_CLI_LOCAL=1` to run in-process.
 - `docdexd open`/`file`/`test` run locally and do not require the daemon.
 
-## Local LLM usage (Ollama)
-Docdex uses Ollama for embeddings and optional local chat. Use `docdexd llm-list` to see recommended models for your hardware.
+## Local LLM services
+Docdex detects supported local LLM services before it suggests installing anything. It can reuse Ollama, vLLM, llama.cpp-compatible OpenAI endpoints, LM Studio, LocalAI, SGLang, TGI-compatible deployments, and healthy local mcoda agents when they are already present. Ollama remains the recommended fallback because it is the easiest guided setup path. Use `docdexd llm-list` to see recommended Ollama fallback models for your hardware.
 
 First-time setup (recommended):
 ```bash
 docdex setup
 ```
-The wizard is interactive; run it from a terminal.
-If Ollama is installed but not running, the wizard will attempt to start it to pull models.
-When supported, the wizard also enables the Ollama service to run on restart.
+The wizard is interactive; run it from a terminal. The first screen lists detected local services, models, embedding candidates, chat/delegation candidates, and matching mcoda agents. If usable defaults exist, the wizard can write those defaults without installing anything. If no usable service/model exists, it offers the Ollama fallback. If Ollama is installed but not running and you choose the fallback path, the wizard will attempt to start it to pull models. When supported, the wizard also enables the Ollama service to run on restart.
+
+Inspect what Docdex sees:
+```bash
+docdexd llm detect --json
+docdexd llm diagnostics --json
+```
+`llm detect` reports bounded read-only probes and model inventories. `llm diagnostics` explains selected, skipped, unavailable, and fallback decisions for embedding and delegation defaults.
+
 Skip auto-setup on install:
 ```bash
 DOCDEX_SETUP_SKIP=1 npm i -g docdex
@@ -455,25 +461,28 @@ Setup overrides:
 - `DOCDEX_OLLAMA_INSTALL=1|0`: auto-accept or skip the Ollama install prompt.
 - `DOCDEX_OLLAMA_MODEL_PROMPT=1|0`: force model prompts on/off.
 - `DOCDEX_OLLAMA_MODEL_ASSUME_Y=1`: auto-accept recommended model installs.
+- `DOCDEX_LOCAL_SERVICE_PROBE_TIMEOUT_MS=<ms>`: bound local service probe latency for setup and diagnostics.
+- `DOCDEX_OPENAI_COMPATIBLE_BASE_URL` or `DOCDEX_LLM_BASE_URL`: point custom OpenAI-compatible local probes at a loopback HTTP URL.
 - `DOCDEX_BROWSER_INSTALL=chromium|skip`: auto-accept or skip the Chromium download prompt.
 - The wizard Web APIs section can also store an `mswarm` API key/base URL under `~/.docdex/config.toml` and optionally switch Docdex web discovery to `mswarm`.
 
 The setup wizard can download Chromium into `~/.docdex/state/bin/chromium/`.
 
-Manual setup:
+Manual Ollama fallback setup:
 ```bash
 ollama serve
 ollama pull nomic-embed-text
 ```
 
-Change the default chat model later:
+Change local LLM defaults later:
 - Run the wizard again: `docdexd setup` (alias: `docdexd llm-setup`).
+- Inspect decisions first: `docdexd llm diagnostics --json`.
 - Or edit `~/.docdex/config.toml`:
   - `[llm].agent_id` (optional mcoda agent id/slug for main chat generation)
   - `[llm].default_model` (chat model)
   - `[llm].embedding_model`
-  - `[llm].base_url` (Ollama base URL)
-  - `[llm].provider` (keep `ollama` for built-in fallback and embeddings)
+  - `[llm].base_url` (service base URL)
+  - `[llm].provider` (`ollama`, `vllm`, `llama-cpp`, `llama-cpp-python`, `lm-studio`, `localai`, `sglang`, `tgi`, or `custom-openai-compatible`)
 Restart the daemon after changing config so it reloads the new defaults.
 
 Configure mswarm web search later:
@@ -494,7 +503,7 @@ Notes:
 - `request-deletion` submits the current Docdex identity to mswarm using the persisted consent token.
 - For free Docdex installs, request deletion before revoking consent, because the deletion flow uses the currently stored consent token as proof of ownership.
 
-Main LLM config example:
+Main LLM config example, using the Ollama fallback:
 ```toml
 [llm]
 provider = "ollama"
@@ -505,10 +514,25 @@ embedding_model = "nomic-embed-text:latest"
 max_answer_tokens = 1024
 ```
 
+OpenAI-compatible local service example:
+```toml
+[llm]
+provider = "llama-cpp"
+base_url = "http://127.0.0.1:8080/v1"
+default_model = "qwen3.6-coder"
+embedding_model = "bge-m3"
+max_answer_tokens = 1024
+
+[llm.delegation]
+auto_enable = true
+local_agent_id = "local-qwen"
+```
+
 Notes:
 - When `[llm].agent_id` is set, Docdex tries that mcoda agent first for main LLM work.
 - If that mcoda agent is missing or cannot be resolved, Docdex falls back to `[llm].default_model`.
-- A per-request chat `agent` still overrides `[llm].agent_id`, and a per-request `model` overrides the configured Ollama fallback model.
+- A per-request chat `agent` still overrides `[llm].agent_id`, and a per-request `model` overrides the configured fallback model.
+- Old configs that only contain generated Ollama defaults (`ollama`, `http://127.0.0.1:11434`, `phi3.5:3.8b`, `nomic-embed-text`) can be migrated by setup to a detected local service or mcoda agent. Explicit custom provider, base URL, embedding model, chat model, or delegation agent settings are preserved.
 
 Enable Ollama later (if skipped during install):
 - Install Ollama for your OS.
@@ -520,7 +544,7 @@ DOCDEX_OLLAMA_BASE_URL=http://127.0.0.1:11434 docdex start --host 127.0.0.1 --po
 ```
 
 ## Delegation (local-first plus cloud fallback)
-Docdex can offload small tasks to a local model (Ollama or a mcoda agent) to reduce paid-token usage. When mswarm is configured, it can also materialize managed mcoda cloud agents and use them as cloud fallbacks for `/v1/delegate` and the MCP tool `docdex_local_completion`.
+Docdex can offload small tasks to a local model, local service endpoint, or mcoda agent to reduce paid-token usage. When mswarm is configured, it can also materialize managed mcoda cloud agents and use them as cloud fallbacks for `/v1/delegate` and the MCP tool `docdex_local_completion`.
 
 Config (`~/.docdex/config.toml`):
 ```toml
@@ -567,7 +591,7 @@ min_reasoning = 6.5
 Notes:
 - `auto_enable` defaults to true; delegation auto-enables when local models or mcoda agents are present (opt out with `auto_enable = false`).
 - Task lanes: the code-oriented task types use `[llm.delegation.code]` first, while `general_question` uses `[llm.delegation.general]` first. The flat `local_agent_id` / `cloud_agent_id` / `primary_agent_id` remain compatibility fallbacks when the lane-specific values are empty.
-- If the effective local lane is empty, Docdex selects candidates from the library by task type. Local Ollama models and local mcoda agents are ranked ahead of managed cloud agents; if nothing local qualifies, Docdex can fall back to the configured cloud lane and then the configured Ollama model.
+- If the effective local lane is empty, Docdex selects candidates from the library by task type. Healthy zero-cost local mcoda agents and healthy provider-neutral local service models are ranked ahead of managed cloud agents; if nothing local qualifies, Docdex can fall back to the configured cloud lane and then the configured fallback model.
 - If `[llm.delegation.cloud].enabled = true` and `[integrations.mswarm].api_key` is set, Docdex runs `mcoda cloud agent list --json` with the configured provider/price/context/reasoning filters, materializes the top `sync_limit` results as managed `mswarm-cloud-*` mcoda agents, and exposes them through `docdexd delegation agents`.
 - `cloud_agent_id` under `[llm.delegation.code]` or `[llm.delegation.general]` is the preferred cloud fallback for that lane. The flat `[llm.delegation].cloud_agent_id` is a compatibility fallback when the lane-specific cloud value is empty.
 - Automatic target selection excludes paid mcoda candidates unless they are cheaper than the effective caller/primary model. Explicit per-request `agent` overrides remain hard overrides, while lane-specific `local_agent_id` / `cloud_agent_id` are tried first within their local or cloud tier.
@@ -575,7 +599,7 @@ Notes:
 - Set `local_selection_policy = "mcoda_zero_cost_most_capable"` to prefer mcoda when it is installed, inspect the mcoda inventory, find healthy zero-cost agents, choose the most capable one by delegation capabilities plus `max_complexity`/`reasoning_rating`/`rating`, and delegate local jobs to that agent.
 - When `use_cached_local_decision = true`, Docdex stores the chosen zero-cost local mcoda agent in `~/.docdex/state/llm/local_model_library.json` and reuses it on later runs. If the cached agent disappears, becomes unhealthy, or is no longer zero-cost, Docdex refreshes the mcoda inventory and chooses a new one automatically. Managed cloud agents are not cached as zero-cost decisions.
 - If the effective `primary_agent_id` is empty, Docdex selects a primary model/agent from the local library by task type (preferring mcoda agents) for refinement/fallback.
-- To force an Ollama model, set a lane-specific or flat `*_agent_id` to `model:<name>` or `ollama:<name>`. Per-request `agent` also accepts model names listed by `docdexd delegation agents`.
+- To force an Ollama model, set a lane-specific or flat `*_agent_id` to `model:<name>` or `ollama:<name>`. To force a detected provider-neutral local service model, use the `service:<provider>:<model>@<base_url>` target shown by diagnostics. Per-request `agent` also accepts model names listed by `docdexd delegation agents`.
 - Use `docdexd delegation agents --json` to verify whether mcoda is installed, list local plus managed cloud mcoda agents, and inspect `cost_per_million` alongside `max_complexity`, `rating`, `usage`, `reasoning_rating`, `health_status`, and `source`.
 - Cloud catalog discovery mirrors mcoda’s filters: `provider`, `limit`, `max_cost_per_million`, `sorted_by_catalog_rating`, `min_context`, and `min_reasoning`. For setup/ops outside Docdex, the equivalent command is `mcoda cloud agent list --json --provider openrouter --limit ... --max-cost-per-1m-token ... --sorted-by-catalog-rating --min-context ... --min-reasoning ...`.
 - mcoda inventory refresh path: Docdex first runs `mcoda agent list --json --refresh-health` for fresh status and falls back to `mcoda agent list --json` for backward compatibility before DB fallback. For managed cloud agents, that refresh also updates `agent_usage_limits`; exhausted agents are marked `limited` and skipped until their reset window passes.
@@ -617,7 +641,7 @@ curl -X POST "http://127.0.0.1:28491/v1/memory/recall" \\
 ```
 
 Notes:
-- Memory uses embeddings (Ollama). If Ollama is unavailable, these calls fail with a structured error.
+- Memory uses the configured embedding target, preferring a detected local service/model before the Ollama fallback. If no embedding service is available, these calls fail with a structured error.
 - When the daemon has no default repo or more than one repo is mounted, `repo_id` is required (query/body or `x-docdex-repo-id`).
 
 ## Agent memory (profile preferences)
@@ -753,13 +777,13 @@ startup_timeout_sec = 300
 ## Ops and safety
 - Health check: `GET /healthz`.
 - Metrics: `GET /metrics`.
-- `docdexd check`: preflight validation for config, state, Ollama, browser, ports.
+- `docdexd check`: preflight validation for config, state, local LLM/Ollama fallback, browser, ports.
 - FD incident runbook: `docs/ops/fd_exhaustion_playbook.md`.
 - `docdexd self-check --repo <path>`: sensitive-term scan.
 
 ## Troubleshooting
 - Browser path issues: `docdexd browser setup` or set `DOCDEX_WEB_BROWSER`/`DOCDEX_CHROME_PATH`.
-- Ollama timeouts: ensure `ollama` is running and tune `DOCDEX_EMBEDDING_TIMEOUT_MS`.
+- Local LLM timeouts: ensure the configured local service is running, confirm the base URL with `docdexd llm diagnostics --json`, and tune `DOCDEX_EMBEDDING_TIMEOUT_MS`.
 - 429s in load tests: run with `--secure-mode=false` or raise rate limits.
 - `indexing_in_progress` (HTTP 202) on `/search`: call `/v1/index/status` and retry after `retry_after_ms`, or rebuild with `/v1/index/rebuild` if indexing is stuck.
 

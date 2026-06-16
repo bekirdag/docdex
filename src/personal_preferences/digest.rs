@@ -55,6 +55,7 @@ pub async fn process_pending_with_local_agents(
                 .find(|entry| entry.agent_id == *agent_id)
                 .map(|entry| !local_agent_is_cloud(entry))
                 .unwrap_or(false),
+            LocalTarget::LocalServiceModel { .. } => false,
             LocalTarget::OllamaModel(_) => false,
         });
     }
@@ -197,8 +198,16 @@ pub async fn project_safe_preferences_to_profile(
         if ensured_agents.insert(agent_id.clone()) && manager.get_agent(&agent_id)?.is_none() {
             manager.create_agent(&agent_id, "personal_preferences", now_ms())?;
         }
-        let embedding = embedder.embed(&content).await?;
-        manager.add_preference(&agent_id, &content, &embedding, category, now_ms())?;
+        let embedding = embedder.embed_with_metadata(&content).await?;
+        manager.add_preference_with_embedding_metadata(
+            &agent_id,
+            &content,
+            &embedding.embedding,
+            category,
+            now_ms(),
+            Some(&embedding.provider),
+            Some(&embedding.model),
+        )?;
         projected_record_ids.push(record.id);
         projected += 1;
     }

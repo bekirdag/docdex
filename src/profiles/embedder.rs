@@ -1,4 +1,4 @@
-use crate::ollama::OllamaEmbedder;
+use crate::embeddings::{EmbeddingEmbedder, EmbeddingTarget};
 use anyhow::Result;
 use std::time::Duration;
 use tracing::warn;
@@ -8,11 +8,17 @@ use crate::error::{AppError, ERR_EMBEDDING_FAILED};
 
 #[derive(Clone)]
 pub struct ProfileEmbedder {
-    embedder: Option<OllamaEmbedder>,
+    embedder: Option<EmbeddingEmbedder>,
     fallback: FallbackEmbedder,
     expected_dim: usize,
     #[cfg(test)]
     test_embedding: Option<Vec<f32>>,
+}
+
+pub struct ProfileEmbedding {
+    pub embedding: Vec<f32>,
+    pub provider: String,
+    pub model: String,
 }
 
 #[derive(Clone)]
@@ -27,7 +33,16 @@ impl ProfileEmbedder {
         timeout: Duration,
         expected_dim: usize,
     ) -> Result<Self> {
-        let embedder = match OllamaEmbedder::new(base_url, model, timeout) {
+        let target = EmbeddingTarget::ollama(base_url, model, "profile-ollama")?;
+        Self::with_target(target, timeout, expected_dim)
+    }
+
+    pub fn with_target(
+        target: EmbeddingTarget,
+        timeout: Duration,
+        expected_dim: usize,
+    ) -> Result<Self> {
+        let embedder = match EmbeddingEmbedder::with_target(target, timeout) {
             Ok(embedder) => Some(embedder),
             Err(err) => {
                 warn!(
@@ -48,7 +63,7 @@ impl ProfileEmbedder {
 
     #[cfg(test)]
     pub fn new_test(expected_dim: usize, embedding: Vec<f32>) -> Result<Self> {
-        let embedder = OllamaEmbedder::new(
+        let embedder = EmbeddingEmbedder::new(
             "http://127.0.0.1:11434".to_string(),
             "nomic-embed-text".to_string(),
             Duration::from_millis(0),
@@ -76,6 +91,12 @@ impl ProfileEmbedder {
     }
 
     pub async fn embed(&self, text: &str) -> Result<Vec<f32>> {
+        self.embed_with_metadata(text)
+            .await
+            .map(|result| result.embedding)
+    }
+
+    pub async fn embed_with_metadata(&self, text: &str) -> Result<ProfileEmbedding> {
         #[cfg(test)]
         if let Some(embedding) = self.test_embedding.as_ref() {
             if embedding.len() != self.expected_dim {
@@ -89,13 +110,21 @@ impl ProfileEmbedder {
                 )
                 .into());
             }
-            return Ok(embedding.clone());
+            return Ok(ProfileEmbedding {
+                embedding: embedding.clone(),
+                provider: self.provider().to_string(),
+                model: self.model().to_string(),
+            });
         }
         if let Some(embedder) = self.embedder.as_ref() {
             match embedder.embed(text).await {
                 Ok(embedding) => {
                     if embedding.len() == self.expected_dim {
-                        return Ok(embedding);
+                        return Ok(ProfileEmbedding {
+                            embedding,
+                            provider: embedder.provider().to_string(),
+                            model: embedder.model().to_string(),
+                        });
                     }
                     warn!(
                         provider = self.provider(),
@@ -113,7 +142,11 @@ impl ProfileEmbedder {
                 }
             }
         }
-        Ok(self.fallback.embed(text))
+        Ok(ProfileEmbedding {
+            embedding: self.fallback.embed(text),
+            provider: "fallback".to_string(),
+            model: "hash-embed-v1".to_string(),
+        })
     }
 
     pub(crate) fn fallback_embedding(text: &str, expected_dim: usize) -> Vec<f32> {

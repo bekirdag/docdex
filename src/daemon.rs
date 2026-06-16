@@ -5,10 +5,14 @@ pub mod multi_repo;
 use crate::audit::AuditLogger;
 use crate::config::RepoArgs;
 use crate::delegation_telemetry;
+use crate::embeddings::{
+    self, EmbeddingTargetHints, DEFAULT_PROFILE_EMBEDDING_MODEL, DEFAULT_REPO_EMBEDDING_MODEL,
+};
 use crate::error::StartupError;
 use crate::index::{IndexConfig, Indexer};
 use crate::ipc::mcp_ipc;
 use crate::libs;
+use crate::llm::local_library::load_local_library;
 use crate::mcp;
 use crate::memory::repo_state_root_from_state_dir;
 use crate::memory::MemoryStore;
@@ -298,6 +302,7 @@ pub async fn serve(
     mcp_rate_limit_burst: u32,
     llm_provider: String,
     ollama_base_url: String,
+    embedding_base_url_explicit: bool,
     embedding_model: String,
     profile_embedding_model: String,
     profile_embedding_dim: usize,
@@ -468,6 +473,7 @@ pub async fn serve(
         global_state_dir.as_deref(),
         indexer.state_dir(),
     );
+    let local_model_library = load_local_library(telemetry_global_state_dir.as_deref()).ok();
     let libs_indexer = {
         let libs_dir = libs::libs_state_dir_from_index_state_dir(indexer.state_dir());
         libs::LibsIndexer::open_read_only(libs_dir)
@@ -476,22 +482,31 @@ pub async fn serve(
             .map(Arc::new)
     };
     let memory_embedder = if enable_memory {
-        let model = embedding_model.trim();
-        let base_url = ollama_base_url.trim();
-        if model.is_empty() || base_url.is_empty() {
-            warn!("embedding base URL/model not configured; memory endpoints are disabled");
-            None
-        } else {
-            let timeout = Duration::from_millis(embedding_timeout_ms);
-            match OllamaEmbedder::new(base_url.to_string(), model.to_string(), timeout) {
-                Ok(embedder) => Some(embedder),
-                Err(err) => {
-                    warn!(
-                        error = ?err,
-                        "embedding configuration invalid; memory endpoints are disabled"
-                    );
-                    None
-                }
+        let timeout = Duration::from_millis(embedding_timeout_ms);
+        let model_explicit = embeddings::env_present("DOCDEX_EMBEDDING_MODEL")
+            || embedding_model.trim() != DEFAULT_REPO_EMBEDDING_MODEL;
+        let hints = EmbeddingTargetHints::repo()
+            .explicit_provider(embeddings::env_non_empty("DOCDEX_EMBEDDING_PROVIDER"))
+            .explicit_base_url(
+                embeddings::env_non_empty("DOCDEX_EMBEDDING_BASE_URL")
+                    .or_else(|| embedding_base_url_explicit.then_some(ollama_base_url.clone())),
+                embeddings::env_present("DOCDEX_EMBEDDING_BASE_URL") || embedding_base_url_explicit,
+            )
+            .explicit_model(Some(embedding_model.clone()), model_explicit)
+            .legacy_ollama_base_url(
+                embeddings::env_non_empty("DOCDEX_OLLAMA_BASE_URL")
+                    .or_else(|| Some(ollama_base_url.clone())),
+            );
+        match embeddings::resolve_embedding_target(&llm_config, local_model_library.as_ref(), hints)
+            .and_then(|target| OllamaEmbedder::with_target(target, timeout))
+        {
+            Ok(embedder) => Some(embedder),
+            Err(err) => {
+                warn!(
+                    error = ?err,
+                    "embedding configuration invalid; memory endpoints are disabled"
+                );
+                None
             }
         }
     } else {
@@ -567,12 +582,35 @@ pub async fn serve(
         }
         manager.map(|manager| {
             let timeout = Duration::from_millis(embedding_timeout_ms);
-            let embedder = ProfileEmbedder::new(
-                ollama_base_url.clone(),
-                profile_embedding_model.clone(),
-                timeout,
-                profile_embedding_dim,
+            let profile_model_explicit = embeddings::env_present("DOCDEX_PROFILE_EMBEDDING_MODEL")
+                || profile_embedding_model.trim() != DEFAULT_PROFILE_EMBEDDING_MODEL;
+            let profile_hints = EmbeddingTargetHints::profile()
+                .explicit_provider(
+                    embeddings::env_non_empty("DOCDEX_PROFILE_EMBEDDING_PROVIDER")
+                        .or_else(|| embeddings::env_non_empty("DOCDEX_EMBEDDING_PROVIDER")),
+                )
+                .explicit_base_url(
+                    embeddings::env_non_empty("DOCDEX_PROFILE_EMBEDDING_BASE_URL")
+                        .or_else(|| embeddings::env_non_empty("DOCDEX_EMBEDDING_BASE_URL"))
+                        .or_else(|| embedding_base_url_explicit.then_some(ollama_base_url.clone())),
+                    embeddings::env_present("DOCDEX_PROFILE_EMBEDDING_BASE_URL")
+                        || embeddings::env_present("DOCDEX_EMBEDDING_BASE_URL")
+                        || embedding_base_url_explicit,
+                )
+                .explicit_model(
+                    Some(profile_embedding_model.clone()),
+                    profile_model_explicit,
+                )
+                .legacy_ollama_base_url(
+                    embeddings::env_non_empty("DOCDEX_OLLAMA_BASE_URL")
+                        .or_else(|| Some(ollama_base_url.clone())),
+                );
+            let embedder = embeddings::resolve_embedding_target(
+                &llm_config,
+                local_model_library.as_ref(),
+                profile_hints,
             )
+            .and_then(|target| ProfileEmbedder::with_target(target, timeout, profile_embedding_dim))
             .ok();
             search::ProfileState { manager, embedder }
         })

@@ -130,6 +130,16 @@ pub(super) struct DelegateArgs {
 }
 
 #[derive(Deserialize)]
+pub(super) struct LlmDiagnosticsArgs {
+    #[serde(default)]
+    pub(super) refresh: Option<bool>,
+    #[serde(default)]
+    pub(super) project_root: Option<PathBuf>,
+    #[serde(default, alias = "repoPath")]
+    pub(super) repo_path: Option<PathBuf>,
+}
+
+#[derive(Deserialize)]
 pub(super) struct FilesArgs {
     #[serde(default)]
     pub(super) project_root: Option<PathBuf>,

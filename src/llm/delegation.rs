@@ -1,12 +1,19 @@
 use crate::config::LlmConfig;
-use crate::llm::adapter::{resolve_agent_adapter, LlmClient, LlmCompletion, LlmFuture};
+use crate::llm::adapter::{
+    resolve_agent_adapter, resolve_local_openai_compatible_adapter, LlmClient, LlmCompletion,
+    LlmFuture,
+};
 use crate::llm::delegation_rating::{
     compute_budgets, compute_run_score, estimate_complexity, fallback_quality_score,
     review_from_output, reviewer_prompt, RunScoreInput,
 };
 use crate::llm::local_library::{
-    local_agent_is_cloud, resolve_local_ollama_base_url, save_local_library,
-    CachedLocalAgentSelection, LocalAgentEntry, LocalModelLibrary,
+    local_agent_delegation_candidate, local_agent_is_cloud, local_model_delegation_candidate,
+    local_model_execution_name, local_service_model_delegation_candidate,
+    local_service_model_execution_name, resolve_local_ollama_base_url, save_local_library,
+    CachedLocalAgentSelection, LocalAgentEntry, LocalDefaultCandidate, LocalDefaultCandidateKind,
+    LocalLlmProvider, LocalModelEntry, LocalModelLibrary, LocalServiceEntry, LocalServiceHealth,
+    LocalServiceModelEntry,
 };
 use crate::llm::matches_expensive_delegation_target;
 use crate::max_size::truncate_utf8_chars;
@@ -216,7 +223,89 @@ pub enum DelegationMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocalTarget {
     OllamaModel(String),
+    LocalServiceModel {
+        provider: LocalLlmProvider,
+        base_url: String,
+        model: String,
+    },
     McodaAgent(String),
+}
+
+fn local_service_model_target(
+    service: &LocalServiceEntry,
+    model: &LocalServiceModelEntry,
+) -> Option<LocalTarget> {
+    if service.health != LocalServiceHealth::Healthy {
+        return None;
+    }
+    if !local_service_model_delegation_candidate(model) {
+        return None;
+    }
+    let base_url = service
+        .base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let model = local_service_model_execution_name(model);
+    if model.trim().is_empty() {
+        return None;
+    }
+    if service.provider == LocalLlmProvider::Ollama {
+        return Some(LocalTarget::OllamaModel(model));
+    }
+    if !service.provider.is_openai_compatible() {
+        return None;
+    }
+    Some(LocalTarget::LocalServiceModel {
+        provider: service.provider.clone(),
+        base_url: base_url.trim_end_matches('/').to_string(),
+        model,
+    })
+}
+
+fn default_candidate_local_target(candidate: &LocalDefaultCandidate) -> Option<LocalTarget> {
+    if let Some(agent_id) = candidate
+        .agent_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Some(LocalTarget::McodaAgent(agent_id.to_string()));
+    }
+    match candidate.kind {
+        LocalDefaultCandidateKind::McodaLocalAgent
+        | LocalDefaultCandidateKind::McodaEmbeddingAgent
+        | LocalDefaultCandidateKind::SelfHostedRemoteAgent => None,
+        LocalDefaultCandidateKind::ConfiguredDelegation
+        | LocalDefaultCandidateKind::LocalServiceModel
+        | LocalDefaultCandidateKind::OllamaInstalledModel => {
+            let model = candidate
+                .raw_model
+                .as_deref()
+                .or(candidate.model.as_deref())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())?;
+            let provider = candidate.provider.clone().unwrap_or_default();
+            if provider == LocalLlmProvider::Ollama {
+                return Some(LocalTarget::OllamaModel(model.to_string()));
+            }
+            if !provider.is_openai_compatible() {
+                return None;
+            }
+            let base_url = candidate
+                .base_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())?;
+            Some(LocalTarget::LocalServiceModel {
+                provider,
+                base_url: base_url.trim_end_matches('/').to_string(),
+                model: model.to_string(),
+            })
+        }
+        LocalDefaultCandidateKind::ConfiguredEmbedding
+        | LocalDefaultCandidateKind::OllamaSetupFallback => None,
+    }
 }
 
 const MODEL_OVERRIDE_PREFIXES: [&str; 2] = ["model:", "ollama:"];
@@ -258,8 +347,27 @@ pub fn parse_local_target_override(
         {
             return Some(LocalTarget::McodaAgent(agent.agent_id.clone()));
         }
-        if let Some(model) = library.models.iter().find(|model| model.name == trimmed) {
-            return Some(LocalTarget::OllamaModel(model.name.clone()));
+        for service in &library.services {
+            for model in &service.models {
+                let raw_name = model.raw_name.as_deref().map(str::trim);
+                if model.name == trimmed || raw_name.is_some_and(|raw| raw == trimmed) {
+                    if let Some(target) = local_service_model_target(service, model) {
+                        return Some(target);
+                    }
+                }
+            }
+        }
+        if let Some(model) = library.models.iter().find(|model| {
+            model.name == trimmed
+                || model
+                    .raw_name
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|raw_name| raw_name == trimmed)
+        }) {
+            if local_model_delegation_candidate(model) {
+                return Some(LocalTarget::OllamaModel(local_model_execution_name(model)));
+            }
         }
     }
     None
@@ -581,6 +689,7 @@ fn resolve_cost_per_million_for_target(
 ) -> Option<f64> {
     match target? {
         LocalTarget::OllamaModel(_) => Some(0.0),
+        LocalTarget::LocalServiceModel { .. } => Some(0.0),
         LocalTarget::McodaAgent(agent_id) => resolve_cost_per_million_for_agent(agent_id, library),
     }
 }
@@ -1067,6 +1176,11 @@ pub fn local_selection_policy_requires_fresh_library(llm_config: &LlmConfig) -> 
 fn describe_local_target(target: &LocalTarget) -> String {
     match target {
         LocalTarget::OllamaModel(model) => format!("model:{model}"),
+        LocalTarget::LocalServiceModel {
+            provider,
+            base_url,
+            model,
+        } => format!("service:{}:{model}@{base_url}", provider.as_str()),
         LocalTarget::McodaAgent(agent_id) => format!("agent:{agent_id}"),
     }
 }
@@ -1427,6 +1541,28 @@ fn model_has_recent_local_failure(
         || recent_failures_contain(recent_failures, model)
 }
 
+fn service_model_has_recent_local_failure(
+    target: &LocalTarget,
+    model: &str,
+    recent_failures: &HashMap<String, LocalTargetFailureWindow>,
+) -> bool {
+    recent_failures_contain(recent_failures, &describe_local_target(target))
+        || model_has_recent_local_failure(model, recent_failures)
+}
+
+fn model_entry_has_recent_local_failure(
+    model: &LocalModelEntry,
+    recent_failures: &HashMap<String, LocalTargetFailureWindow>,
+) -> bool {
+    model_has_recent_local_failure(&model.name, recent_failures)
+        || model
+            .raw_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|raw_name| !raw_name.is_empty())
+            .is_some_and(|raw_name| model_has_recent_local_failure(raw_name, recent_failures))
+}
+
 fn automatic_local_mcoda_agent_selection_eligible(
     agent: &LocalAgentEntry,
     allow_cloud: bool,
@@ -1449,9 +1585,29 @@ fn push_unique_target(targets: &mut Vec<LocalTarget>, target: LocalTarget) {
     }
 }
 
+fn push_ranked_candidate(
+    candidates: &mut Vec<(LocalTarget, i32, i32)>,
+    target: LocalTarget,
+    score: i32,
+    tier: i32,
+) {
+    if candidates
+        .iter()
+        .any(|(existing, _, _)| existing == &target)
+    {
+        return;
+    }
+    candidates.push((target, score, tier));
+}
+
 fn local_target_sort_key(target: &LocalTarget) -> String {
     match target {
         LocalTarget::OllamaModel(model) => format!("model:{model}"),
+        LocalTarget::LocalServiceModel {
+            provider,
+            base_url,
+            model,
+        } => format!("service:{}:{model}@{base_url}", provider.as_str()),
         LocalTarget::McodaAgent(agent_id) => format!("agent:{agent_id}"),
     }
 }
@@ -1459,6 +1615,7 @@ fn local_target_sort_key(target: &LocalTarget) -> String {
 fn is_cloud_target(target: &LocalTarget, library: &LocalModelLibrary) -> bool {
     match target {
         LocalTarget::OllamaModel(_) => false,
+        LocalTarget::LocalServiceModel { .. } => false,
         LocalTarget::McodaAgent(agent_id) => library
             .agents
             .iter()
@@ -1477,6 +1634,9 @@ fn local_target_eligible(
     match target {
         LocalTarget::OllamaModel(model) => !recent_failures
             .map(|failures| model_has_recent_local_failure(model, failures))
+            .unwrap_or(false),
+        LocalTarget::LocalServiceModel { model, .. } => !recent_failures
+            .map(|failures| service_model_has_recent_local_failure(target, model, failures))
             .unwrap_or(false),
         LocalTarget::McodaAgent(agent_id) => library
             .agents
@@ -1508,9 +1668,39 @@ fn rank_task_capability_local_targets(
     recent_failures: Option<&HashMap<String, LocalTargetFailureWindow>>,
 ) -> Vec<LocalTarget> {
     let mut candidates: Vec<(LocalTarget, i32, i32)> = Vec::new();
+    for service in &library.services {
+        if service.health != LocalServiceHealth::Healthy {
+            continue;
+        }
+        for model in &service.models {
+            let Some(target) = local_service_model_target(service, model) else {
+                continue;
+            };
+            if recent_failures
+                .map(|failures| {
+                    service_model_has_recent_local_failure(
+                        &target,
+                        &local_service_model_execution_name(model),
+                        failures,
+                    )
+                })
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let score = score_for_task(task_type, &model.capabilities);
+            if score <= 0 {
+                continue;
+            }
+            push_ranked_candidate(&mut candidates, target, score, 2);
+        }
+    }
     for model in &library.models {
+        if !local_model_delegation_candidate(model) {
+            continue;
+        }
         if recent_failures
-            .map(|failures| model_has_recent_local_failure(&model.name, failures))
+            .map(|failures| model_entry_has_recent_local_failure(model, failures))
             .unwrap_or(false)
         {
             continue;
@@ -1519,7 +1709,12 @@ fn rank_task_capability_local_targets(
         if score <= 0 {
             continue;
         }
-        candidates.push((LocalTarget::OllamaModel(model.name.clone()), score, 2));
+        push_ranked_candidate(
+            &mut candidates,
+            LocalTarget::OllamaModel(local_model_execution_name(model)),
+            score,
+            2,
+        );
     }
     for agent in &library.agents {
         if !recent_failures
@@ -1534,11 +1729,12 @@ fn rank_task_capability_local_targets(
         if score <= 0 {
             continue;
         }
-        candidates.push((
+        push_ranked_candidate(
+            &mut candidates,
             LocalTarget::McodaAgent(agent.agent_id.clone()),
             score,
             automatic_mcoda_agent_tier(agent) + 1,
-        ));
+        );
     }
     candidates.sort_by(|left, right| {
         right
@@ -1612,6 +1808,15 @@ pub fn build_local_target_candidates_with_config(
         resolve_explicit_target(&llm_config.delegation.cloud_agent_id, Some(library)).filter(
             |target| local_target_eligible(target, library, allow_cloud, Some(&recent_failures)),
         );
+    let default_local = library
+        .defaults
+        .delegation
+        .selected
+        .as_ref()
+        .and_then(default_candidate_local_target)
+        .filter(|target| {
+            local_target_eligible(target, library, allow_cloud, Some(&recent_failures))
+        });
     if llm_config.delegation.local_selection_policy
         != LOCAL_SELECTION_POLICY_MCODA_ZERO_COST_MOST_CAPABLE
     {
@@ -1623,6 +1828,9 @@ pub fn build_local_target_candidates_with_config(
             Some(&recent_failures),
         );
         if let Some(target) = preferred_local {
+            push_unique_target(&mut targets, target);
+        }
+        if let Some(target) = default_local {
             push_unique_target(&mut targets, target);
         }
         for target in ranked_targets
@@ -1647,6 +1855,9 @@ pub fn build_local_target_candidates_with_config(
     let ranked_targets =
         rank_task_capability_local_targets(task_type, library, allow_cloud, Some(&recent_failures));
     if let Some(target) = preferred_local {
+        push_unique_target(&mut targets, target);
+    }
+    if let Some(target) = default_local {
         push_unique_target(&mut targets, target);
     }
     if llm_config.delegation.use_cached_local_decision {
@@ -1787,6 +1998,33 @@ fn rank_primary_targets(
     recent_failures: Option<&HashMap<String, LocalTargetFailureWindow>>,
 ) -> Vec<LocalTarget> {
     let mut candidates: Vec<(LocalTarget, i32, i32)> = Vec::new();
+    for service in &library.services {
+        if service.health != LocalServiceHealth::Healthy {
+            continue;
+        }
+        for model in &service.models {
+            let Some(target) = local_service_model_target(service, model) else {
+                continue;
+            };
+            if recent_failures
+                .map(|failures| {
+                    service_model_has_recent_local_failure(
+                        &target,
+                        &local_service_model_execution_name(model),
+                        failures,
+                    )
+                })
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let score = score_for_task(task_type, &model.capabilities);
+            if score <= 0 {
+                continue;
+            }
+            push_ranked_candidate(&mut candidates, target, score, 0);
+        }
+    }
     for agent in &library.agents {
         if !automatic_local_mcoda_agent_eligible(agent, allow_cloud) {
             continue;
@@ -1801,11 +2039,12 @@ fn rank_primary_targets(
         if score <= 0 {
             continue;
         }
-        candidates.push((
+        push_ranked_candidate(
+            &mut candidates,
             LocalTarget::McodaAgent(agent.agent_id.clone()),
             score,
             automatic_mcoda_agent_tier(agent),
-        ));
+        );
     }
     for model in &library.models {
         if recent_failures
@@ -1818,7 +2057,12 @@ fn rank_primary_targets(
         if score <= 0 {
             continue;
         }
-        candidates.push((LocalTarget::OllamaModel(model.name.clone()), score, 0));
+        push_ranked_candidate(
+            &mut candidates,
+            LocalTarget::OllamaModel(model.name.clone()),
+            score,
+            0,
+        );
     }
     if candidates.is_empty() {
         return Vec::new();
@@ -1918,7 +2162,8 @@ fn resolve_cached_zero_cost_mcoda_agent<'a>(
 }
 
 fn automatic_local_mcoda_agent_eligible(agent: &LocalAgentEntry, allow_cloud: bool) -> bool {
-    mcoda_agent_health_allows(agent.health_status.as_deref())
+    local_agent_delegation_candidate(agent)
+        && mcoda_agent_health_allows(agent.health_status.as_deref())
         && (allow_cloud || !local_agent_is_cloud(agent))
 }
 
@@ -2282,6 +2527,30 @@ pub fn resolve_delegation_client(
                 let base_url = resolve_local_ollama_base_url(llm_config)
                     .ok_or_else(|| anyhow!("ollama base_url missing for local delegation"))?;
                 return resolve_ollama_adapter(&base_url, model);
+            }
+            LocalTarget::LocalServiceModel {
+                provider,
+                base_url,
+                model,
+            } => {
+                if *provider == LocalLlmProvider::Ollama {
+                    return resolve_ollama_adapter(base_url, model);
+                }
+                if !provider.is_openai_compatible() {
+                    return Err(anyhow!(
+                        "local provider {} is not OpenAI-compatible",
+                        provider.as_str()
+                    ));
+                }
+                let adapter =
+                    resolve_local_openai_compatible_adapter(base_url, model, provider.as_str())
+                        .with_context(|| {
+                            format!(
+                                "resolve local OpenAI-compatible service {}",
+                                provider.as_str()
+                            )
+                        })?;
+                return Ok(Arc::new(adapter));
             }
         }
     }

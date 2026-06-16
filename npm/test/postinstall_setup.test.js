@@ -467,6 +467,13 @@ test("runPostInstallSetup does not call Ollama installers", () => {
   assert.equal(source.includes("maybePromptOllamaModel"), false);
 });
 
+test("runPostInstallSetup describes local LLM service choice before Ollama fallback", () => {
+  const source = runPostInstallSetup.toString();
+  assert.equal(source.includes("existing local LLM services"), true);
+  assert.equal(source.includes("Ollama fallback"), true);
+  assert.equal(source.includes('setup: "local_llm_service_choice"'), true);
+});
+
 test("resolveDaemonPortState reuses existing daemon when port busy and healthy", async () => {
   let cleared = false;
   const state = await resolveDaemonPortState({

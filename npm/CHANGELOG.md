@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+## 0.2.76
+- Add packaged provider-neutral local LLM setup and diagnostics guidance so npm installs do not imply Ollama is mandatory when another supported local service or mcoda agent already exists.
+- Add packaged migration/test coverage notes for preserving explicit user model/provider/agent settings while replacing generated legacy Ollama defaults.
+- Bump packaged release metadata to 0.2.76.
+
 ## 0.2.75
 - Add packaged automatic AI-terminal capture, generated-skill registry, validation, sync, install, rollback, and context-hint surfaces for personal-preferences and mind-clone workflows.
 - Add packaged generated-skill quality reports with replay, drift, stale-source, activation feedback, and promote/keep/review/demote/quarantine recommendations.

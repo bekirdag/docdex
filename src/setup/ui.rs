@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyEventKind},
@@ -27,6 +27,11 @@ use super::ollama;
 use super::state::{SetupContext, SetupOutcome, SetupState, StepKey, StepSnapshot, StepStatus};
 use super::SetupSummary;
 use crate::config as app_config;
+use crate::llm::local_library::{
+    detect_local_service_report, service_probe_timeout, LocalDefaultCandidate,
+    LocalDefaultCandidateKind, LocalMcodaAgentMatch, LocalServiceDetectionReport,
+    LocalServiceHealth, LocalServiceModelEntry,
+};
 use crate::util;
 use crate::web::browser_install;
 use std::env;
@@ -83,6 +88,9 @@ struct MenuOptions {
 }
 
 pub trait WizardServices {
+    fn detect_local_services(&self) -> Result<LocalServiceDetectionReport>;
+    fn apply_embedding_candidate(&self, candidate: &LocalDefaultCandidate) -> Result<()>;
+    fn apply_delegation_candidate(&self, candidate: &LocalDefaultCandidate) -> Result<()>;
     fn resolve_ollama_path(
         &self,
         explicit: Option<std::path::PathBuf>,
@@ -108,6 +116,28 @@ pub trait WizardServices {
 pub struct RealServices;
 
 impl WizardServices for RealServices {
+    fn detect_local_services(&self) -> Result<LocalServiceDetectionReport> {
+        let mut config = load_summary_config().unwrap_or_default();
+        config.apply_defaults()?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("build local LLM detection runtime")?;
+        runtime.block_on(detect_local_service_report(
+            config.core.global_state_dir.as_deref(),
+            &config.llm,
+            service_probe_timeout(),
+        ))
+    }
+
+    fn apply_embedding_candidate(&self, candidate: &LocalDefaultCandidate) -> Result<()> {
+        config::apply_embedding_candidate(candidate).map(|_| ())
+    }
+
+    fn apply_delegation_candidate(&self, candidate: &LocalDefaultCandidate) -> Result<()> {
+        config::apply_delegation_candidate(candidate).map(|_| ())
+    }
+
     fn resolve_ollama_path(
         &self,
         explicit: Option<std::path::PathBuf>,
@@ -235,6 +265,8 @@ pub fn run_wizard_with_input<I: WizardInput, S: WizardServices>(
     let mut default_model: Option<String> = None;
     let mut ollama_path = context.ollama_path.clone();
     let mut ollama_status: Option<ollama::OllamaDaemonStatus> = None;
+    let mut local_report = LocalServiceDetectionReport::default();
+    let mut local_detection_error: Option<String> = None;
     let mut abort_error: Option<String> = None;
 
     if let Some(err) = configure_consent_section(&mut state, input, services)? {
@@ -242,6 +274,14 @@ pub fn run_wizard_with_input<I: WizardInput, S: WizardServices>(
     }
 
     if abort_error.is_none() {
+        match services.detect_local_services() {
+            Ok(report) => {
+                local_report = report;
+            }
+            Err(err) => {
+                local_detection_error = Some(err.to_string());
+            }
+        }
         state.set_current(StepKey::Ollama);
         input.info(
             &state,
@@ -256,7 +296,14 @@ pub fn run_wizard_with_input<I: WizardInput, S: WizardServices>(
     }
 
     while abort_error.is_none() {
-        let menu_details = build_menu_details(&mut state, services, &mut ollama_path, &mut models);
+        let menu_details = build_menu_details(
+            &mut state,
+            services,
+            &mut ollama_path,
+            &mut models,
+            &local_report,
+            local_detection_error.as_deref(),
+        );
         let action = input.select_menu(&state, &MENU_STEPS, &menu_details)?;
         let step = match action {
             MenuAction::Exit => break,
@@ -269,6 +316,7 @@ pub fn run_wizard_with_input<I: WizardInput, S: WizardServices>(
                     &mut state,
                     &models,
                     menu_details.browsers(),
+                    &local_report,
                     &mut default_model,
                 ) {
                     abort_error = Some(err.to_string());
@@ -284,6 +332,8 @@ pub fn run_wizard_with_input<I: WizardInput, S: WizardServices>(
                 services,
                 &mut ollama_path,
                 &mut ollama_status,
+                &local_report,
+                &mut default_model,
             ),
             StepKey::EmbedModel => configure_embedding_section(
                 &mut state,
@@ -293,6 +343,7 @@ pub fn run_wizard_with_input<I: WizardInput, S: WizardServices>(
                 &mut ollama_status,
                 &mut models,
                 &mut installed,
+                &local_report,
             ),
             StepKey::ChatModel => configure_chat_section(
                 &context,
@@ -304,6 +355,7 @@ pub fn run_wizard_with_input<I: WizardInput, S: WizardServices>(
                 &mut models,
                 &mut installed,
                 &mut default_model,
+                &local_report,
             ),
             StepKey::Browser => configure_browser_section(&mut state, input, services),
             StepKey::WebProviders => configure_web_providers_section(&mut state, input, services),
@@ -335,6 +387,7 @@ pub fn run_wizard_with_input<I: WizardInput, S: WizardServices>(
             default_model.as_deref(),
             ollama_status.as_ref(),
             installed.as_slice(),
+            &local_report,
         ),
     };
 
@@ -463,6 +516,8 @@ fn build_menu_details<S: WizardServices>(
     services: &S,
     ollama_path: &mut Option<PathBuf>,
     models: &mut Vec<String>,
+    local_report: &LocalServiceDetectionReport,
+    local_detection_error: Option<&str>,
 ) -> MenuDetails {
     let resolved_path = if ollama_path.is_some() {
         ollama_path.clone()
@@ -508,18 +563,31 @@ fn build_menu_details<S: WizardServices>(
         .as_deref()
         .map(|model| model_installed(&cached_models, model))
         .unwrap_or(false);
+    let local_embedding =
+        usable_default_candidate(local_report.library.defaults.embedding.selected.as_ref());
+    let local_delegation =
+        usable_default_candidate(local_report.library.defaults.delegation.selected.as_ref());
+    let local_defaults_ready = local_embedding.is_some() || local_delegation.is_some();
 
-    let (ollama_status, ollama_detail) =
+    let (ollama_status, ollama_detail) = if local_defaults_ready {
+        (
+            StepStatus::Done,
+            Some("detected local defaults".to_string()),
+        )
+    } else {
         match (resolved_path.as_ref(), ollama_running, ollama_err.as_ref()) {
             (_, _, Some(err)) => (StepStatus::Failed, Some(err.to_string())),
             (None, _, None) => (StepStatus::Pending, Some("not installed".to_string())),
             (Some(_), Some(true), None) => (StepStatus::Done, Some("active".to_string())),
             (Some(_), Some(false), None) => (StepStatus::Pending, Some("not running".to_string())),
             (Some(_), None, None) => (StepStatus::Pending, Some("unknown".to_string())),
-        };
+        }
+    };
     state.update_step(StepKey::Ollama, ollama_status, ollama_detail);
 
-    let embed_status = if resolved_path.is_none() {
+    let embed_status = if local_embedding.is_some() {
+        StepStatus::Done
+    } else if resolved_path.is_none() {
         StepStatus::Pending
     } else if embed_installed {
         StepStatus::Done
@@ -529,17 +597,29 @@ fn build_menu_details<S: WizardServices>(
     state.update_step(
         StepKey::EmbedModel,
         embed_status,
-        Some(config_embed.clone()),
+        Some(
+            local_embedding
+                .map(format_candidate_short)
+                .unwrap_or_else(|| config_embed.clone()),
+        ),
     );
 
-    let chat_status = if resolved_path.is_none() {
+    let chat_status = if local_delegation.is_some() {
+        StepStatus::Done
+    } else if resolved_path.is_none() {
         StepStatus::Pending
     } else if chat_installed {
         StepStatus::Done
     } else {
         StepStatus::Pending
     };
-    state.update_step(StepKey::ChatModel, chat_status, config_default.clone());
+    state.update_step(
+        StepKey::ChatModel,
+        chat_status,
+        local_delegation
+            .map(format_candidate_short)
+            .or(config_default.clone()),
+    );
 
     let chromium_status = services.chromium_install_status();
     let browser_status = if chromium_status.installed {
@@ -567,7 +647,10 @@ fn build_menu_details<S: WizardServices>(
     };
     state.update_step(StepKey::WebProviders, providers_status, providers_detail);
 
-    let mut ollama_body = String::new();
+    let mut ollama_body = format_local_service_report(local_report, local_detection_error);
+    if !ollama_body.is_empty() {
+        ollama_body.push_str("\n\nOllama fallback:\n");
+    }
     if let Some(path) = resolved_path.as_ref() {
         let _ = writeln!(ollama_body, "Ollama path: {}", path.display());
         match (ollama_running, ollama_err.as_ref()) {
@@ -597,18 +680,43 @@ fn build_menu_details<S: WizardServices>(
             }
         }
     } else {
-        ollama_body.push_str("Ollama not detected.\nSelect this section to install.");
+        ollama_body.push_str(
+            "Ollama not detected.\nSelect this section only if you want the fallback installer.",
+        );
     }
 
     let mut embed_body = String::new();
+    if let Some(candidate) = local_embedding {
+        let _ = writeln!(
+            embed_body,
+            "Detected embedding default: {}",
+            format_candidate_long(candidate)
+        );
+        let _ = writeln!(
+            embed_body,
+            "Select this section to write this default without installing anything."
+        );
+    }
     if resolved_path.is_none() {
-        embed_body.push_str("Ollama not detected.\nInstall Ollama to configure embedding models.");
+        if !embed_body.is_empty() {
+            embed_body.push('\n');
+        }
+        embed_body.push_str("Ollama fallback not detected.");
     } else if ollama_running == Some(false) {
+        if !embed_body.is_empty() {
+            embed_body.push('\n');
+        }
         embed_body
             .push_str("Ollama detected but not running.\nStart Ollama to list embedding models.");
     } else if let Some(err) = ollama_err.as_ref() {
+        if !embed_body.is_empty() {
+            embed_body.push('\n');
+        }
         let _ = writeln!(embed_body, "Ollama error: {err}");
     } else {
+        if !embed_body.is_empty() {
+            embed_body.push('\n');
+        }
         let _ = writeln!(
             embed_body,
             "Installed embedding models: {}",
@@ -626,13 +734,36 @@ fn build_menu_details<S: WizardServices>(
     }
 
     let mut chat_body = String::new();
+    if let Some(candidate) = local_delegation {
+        let _ = writeln!(
+            chat_body,
+            "Detected local delegation default: {}",
+            format_candidate_long(candidate)
+        );
+        let _ = writeln!(
+            chat_body,
+            "Select this section to write this default without installing anything."
+        );
+    }
     if resolved_path.is_none() {
-        chat_body.push_str("Ollama not detected.\nInstall Ollama to configure chat models.");
+        if !chat_body.is_empty() {
+            chat_body.push('\n');
+        }
+        chat_body.push_str("Ollama fallback not detected.");
     } else if ollama_running == Some(false) {
+        if !chat_body.is_empty() {
+            chat_body.push('\n');
+        }
         chat_body.push_str("Ollama detected but not running.\nStart Ollama to list chat models.");
     } else if let Some(err) = ollama_err.as_ref() {
+        if !chat_body.is_empty() {
+            chat_body.push('\n');
+        }
         let _ = writeln!(chat_body, "Ollama error: {err}");
     } else {
+        if !chat_body.is_empty() {
+            chat_body.push('\n');
+        }
         let _ = writeln!(
             chat_body,
             "Installed chat models: {}",
@@ -737,6 +868,7 @@ fn apply_quick_default<S: WizardServices>(
     state: &mut SetupState,
     models: &[String],
     browsers: &[BrowserStatus],
+    _local_report: &LocalServiceDetectionReport,
     default_model: &mut Option<String>,
 ) -> Result<()> {
     match step {
@@ -810,14 +942,67 @@ fn derive_outcome(state: &SetupState) -> SetupOutcome {
     }
 }
 
+fn apply_detected_local_defaults<S: WizardServices>(
+    state: &mut SetupState,
+    services: &S,
+    local_report: &LocalServiceDetectionReport,
+    default_model: &mut Option<String>,
+) -> Result<bool> {
+    let mut applied = false;
+    if let Some(candidate) =
+        usable_default_candidate(local_report.library.defaults.embedding.selected.as_ref())
+    {
+        services.apply_embedding_candidate(candidate)?;
+        state.update_step(
+            StepKey::EmbedModel,
+            StepStatus::Done,
+            Some(format_candidate_short(candidate)),
+        );
+        applied = true;
+    }
+    if let Some(candidate) =
+        usable_default_candidate(local_report.library.defaults.delegation.selected.as_ref())
+    {
+        services.apply_delegation_candidate(candidate)?;
+        *default_model = candidate_value(candidate);
+        state.update_step(
+            StepKey::ChatModel,
+            StepStatus::Done,
+            Some(format_candidate_short(candidate)),
+        );
+        applied = true;
+    }
+    if applied {
+        state.update_step(
+            StepKey::Ollama,
+            StepStatus::Done,
+            Some("detected local defaults".to_string()),
+        );
+    }
+    Ok(applied)
+}
+
 fn configure_ollama_section<I: WizardInput, S: WizardServices>(
     state: &mut SetupState,
     input: &mut I,
     services: &S,
     ollama_path: &mut Option<PathBuf>,
     ollama_status: &mut Option<ollama::OllamaDaemonStatus>,
+    local_report: &LocalServiceDetectionReport,
+    default_model: &mut Option<String>,
 ) -> Result<Option<String>> {
     state.set_current(StepKey::Ollama);
+    if has_usable_detected_defaults(local_report)
+        && input.confirm(
+            state,
+            "Use detected local LLM defaults without installing anything?",
+            true,
+        )?
+    {
+        if apply_detected_local_defaults(state, services, local_report, default_model)? {
+            return Ok(None);
+        }
+    }
     if let Err(err) = ensure_ollama_ready(state, input, services, ollama_path, ollama_status) {
         return Ok(Some(err.to_string()));
     }
@@ -850,8 +1035,26 @@ fn configure_embedding_section<I: WizardInput, S: WizardServices>(
     ollama_status: &mut Option<ollama::OllamaDaemonStatus>,
     models: &mut Vec<String>,
     installed: &mut Vec<String>,
+    local_report: &LocalServiceDetectionReport,
 ) -> Result<Option<String>> {
     state.set_current(StepKey::EmbedModel);
+    if let Some(candidate) =
+        usable_default_candidate(local_report.library.defaults.embedding.selected.as_ref())
+    {
+        let prompt = format!(
+            "Use detected embedding default {} without installing anything?",
+            format_candidate_short(candidate)
+        );
+        if input.confirm(state, &prompt, true)? {
+            services.apply_embedding_candidate(candidate)?;
+            state.update_step(
+                StepKey::EmbedModel,
+                StepStatus::Done,
+                Some(format_candidate_short(candidate)),
+            );
+            return Ok(None);
+        }
+    }
     let path = match ensure_ollama_ready(state, input, services, ollama_path, ollama_status) {
         Ok(Some(path)) => path,
         Ok(None) => {
@@ -982,8 +1185,27 @@ fn configure_chat_section<I: WizardInput, S: WizardServices>(
     models: &mut Vec<String>,
     installed: &mut Vec<String>,
     default_model: &mut Option<String>,
+    local_report: &LocalServiceDetectionReport,
 ) -> Result<Option<String>> {
     state.set_current(StepKey::ChatModel);
+    if let Some(candidate) =
+        usable_default_candidate(local_report.library.defaults.delegation.selected.as_ref())
+    {
+        let prompt = format!(
+            "Use detected local delegation default {} without installing anything?",
+            format_candidate_short(candidate)
+        );
+        if input.confirm(state, &prompt, true)? {
+            services.apply_delegation_candidate(candidate)?;
+            *default_model = candidate_value(candidate);
+            state.update_step(
+                StepKey::ChatModel,
+                StepStatus::Done,
+                Some(format_candidate_short(candidate)),
+            );
+            return Ok(None);
+        }
+    }
     let path = match ensure_ollama_ready(state, input, services, ollama_path, ollama_status) {
         Ok(Some(path)) => path,
         Ok(None) => {
@@ -1285,7 +1507,7 @@ fn ensure_ollama_ready<I: WizardInput, S: WizardServices>(
             Some(false) => false,
             None => input.confirm(
                 state,
-                "Ollama not detected. Do you want to download Ollama?",
+                "No usable local LLM default was selected. Do you want to install the recommended Ollama fallback?",
                 true,
             )?,
         };
@@ -1299,7 +1521,7 @@ fn ensure_ollama_ready<I: WizardInput, S: WizardServices>(
             return Ok(None);
         }
         loop {
-            input.info(state, "Installing Ollama...")?;
+            input.info(state, "Installing Ollama fallback...")?;
             let install = input.with_suspended_terminal(|| services.install_ollama());
             match install {
                 Ok(()) => {
@@ -1414,6 +1636,272 @@ fn format_model_list(models: &[String]) -> String {
     } else {
         models.join(", ")
     }
+}
+
+fn usable_default_candidate(
+    candidate: Option<&LocalDefaultCandidate>,
+) -> Option<&LocalDefaultCandidate> {
+    candidate.filter(|candidate| candidate.kind != LocalDefaultCandidateKind::OllamaSetupFallback)
+}
+
+fn has_usable_detected_defaults(report: &LocalServiceDetectionReport) -> bool {
+    usable_default_candidate(report.library.defaults.embedding.selected.as_ref()).is_some()
+        || usable_default_candidate(report.library.defaults.delegation.selected.as_ref()).is_some()
+}
+
+fn candidate_value(candidate: &LocalDefaultCandidate) -> Option<String> {
+    candidate
+        .agent_id
+        .as_deref()
+        .or(candidate.agent_slug.as_deref())
+        .or(candidate.raw_model.as_deref())
+        .or(candidate.model.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn format_candidate_short(candidate: &LocalDefaultCandidate) -> String {
+    let value = candidate_value(candidate).unwrap_or_else(|| "unknown".to_string());
+    match candidate.provider.as_ref() {
+        Some(provider) => format!("{} via {}", value, provider.as_str()),
+        None => value,
+    }
+}
+
+fn format_candidate_long(candidate: &LocalDefaultCandidate) -> String {
+    let mut parts = vec![format_candidate_short(candidate)];
+    if let Some(base_url) = candidate
+        .base_url
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        parts.push(base_url.to_string());
+    }
+    if let Some(reason) = candidate
+        .reason
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        parts.push(reason.to_string());
+    }
+    parts.join(" - ")
+}
+
+fn local_service_health_label(health: &LocalServiceHealth) -> &'static str {
+    match health {
+        LocalServiceHealth::Unknown => "unknown",
+        LocalServiceHealth::Healthy => "healthy",
+        LocalServiceHealth::Degraded => "degraded",
+        LocalServiceHealth::Unavailable => "unavailable",
+    }
+}
+
+fn service_model_display_name(model: &LocalServiceModelEntry) -> &str {
+    model
+        .raw_name
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(model.name.as_str())
+}
+
+fn format_service_model_short(model: &LocalServiceModelEntry) -> String {
+    let mut tags = Vec::new();
+    if model.capability_flags.embedding {
+        tags.push("embedding".to_string());
+    }
+    if model.capability_flags.chat {
+        tags.push("chat".to_string());
+    }
+    if model.capability_flags.code {
+        tags.push("code".to_string());
+    }
+    if model.capability_flags.reasoning {
+        tags.push("reasoning".to_string());
+    }
+    if model.delegation_ready {
+        tags.push("delegation-ready".to_string());
+    }
+    if tags.is_empty() {
+        model
+            .capabilities
+            .iter()
+            .take(3)
+            .filter(|value| !value.trim().is_empty())
+            .for_each(|value| tags.push(value.clone()));
+    }
+
+    let name = service_model_display_name(model);
+    if tags.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name} ({})", tags.join(", "))
+    }
+}
+
+fn mcoda_agent_match_label(agent: &LocalMcodaAgentMatch) -> String {
+    let mut label = agent.agent_slug.trim();
+    if label.is_empty() {
+        label = agent.agent_id.trim();
+    }
+    let mut details = Vec::new();
+    if let Some(health) = agent
+        .health_status
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        details.push(health.to_string());
+    }
+    if let Some(runner) = agent
+        .runner_kind
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        details.push(runner.to_string());
+    }
+    if details.is_empty() {
+        label.to_string()
+    } else {
+        format!("{label} ({})", details.join(", "))
+    }
+}
+
+fn format_service_mcoda_match(model: &LocalServiceModelEntry) -> Option<String> {
+    let agent = model.mcoda_agent_match.as_ref()?;
+    Some(format!(
+        "{} -> {}",
+        service_model_display_name(model),
+        mcoda_agent_match_label(agent)
+    ))
+}
+
+fn format_local_service_report(
+    report: &LocalServiceDetectionReport,
+    detection_error: Option<&str>,
+) -> String {
+    let mut body = String::new();
+    body.push_str("Local LLM service detection:\n");
+    if let Some(err) = detection_error {
+        let _ = writeln!(body, "- Detection error: {err}");
+    }
+    if report.library.services.is_empty() {
+        body.push_str("- Services: none detected\n");
+    } else {
+        for service in report.library.services.iter().take(6) {
+            let display = service
+                .display_name
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| service.provider.as_str());
+            let base = service.base_url.as_deref().unwrap_or("no base URL");
+            let _ = writeln!(
+                body,
+                "- {display}: {} at {base}, {} model(s)",
+                local_service_health_label(&service.health),
+                service.models.len()
+            );
+            if !service.models.is_empty() {
+                let model_lines = service
+                    .models
+                    .iter()
+                    .take(5)
+                    .map(format_service_model_short)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let more = service
+                    .models
+                    .len()
+                    .checked_sub(5)
+                    .filter(|count| *count > 0)
+                    .map(|count| format!("; and {count} more"))
+                    .unwrap_or_default();
+                let _ = writeln!(body, "  Models: {model_lines}{more}");
+
+                let matches = service
+                    .models
+                    .iter()
+                    .filter_map(format_service_mcoda_match)
+                    .take(3)
+                    .collect::<Vec<_>>();
+                if !matches.is_empty() {
+                    let more = service
+                        .models
+                        .iter()
+                        .filter_map(format_service_mcoda_match)
+                        .count()
+                        .checked_sub(matches.len())
+                        .filter(|count| *count > 0)
+                        .map(|count| format!("; and {count} more"))
+                        .unwrap_or_default();
+                    let _ = writeln!(
+                        body,
+                        "  Matching mcoda agents: {}{more}",
+                        matches.join(", ")
+                    );
+                } else if service.models.iter().any(|model| model.delegation_ready) {
+                    body.push_str("  Matching mcoda agents: none yet\n");
+                }
+            }
+        }
+        if report.library.services.len() > 6 {
+            let _ = writeln!(
+                body,
+                "- ... and {} more service(s)",
+                report.library.services.len() - 6
+            );
+        }
+    }
+    let embedding_candidates = report.library.defaults.embedding.candidates.len();
+    let delegation_candidates = report.library.defaults.delegation.candidates.len();
+    let _ = writeln!(
+        body,
+        "- Embedding candidates: {embedding_candidates}; delegation candidates: {delegation_candidates}; mcoda agents: {}",
+        report.library.agents.len()
+    );
+    match usable_default_candidate(report.library.defaults.embedding.selected.as_ref()) {
+        Some(candidate) => {
+            let _ = writeln!(
+                body,
+                "- Selected embedding default: {}",
+                format_candidate_long(candidate)
+            );
+        }
+        None => {
+            let hint = report
+                .library
+                .defaults
+                .embedding
+                .setup_hint
+                .as_deref()
+                .unwrap_or("no installed embedding model found");
+            let _ = writeln!(body, "- Selected embedding default: none ({hint})");
+        }
+    }
+    match usable_default_candidate(report.library.defaults.delegation.selected.as_ref()) {
+        Some(candidate) => {
+            let _ = writeln!(
+                body,
+                "- Selected delegation default: {}",
+                format_candidate_long(candidate)
+            );
+        }
+        None => {
+            let hint = report
+                .library
+                .defaults
+                .delegation
+                .setup_hint
+                .as_deref()
+                .unwrap_or("no installed chat/delegation model or mcoda agent found");
+            let _ = writeln!(body, "- Selected delegation default: none ({hint})");
+        }
+    }
+    if has_usable_detected_defaults(report) {
+        body.push_str("Select this section to use detected defaults without installing anything.");
+    } else {
+        body.push_str("Select this section for guided setup; Ollama remains the easiest fallback.");
+    }
+    body
 }
 
 fn build_model_choices(
@@ -1572,6 +2060,7 @@ fn format_completion_message(
     default_model: Option<&str>,
     ollama_status: Option<&ollama::OllamaDaemonStatus>,
     installed_models: &[String],
+    local_report: &LocalServiceDetectionReport,
 ) -> String {
     let config = load_summary_config();
     let config_default = config.as_ref().and_then(|cfg| {
@@ -1595,32 +2084,48 @@ fn format_completion_message(
         .unwrap_or_else(|| EMBED_MODEL.to_string());
 
     let ollama_running = ollama_status.map(|status| status.running).unwrap_or(false);
+    let local_embedding =
+        usable_default_candidate(local_report.library.defaults.embedding.selected.as_ref());
+    let local_delegation =
+        usable_default_candidate(local_report.library.defaults.delegation.selected.as_ref());
+    let local_ready = local_embedding.is_some() || local_delegation.is_some();
     let service_line = match ollama_status {
         Some(status) if status.service_enabled => {
             let service = status.service.as_deref().unwrap_or("service");
-            format!("Ollama service: enabled via {service}")
+            format!("Ollama fallback: enabled via {service}")
         }
         Some(status) if status.service.is_some() => {
             format!(
-                "Ollama service: running via {} (not registered for restart)",
+                "Ollama fallback: running via {} (not registered for restart)",
                 status.service.as_deref().unwrap_or("launch")
             )
         }
-        _ => "Ollama service: not detected; using background process".to_string(),
+        _ if local_ready => "Ollama fallback: not needed for selected local defaults".to_string(),
+        _ => "Ollama fallback: not detected".to_string(),
     };
     let embed_installed = models.iter().any(|m| m.eq_ignore_ascii_case(&config_embed));
-    let embed_line = if embed_installed {
+    let embed_line = if let Some(candidate) = local_embedding {
+        format!("Embedding default: {}", format_candidate_short(candidate))
+    } else if embed_installed {
         format!("Embedding model: {config_embed} (installed)")
     } else {
         format!("Embedding model: {config_embed} (missing)")
     };
-    let default_present = default_model.is_some() || config_default.is_some();
-    let default_line = match default_model
-        .map(|value| value.to_string())
-        .or(config_default)
-    {
-        Some(model) => format!("Default chat model: {model}"),
-        None => "Default chat model: not set".to_string(),
+    let default_present =
+        default_model.is_some() || config_default.is_some() || local_delegation.is_some();
+    let default_line = if let Some(candidate) = local_delegation {
+        format!(
+            "Local delegation default: {}",
+            format_candidate_short(candidate)
+        )
+    } else {
+        match default_model
+            .map(|value| value.to_string())
+            .or(config_default)
+        {
+            Some(model) => format!("Default chat model: {model}"),
+            None => "Default chat model: not set".to_string(),
+        }
     };
 
     let browser_info = config
@@ -1633,7 +2138,9 @@ fn format_completion_message(
         None => "Web browser: not configured".to_string(),
     };
 
-    let fully_functional = ollama_running && embed_installed && default_present && browser_ready;
+    let embedding_ready = local_embedding.is_some() || embed_installed;
+    let service_ready = local_ready || ollama_running;
+    let fully_functional = service_ready && embedding_ready && default_present && browser_ready;
     let status_line = if fully_functional {
         "Docdex status: fully functional".to_string()
     } else {
@@ -1643,11 +2150,13 @@ fn format_completion_message(
     let mut lines = vec![
         "Setup complete.".to_string(),
         format!(
-            "Ollama: {}",
-            if ollama_running {
-                "running"
+            "Local LLM: {}",
+            if local_ready {
+                "detected"
+            } else if ollama_running {
+                "Ollama running"
             } else {
-                "not running"
+                "not configured"
             }
         ),
         service_line,
@@ -2442,12 +2951,17 @@ fn progress_bar(tick: usize, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::local_library::{
+        LocalCapabilityFlags, LocalDefaultChoice, LocalDefaultSelection, LocalLibrarySourceType,
+        LocalLlmProvider, LocalMcodaAgentMatch, LocalModelLibrary, LocalServiceEntry,
+        LocalServiceModelEntry, McodaReconciliationStatus,
+    };
     use crate::setup::test_support::ENV_LOCK;
     use anyhow::anyhow;
     use ratatui::backend::TestBackend;
     use std::collections::VecDeque;
     use std::path::{Path, PathBuf};
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
 
     struct EnvGuard {
@@ -2580,14 +3094,71 @@ mod tests {
         ollama_path: Option<PathBuf>,
         chromium_installed: bool,
         chromium_path: Option<PathBuf>,
+        local_report: LocalServiceDetectionReport,
+        applied_embeddings: Arc<Mutex<Vec<String>>>,
+        applied_delegations: Arc<Mutex<Vec<String>>>,
+        ollama_install_calls: Arc<Mutex<usize>>,
+    }
+
+    impl FakeServices {
+        fn new(models: Vec<String>, ollama_path: Option<PathBuf>) -> Self {
+            Self {
+                models,
+                ollama_path,
+                chromium_installed: false,
+                chromium_path: None,
+                local_report: LocalServiceDetectionReport::default(),
+                applied_embeddings: Arc::new(Mutex::new(Vec::new())),
+                applied_delegations: Arc::new(Mutex::new(Vec::new())),
+                ollama_install_calls: Arc::new(Mutex::new(0)),
+            }
+        }
+
+        fn with_local_report(mut self, local_report: LocalServiceDetectionReport) -> Self {
+            self.local_report = local_report;
+            self
+        }
+
+        fn applied_embeddings(&self) -> Vec<String> {
+            self.applied_embeddings.lock().unwrap().clone()
+        }
+
+        fn applied_delegations(&self) -> Vec<String> {
+            self.applied_delegations.lock().unwrap().clone()
+        }
+
+        fn ollama_install_calls(&self) -> usize {
+            *self.ollama_install_calls.lock().unwrap()
+        }
     }
 
     impl WizardServices for FakeServices {
+        fn detect_local_services(&self) -> Result<LocalServiceDetectionReport> {
+            Ok(self.local_report.clone())
+        }
+
+        fn apply_embedding_candidate(&self, candidate: &LocalDefaultCandidate) -> Result<()> {
+            self.applied_embeddings
+                .lock()
+                .unwrap()
+                .push(format_candidate_short(candidate));
+            Ok(())
+        }
+
+        fn apply_delegation_candidate(&self, candidate: &LocalDefaultCandidate) -> Result<()> {
+            self.applied_delegations
+                .lock()
+                .unwrap()
+                .push(format_candidate_short(candidate));
+            Ok(())
+        }
+
         fn resolve_ollama_path(&self, _explicit: Option<PathBuf>) -> Option<PathBuf> {
             self.ollama_path.clone()
         }
 
         fn install_ollama(&self) -> Result<()> {
+            *self.ollama_install_calls.lock().unwrap() += 1;
             Ok(())
         }
 
@@ -2688,6 +3259,18 @@ mod tests {
     }
 
     impl WizardServices for RecoveringFakeServices {
+        fn detect_local_services(&self) -> Result<LocalServiceDetectionReport> {
+            Ok(LocalServiceDetectionReport::default())
+        }
+
+        fn apply_embedding_candidate(&self, _candidate: &LocalDefaultCandidate) -> Result<()> {
+            Ok(())
+        }
+
+        fn apply_delegation_candidate(&self, _candidate: &LocalDefaultCandidate) -> Result<()> {
+            Ok(())
+        }
+
         fn resolve_ollama_path(&self, _explicit: Option<PathBuf>) -> Option<PathBuf> {
             None
         }
@@ -2810,12 +3393,7 @@ mod tests {
             ScriptedAnswer::Confirm(false),
             ScriptedAnswer::Menu(None),
         ]);
-        let services = FakeServices {
-            models: vec![],
-            ollama_path: None,
-            chromium_installed: false,
-            chromium_path: None,
-        };
+        let services = FakeServices::new(vec![], None);
         let context = SetupContext {
             hardware: super::super::hardware::SetupHardware {
                 total_memory_gb: 16.0,
@@ -2848,15 +3426,125 @@ mod tests {
     }
 
     #[test]
+    fn local_service_report_lists_models_and_mcoda_matches() {
+        let report = LocalServiceDetectionReport {
+            library: LocalModelLibrary {
+                services: vec![LocalServiceEntry {
+                    service_id: "llama-cpp:http://127.0.0.1:8080".to_string(),
+                    provider: LocalLlmProvider::LlamaCpp,
+                    source_type: LocalLibrarySourceType::LocalProcess,
+                    display_name: Some("llama.cpp".to_string()),
+                    base_url: Some("http://127.0.0.1:8080".to_string()),
+                    health: LocalServiceHealth::Healthy,
+                    models: vec![LocalServiceModelEntry {
+                        name: "qwen3.6".to_string(),
+                        raw_name: Some("Qwen/Qwen3.6".to_string()),
+                        capability_flags: LocalCapabilityFlags {
+                            chat: true,
+                            code: true,
+                            delegation: true,
+                            ..LocalCapabilityFlags::default()
+                        },
+                        mcoda_reconciliation: McodaReconciliationStatus::MatchingHealthyAgent,
+                        mcoda_agent_match: Some(LocalMcodaAgentMatch {
+                            agent_id: "agent-local-qwen".to_string(),
+                            agent_slug: "local-qwen".to_string(),
+                            adapter: "openai-compatible-local".to_string(),
+                            default_model: Some("qwen3.6".to_string()),
+                            base_url: Some("http://127.0.0.1:8080".to_string()),
+                            runner_kind: Some("llama-cpp".to_string()),
+                            health_status: Some("healthy".to_string()),
+                        }),
+                        delegation_ready: true,
+                        ..LocalServiceModelEntry::default()
+                    }],
+                    ..LocalServiceEntry::default()
+                }],
+                ..LocalModelLibrary::default()
+            },
+            ..LocalServiceDetectionReport::default()
+        };
+
+        let body = format_local_service_report(&report, None);
+
+        assert!(body.contains("- llama.cpp: healthy at http://127.0.0.1:8080, 1 model(s)"));
+        assert!(body.contains("Models: Qwen/Qwen3.6 (chat, code, delegation-ready)"));
+        assert!(
+            body.contains("Matching mcoda agents: Qwen/Qwen3.6 -> local-qwen (healthy, llama-cpp)")
+        );
+    }
+
+    #[test]
+    fn wizard_uses_detected_local_defaults_without_installing_ollama() -> Result<()> {
+        let _guard = ENV_LOCK.lock();
+        let local_report = LocalServiceDetectionReport {
+            library: LocalModelLibrary {
+                defaults: LocalDefaultSelection {
+                    embedding: LocalDefaultChoice {
+                        selected: Some(LocalDefaultCandidate {
+                            kind: LocalDefaultCandidateKind::LocalServiceModel,
+                            provider: Some(LocalLlmProvider::Vllm),
+                            model: Some("bge-m3".to_string()),
+                            raw_model: Some("bge-m3".to_string()),
+                            base_url: Some("http://127.0.0.1:8000/v1".to_string()),
+                            reason: Some("healthy embedding model".to_string()),
+                            ..LocalDefaultCandidate::default()
+                        }),
+                        candidates: Vec::new(),
+                        setup_hint: None,
+                    },
+                    delegation: LocalDefaultChoice {
+                        selected: Some(LocalDefaultCandidate {
+                            kind: LocalDefaultCandidateKind::McodaLocalAgent,
+                            provider: Some(LocalLlmProvider::LlamaCpp),
+                            model: Some("qwen3.6".to_string()),
+                            agent_id: Some("local-qwen".to_string()),
+                            agent_slug: Some("local-qwen".to_string()),
+                            base_url: Some("http://127.0.0.1:8080".to_string()),
+                            reason: Some("healthy local mcoda agent".to_string()),
+                            ..LocalDefaultCandidate::default()
+                        }),
+                        candidates: Vec::new(),
+                        setup_hint: None,
+                    },
+                },
+                ..LocalModelLibrary::default()
+            },
+            ..LocalServiceDetectionReport::default()
+        };
+        let mut input = ScriptedInput::new(vec![
+            ScriptedAnswer::Confirm(true),
+            ScriptedAnswer::Menu(Some(StepKey::Ollama)),
+            ScriptedAnswer::Confirm(true),
+            ScriptedAnswer::Menu(None),
+        ]);
+        let services = FakeServices::new(vec![], None).with_local_report(local_report);
+        let context = SetupContext {
+            hardware: super::super::hardware::SetupHardware {
+                total_memory_gb: 32.0,
+                free_disk_bytes: 10 * 1024 * 1024 * 1024,
+                cpu_count: 8,
+            },
+            ollama_path: None,
+        };
+
+        let summary = run_wizard_with_input(context, &mut input, &services)?;
+        assert_eq!(summary.status, "complete");
+        assert_eq!(summary.default_model.as_deref(), Some("local-qwen"));
+        assert_eq!(services.applied_embeddings(), vec!["bge-m3 via vllm"]);
+        assert_eq!(
+            services.applied_delegations(),
+            vec!["local-qwen via llama-cpp"]
+        );
+        assert_eq!(services.ollama_install_calls(), 0);
+        Ok(())
+    }
+
+    #[test]
     fn wizard_declining_consent_fails() -> Result<()> {
         let _guard = ENV_LOCK.lock();
         let mut input = ScriptedInput::new(vec![ScriptedAnswer::Confirm(false)]);
-        let services = FakeServices {
-            models: vec![],
-            ollama_path: None,
-            chromium_installed: false,
-            chromium_path: None,
-        };
+        let services = FakeServices::new(vec![], None);
         let context = SetupContext {
             hardware: super::super::hardware::SetupHardware {
                 total_memory_gb: 16.0,
@@ -2884,12 +3572,10 @@ mod tests {
             ScriptedAnswer::Select(Some(0)),
             ScriptedAnswer::Menu(None),
         ]);
-        let services = FakeServices {
-            models: vec![EMBED_MODEL.to_string(), CHAT_MODEL.to_string()],
-            ollama_path: Some(PathBuf::from("/tmp/ollama")),
-            chromium_installed: false,
-            chromium_path: None,
-        };
+        let services = FakeServices::new(
+            vec![EMBED_MODEL.to_string(), CHAT_MODEL.to_string()],
+            Some(PathBuf::from("/tmp/ollama")),
+        );
         let context = SetupContext {
             hardware: super::super::hardware::SetupHardware {
                 total_memory_gb: 32.0,
@@ -3054,12 +3740,10 @@ api_key = "revoked-key"
             ScriptedAnswer::Menu(Some(StepKey::ChatModel)),
             ScriptedAnswer::Menu(None),
         ]);
-        let services = FakeServices {
-            models: vec![EMBED_MODEL.to_string()],
-            ollama_path: Some(PathBuf::from("/tmp/ollama")),
-            chromium_installed: false,
-            chromium_path: None,
-        };
+        let services = FakeServices::new(
+            vec![EMBED_MODEL.to_string()],
+            Some(PathBuf::from("/tmp/ollama")),
+        );
         let context = SetupContext {
             hardware: super::super::hardware::SetupHardware {
                 total_memory_gb: 32.0,

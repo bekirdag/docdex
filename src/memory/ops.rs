@@ -305,6 +305,7 @@ pub fn inject_embedding_metadata(
     user: Option<Value>,
     embedding_provider: &str,
     embedding_model: &str,
+    embedding_dim: Option<usize>,
 ) -> Value {
     let mut value = match user {
         Some(Value::Object(map)) => Value::Object(map),
@@ -322,6 +323,12 @@ pub fn inject_embedding_metadata(
         "embeddingModel".to_string(),
         Value::String(embedding_model.to_string()),
     );
+    if let Some(embedding_dim) = embedding_dim {
+        obj.insert(
+            "embeddingDim".to_string(),
+            Value::Number(serde_json::Number::from(embedding_dim)),
+        );
+    }
     value
 }
 
@@ -366,6 +373,17 @@ mod tests {
             score,
             metadata: json!({"k":"v"}),
         }
+    }
+
+    #[test]
+    fn inject_embedding_metadata_records_provider_model_and_dimension() {
+        let metadata =
+            inject_embedding_metadata(Some(json!({"user": true})), "vllm", "bge-m3", Some(1024));
+
+        assert_eq!(metadata["user"], json!(true));
+        assert_eq!(metadata["embeddingProvider"], json!("vllm"));
+        assert_eq!(metadata["embeddingModel"], json!("bge-m3"));
+        assert_eq!(metadata["embeddingDim"], json!(1024));
     }
 
     #[test]

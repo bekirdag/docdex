@@ -3057,7 +3057,13 @@ async function runPostInstallSetup({ binaryPath, logger, env, skipDaemon, distBa
   if (!setupLaunch.ok) {
     if (setupLaunch.reason !== "skipped") {
       log.warn?.("[docdex] setup wizard did not launch. Run `docdex setup`.");
-      recordSetupPending({ reason: setupLaunch.reason, port, repoRoot: daemonRoot });
+      log.warn?.("[docdex] `docdex setup` will detect existing local LLM services before offering the Ollama fallback.");
+      recordSetupPending({
+        reason: setupLaunch.reason,
+        port,
+        repoRoot: daemonRoot,
+        setup: "local_llm_service_choice"
+      });
     }
   }
   return { port, url, configPath };

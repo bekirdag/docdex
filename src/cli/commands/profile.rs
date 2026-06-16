@@ -1,4 +1,6 @@
 use crate::config;
+use crate::embeddings::{self, EmbeddingTargetHints, DEFAULT_PROFILE_EMBEDDING_MODEL};
+use crate::llm::local_library::load_local_library;
 use crate::profiles::{
     Agent, Preference, PreferenceCategory, ProfileEmbedder, ProfileImportSummary, ProfileManager,
 };
@@ -6,7 +8,6 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use tracing::warn;
 
 pub(crate) async fn run(command: crate::cli::ProfileCommand) -> Result<()> {
     match command {
@@ -65,8 +66,16 @@ async fn run_add(
         manager.create_agent(&agent_id, &role, now_ms)?;
     }
 
-    let embedding = embedder.embed(&content).await?;
-    let preference = manager.add_preference(&agent_id, &content, &embedding, category, now_ms)?;
+    let embedding = embedder.embed_with_metadata(&content).await?;
+    let preference = manager.add_preference_with_embedding_metadata(
+        &agent_id,
+        &content,
+        &embedding.embedding,
+        category,
+        now_ms,
+        Some(&embedding.provider),
+        Some(&embedding.model),
+    )?;
     let response = ProfileAddResponse {
         preference: PreferenceRecord::from(preference),
     };
@@ -136,12 +145,16 @@ async fn run_import(path: PathBuf) -> Result<()> {
     }
     let mut preferences = Vec::with_capacity(manifest.preferences.len());
     for pref in manifest.preferences {
-        let embedding = embedder.embed(&pref.content).await?;
+        let embedding = embedder.embed_with_metadata(&pref.content).await?;
+        let embedding_dim = embedding.embedding.len();
         preferences.push(Preference {
             id: pref.id,
             agent_id: pref.agent_id,
             content: pref.content,
-            embedding: Some(embedding),
+            embedding: Some(embedding.embedding),
+            embedding_provider: Some(embedding.provider),
+            embedding_model: Some(embedding.model),
+            embedding_dim: Some(embedding_dim),
             category: pref.category,
             last_updated: pref.last_updated,
         });
@@ -161,31 +174,32 @@ fn resolve_state_dir(config: &config::AppConfig) -> Result<PathBuf> {
 }
 
 fn resolve_profile_embedder(config: &config::AppConfig) -> Result<ProfileEmbedder> {
-    let provider = config.llm.provider.trim();
-    if !provider.is_empty() && !provider.eq_ignore_ascii_case("ollama") {
-        warn!(
-            provider = %provider,
-            "unsupported llm provider for profile embeddings; falling back to local hash"
-        );
-    }
-    let base_url = env_non_empty("DOCDEX_PROFILE_EMBEDDING_BASE_URL")
-        .or_else(|| env_non_empty("DOCDEX_EMBEDDING_BASE_URL"))
-        .or_else(|| env_non_empty("DOCDEX_OLLAMA_BASE_URL"))
-        .or_else(|| Some(config.llm.base_url.clone()))
-        .unwrap_or_else(|| "http://127.0.0.1:11434".to_string());
-    let model = env_non_empty("DOCDEX_PROFILE_EMBEDDING_MODEL")
-        .or_else(|| Some(config.memory.profile.embedding_model.clone()))
-        .unwrap_or_else(|| "nomic-embed-text-v1.5".to_string());
+    let library = load_local_library(config.core.global_state_dir.as_deref()).ok();
+    let profile_base_url = env_non_empty("DOCDEX_PROFILE_EMBEDDING_BASE_URL")
+        .or_else(|| env_non_empty("DOCDEX_EMBEDDING_BASE_URL"));
+    let profile_base_explicit = embeddings::env_present("DOCDEX_PROFILE_EMBEDDING_BASE_URL")
+        || embeddings::env_present("DOCDEX_EMBEDDING_BASE_URL");
+    let profile_model_env = env_non_empty("DOCDEX_PROFILE_EMBEDDING_MODEL");
+    let profile_model_config = config.memory.profile.embedding_model.clone();
+    let profile_model_explicit = profile_model_env.is_some()
+        || profile_model_config.trim() != DEFAULT_PROFILE_EMBEDDING_MODEL;
+    let hints = EmbeddingTargetHints::profile()
+        .explicit_provider(
+            env_non_empty("DOCDEX_PROFILE_EMBEDDING_PROVIDER")
+                .or_else(|| env_non_empty("DOCDEX_EMBEDDING_PROVIDER")),
+        )
+        .explicit_base_url(profile_base_url, profile_base_explicit)
+        .explicit_model(
+            profile_model_env.or(Some(profile_model_config)),
+            profile_model_explicit,
+        )
+        .legacy_ollama_base_url(env_non_empty("DOCDEX_OLLAMA_BASE_URL"));
+    let target = embeddings::resolve_embedding_target(&config.llm, library.as_ref(), hints)?;
     let timeout_ms = env_u64("DOCDEX_PROFILE_EMBEDDING_TIMEOUT_MS")
         .or_else(|| env_u64("DOCDEX_EMBEDDING_TIMEOUT_MS"))
         .unwrap_or(0);
     let timeout = Duration::from_millis(timeout_ms);
-    ProfileEmbedder::new(
-        base_url,
-        model,
-        timeout,
-        config.memory.profile.embedding_dim,
-    )
+    ProfileEmbedder::with_target(target, timeout, config.memory.profile.embedding_dim)
 }
 
 fn parse_category(raw: &str) -> Result<PreferenceCategory> {
@@ -282,6 +296,12 @@ struct PreferenceRecord {
     id: String,
     agent_id: String,
     content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    embedding_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    embedding_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    embedding_dim: Option<usize>,
     category: PreferenceCategory,
     last_updated: i64,
 }
@@ -292,6 +312,9 @@ impl From<Preference> for PreferenceRecord {
             id: pref.id,
             agent_id: pref.agent_id,
             content: pref.content,
+            embedding_provider: pref.embedding_provider,
+            embedding_model: pref.embedding_model,
+            embedding_dim: pref.embedding_dim,
             category: pref.category,
             last_updated: pref.last_updated,
         }

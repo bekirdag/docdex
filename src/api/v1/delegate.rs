@@ -269,6 +269,7 @@ pub async fn delegate_handler(
     }
     let local_agent_override = match (&override_target, agent_override) {
         (Some(LocalTarget::OllamaModel(model)), _) => Some(format!("model:{model}")),
+        (Some(LocalTarget::LocalServiceModel { .. }), _) => None,
         (Some(LocalTarget::McodaAgent(_)), Some(value)) => Some(value.to_string()),
         (None, Some(value)) => Some(value.to_string()),
         _ => None,

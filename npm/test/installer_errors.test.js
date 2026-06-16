@@ -2,6 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
 const path = require("node:path");
 
 const { detectPlatformKey } = require("../lib/platform");
@@ -12,6 +13,13 @@ const {
   verifyDownloadedFileIntegrity
 } = require("../lib/install");
 const { ManifestResolutionError } = require("../lib/release_manifest");
+
+test("postinstall banner describes provider-neutral local LLM setup", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "lib", "install.js"), "utf8");
+  assert.equal(source.includes("Setup configures Ollama/models"), false);
+  assert.equal(source.includes("Setup detects local LLM services"), true);
+  assert.equal(source.includes("offers the Ollama fallback"), true);
+});
 
 test("describeFatalError: unsupported platform includes detected OS/arch and no-download note", () => {
   let err;

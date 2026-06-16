@@ -69,6 +69,7 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
             include_default_patterns,
         } => self_check::run(repo, terms, limit, include_default_patterns).await,
         super::Command::LlmList => llm::run_list(),
+        super::Command::Llm { command } => llm::run_command(command).await,
         super::Command::Setup { args } => crate::setup::run(args),
         super::Command::Index { repo, libs_sources } => index::run_index(repo, libs_sources).await,
         super::Command::Ingest { repo, file } => index::run_ingest(repo, file).await,

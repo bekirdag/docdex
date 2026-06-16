@@ -40,7 +40,7 @@ impl StepKey {
     pub fn label(&self) -> &'static str {
         match self {
             StepKey::Consent => "Consent",
-            StepKey::Ollama => "Ollama",
+            StepKey::Ollama => "Local LLM Service",
             StepKey::EmbedModel => "Embedding Model",
             StepKey::ChatModel => "Chat Model",
             StepKey::DefaultModel => "Default Chat Model",

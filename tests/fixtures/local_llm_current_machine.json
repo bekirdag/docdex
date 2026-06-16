@@ -1,0 +1,273 @@
+{
+  "updated_at_ms": 1781510400000,
+  "probes": [
+    {
+      "provider": "ollama",
+      "source_type": "local_process",
+      "display_name": "Ollama",
+      "binary_names": ["ollama"],
+      "found_binaries": ["/opt/homebrew/bin/ollama"],
+      "endpoints": [
+        {
+          "base_url": "http://127.0.0.1:11434",
+          "health_url": "http://127.0.0.1:11434/api/tags",
+          "models_url": "http://127.0.0.1:11434/api/tags",
+          "delegation_url": "http://127.0.0.1:11434/api/generate",
+          "embeddings_url": "http://127.0.0.1:11434/api/embeddings"
+        }
+      ],
+      "health": "healthy",
+      "service_detected": true,
+      "model_count": 4,
+      "checked_at_ms": 1781510400000
+    },
+    {
+      "provider": "vllm",
+      "source_type": "local_process",
+      "display_name": "vLLM",
+      "binary_names": ["vllm"],
+      "found_binaries": [],
+      "endpoints": [],
+      "health": "unavailable",
+      "service_detected": false,
+      "model_count": 0,
+      "notes": "no local vLLM binary or loopback endpoint detected",
+      "checked_at_ms": 1781510400000
+    },
+    {
+      "provider": "llama-cpp",
+      "source_type": "local_process",
+      "display_name": "llama.cpp",
+      "binary_names": ["llama-server", "llama-cli"],
+      "found_binaries": [],
+      "endpoints": [],
+      "health": "unavailable",
+      "service_detected": false,
+      "model_count": 0,
+      "notes": "no local llama.cpp binary or loopback endpoint detected",
+      "checked_at_ms": 1781510400000
+    }
+  ],
+  "library": {
+    "version": 1,
+    "updated_at_ms": 1781510400000,
+    "services": [
+      {
+        "service_id": "ollama:http://127.0.0.1:11434",
+        "provider": "ollama",
+        "source_type": "local_process",
+        "display_name": "Ollama",
+        "base_url": "http://127.0.0.1:11434",
+        "endpoints": [
+          {
+            "base_url": "http://127.0.0.1:11434",
+            "health_url": "http://127.0.0.1:11434/api/tags",
+            "models_url": "http://127.0.0.1:11434/api/tags",
+            "delegation_url": "http://127.0.0.1:11434/api/generate",
+            "embeddings_url": "http://127.0.0.1:11434/api/embeddings"
+          }
+        ],
+        "health": "healthy",
+        "models": [
+          {
+            "name": "nomic-embed-text:latest",
+            "raw_name": "nomic-embed-text:latest",
+            "capabilities": ["embedding", "unsupported_for_delegation"],
+            "capability_flags": {
+              "embedding": true,
+              "unsupported_for_delegation": true
+            },
+            "mcoda_reconciliation": "not_applicable",
+            "delegation_ready": false,
+            "delegation_readiness_reason": "embedding-only model is not usable for local delegation"
+          },
+          {
+            "name": "phi3.5:3.8b",
+            "raw_name": "phi3.5:3.8b",
+            "capabilities": ["general_chat", "chat", "reasoning"],
+            "capability_flags": {
+              "chat": true,
+              "delegation": true,
+              "reasoning": true
+            },
+            "mcoda_reconciliation": "no_matching_agent",
+            "mcoda_setup_hint": "Create or select a local mcoda agent for phi3.5:3.8b if you want delegation to use this installed model.",
+            "delegation_ready": true,
+            "delegation_readiness_reason": "healthy service with non-embedding chat/code-capable model"
+          },
+          {
+            "name": "phi3.5:latest",
+            "raw_name": "phi3.5:latest",
+            "capabilities": ["general_chat", "chat", "reasoning"],
+            "capability_flags": {
+              "chat": true,
+              "delegation": true,
+              "reasoning": true
+            },
+            "mcoda_reconciliation": "matching_healthy_agent",
+            "mcoda_agent_match": {
+              "agent_id": "phi3-reviewer",
+              "agent_slug": "phi3-reviewer",
+              "adapter": "ollama",
+              "default_model": "phi3.5:latest",
+              "base_url": "http://127.0.0.1:11434",
+              "runner_kind": "ollama",
+              "health_status": "healthy"
+            },
+            "delegation_ready": true,
+            "delegation_readiness_reason": "healthy service with non-embedding chat/code-capable model"
+          },
+          {
+            "name": "llama3.1:8b",
+            "raw_name": "llama3.1:8b",
+            "capabilities": ["general_chat", "chat", "reasoning"],
+            "capability_flags": {
+              "chat": true,
+              "delegation": true,
+              "reasoning": true
+            },
+            "mcoda_reconciliation": "no_matching_agent",
+            "mcoda_setup_hint": "Create or select a local mcoda agent for llama3.1:8b if you want delegation to use this installed model.",
+            "delegation_ready": true,
+            "delegation_readiness_reason": "healthy service with non-embedding chat/code-capable model"
+          }
+        ],
+        "capability_flags": {
+          "embedding": true,
+          "chat": true,
+          "delegation": true,
+          "reasoning": true
+        },
+        "last_seen_at_ms": 1781510400000
+      }
+    ],
+    "models": [
+      {
+        "name": "nomic-embed-text:latest",
+        "raw_name": "nomic-embed-text:latest",
+        "source": "ollama",
+        "capabilities": ["embedding", "unsupported_for_delegation"],
+        "capability_flags": {
+          "embedding": true,
+          "unsupported_for_delegation": true
+        },
+        "delegation_ready": false,
+        "classification_method": "known_map",
+        "last_seen_at_ms": 1781510400000
+      },
+      {
+        "name": "phi3.5:3.8b",
+        "raw_name": "phi3.5:3.8b",
+        "source": "ollama",
+        "capabilities": ["general_chat", "chat", "reasoning"],
+        "capability_flags": {
+          "chat": true,
+          "delegation": true,
+          "reasoning": true
+        },
+        "delegation_ready": true,
+        "classification_method": "heuristic",
+        "last_seen_at_ms": 1781510400000
+      },
+      {
+        "name": "phi3.5:latest",
+        "raw_name": "phi3.5:latest",
+        "source": "ollama",
+        "capabilities": ["general_chat", "chat", "reasoning"],
+        "capability_flags": {
+          "chat": true,
+          "delegation": true,
+          "reasoning": true
+        },
+        "delegation_ready": true,
+        "classification_method": "heuristic",
+        "last_seen_at_ms": 1781510400000
+      },
+      {
+        "name": "llama3.1:8b",
+        "raw_name": "llama3.1:8b",
+        "source": "ollama",
+        "capabilities": ["general_chat", "chat", "reasoning"],
+        "capability_flags": {
+          "chat": true,
+          "delegation": true,
+          "reasoning": true
+        },
+        "delegation_ready": true,
+        "classification_method": "heuristic",
+        "last_seen_at_ms": 1781510400000
+      }
+    ],
+    "agents": [
+      {
+        "agent_id": "phi3-reviewer",
+        "agent_slug": "phi3-reviewer",
+        "source": "mcoda_local_agent",
+        "adapter": "ollama",
+        "default_model": "phi3.5:latest",
+        "model_names": ["phi3.5:latest"],
+        "base_url": "http://127.0.0.1:11434",
+        "runner_kind": "ollama",
+        "max_complexity": 3,
+        "rating": 7.1,
+        "cost_per_million": 0.0,
+        "usage": "code_reviewer",
+        "reasoning_rating": 6.2,
+        "health_status": "healthy",
+        "capabilities": ["general_chat", "code_reviewer", "chat", "reasoning"],
+        "delegation_ready": true,
+        "delegation_readiness_reason": "healthy local mcoda agent with usable capability signal",
+        "classification_method": "registry",
+        "last_seen_at_ms": 1781510400000
+      },
+      {
+        "agent_id": "local-qwen-unreachable",
+        "agent_slug": "local-qwen-unreachable",
+        "source": "mcoda_local_agent",
+        "adapter": "openai-compatible-local",
+        "default_model": "qwen3.5:32b",
+        "model_names": ["qwen3.5:32b"],
+        "base_url": "http://192.168.1.115:8080",
+        "runner_kind": "llama-cpp",
+        "cost_per_million": 0.0,
+        "usage": "code_writer",
+        "health_status": "unreachable",
+        "capabilities": ["code_writer", "chat", "code"],
+        "delegation_ready": false,
+        "delegation_readiness_reason": "mcoda agent is not healthy",
+        "classification_method": "registry",
+        "last_seen_at_ms": 1781510400000
+      }
+    ],
+    "defaults": {
+      "embedding": {
+        "selected": {
+          "kind": "local_service_model",
+          "provider": "ollama",
+          "source_type": "local_process",
+          "service_id": "ollama:http://127.0.0.1:11434",
+          "model": "nomic-embed-text:latest",
+          "raw_model": "nomic-embed-text:latest",
+          "base_url": "http://127.0.0.1:11434",
+          "reason": "healthy local embedding model"
+        },
+        "candidates": []
+      },
+      "delegation": {
+        "selected": {
+          "kind": "mcoda_local_agent",
+          "provider": "ollama",
+          "source_type": "mcoda_local_agent",
+          "model": "phi3.5:latest",
+          "raw_model": "phi3.5:latest",
+          "agent_id": "phi3-reviewer",
+          "agent_slug": "phi3-reviewer",
+          "base_url": "http://127.0.0.1:11434",
+          "runner_kind": "ollama",
+          "reason": "healthy zero-cost local mcoda agent"
+        },
+        "candidates": []
+      }
+    }
+  }
+}

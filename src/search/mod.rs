@@ -1195,6 +1195,7 @@ pub(crate) async fn memory_store_handler(
         req.metadata,
         memory.embedder.provider(),
         memory.embedder.model(),
+        Some(embedding.len()),
     );
     let metadata = inject_repo_metadata(metadata, &repo.repo_id);
     let store = memory.store.clone();

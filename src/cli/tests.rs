@@ -84,6 +84,15 @@ fn ensure_daemon_skips_setup() {
 }
 
 #[test]
+fn ensure_daemon_skips_llm_detect() {
+    let cmd = Command::Llm {
+        command: super::LlmCommand::Detect { json: true },
+    };
+    assert!(!should_ensure_daemon(&cmd));
+    assert!(repo_hint_for_command(&cmd).is_none());
+}
+
+#[test]
 fn ensure_daemon_skips_mswarm_config() {
     let cmd = Command::Mswarm {
         command: super::MswarmCommand::Configure {
@@ -244,6 +253,18 @@ fn parse_delegation_savings_command_with_json_flag() {
             _ => panic!("expected delegation savings command"),
         },
         _ => panic!("expected delegation command"),
+    }
+}
+
+#[test]
+fn parse_llm_detect_json_command() {
+    let cli = Cli::try_parse_from(["docdexd", "llm", "detect", "--json"]).expect("parse");
+    match cli.command {
+        Command::Llm { command } => match command {
+            super::LlmCommand::Detect { json } => assert!(json),
+            _ => panic!("expected llm detect"),
+        },
+        _ => panic!("expected llm command"),
     }
 }
 

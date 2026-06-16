@@ -401,6 +401,11 @@ pub(crate) enum Command {
     },
     /// Show hardware-aware LLM recommendations.
     LlmList,
+    /// Inspect local LLM services and model detection.
+    Llm {
+        #[command(subcommand)]
+        command: LlmCommand,
+    },
     /// Delegation telemetry and savings.
     Delegation {
         #[command(subcommand)]
@@ -694,7 +699,7 @@ pub(crate) enum Command {
         #[arg(long, value_name = "PATH", help = "Optional repo root to open")]
         repo: Option<PathBuf>,
     },
-    /// Store a memory item (requires Ollama embeddings).
+    /// Store a memory item (requires local embeddings).
     MemoryStore {
         #[command(flatten)]
         repo: RepoArgs,
@@ -706,7 +711,7 @@ pub(crate) enum Command {
             long,
             env = "DOCDEX_EMBEDDING_BASE_URL",
             value_parser = config::non_empty_string,
-            help = "Ollama base URL for embedding calls; takes precedence over --ollama-base-url when both are set"
+            help = "Embedding base URL; takes precedence over --ollama-base-url when both are set"
         )]
         embedding_base_url: Option<String>,
         #[arg(
@@ -714,14 +719,14 @@ pub(crate) enum Command {
             env = "DOCDEX_OLLAMA_BASE_URL",
             default_value = "http://127.0.0.1:11434",
             value_parser = config::non_empty_string,
-            help = "Ollama base URL for embedding calls (legacy; prefer --embedding-base-url / DOCDEX_EMBEDDING_BASE_URL)"
+            help = "Legacy Ollama embedding base URL (prefer --embedding-base-url / DOCDEX_EMBEDDING_BASE_URL)"
         )]
         ollama_base_url: String,
         #[arg(
             long,
             env = "DOCDEX_EMBEDDING_MODEL",
             default_value = "nomic-embed-text",
-            help = "Ollama embedding model identifier"
+            help = "Embedding model identifier"
         )]
         embedding_model: String,
         #[arg(
@@ -732,7 +737,7 @@ pub(crate) enum Command {
         )]
         embedding_timeout_ms: u64,
     },
-    /// Recall memory items by semantic similarity (requires Ollama embeddings).
+    /// Recall memory items by semantic similarity (requires local embeddings).
     MemoryRecall {
         #[command(flatten)]
         repo: RepoArgs,
@@ -744,7 +749,7 @@ pub(crate) enum Command {
             long,
             env = "DOCDEX_EMBEDDING_BASE_URL",
             value_parser = config::non_empty_string,
-            help = "Ollama base URL for embedding calls; takes precedence over --ollama-base-url when both are set"
+            help = "Embedding base URL; takes precedence over --ollama-base-url when both are set"
         )]
         embedding_base_url: Option<String>,
         #[arg(
@@ -752,14 +757,14 @@ pub(crate) enum Command {
             env = "DOCDEX_OLLAMA_BASE_URL",
             default_value = "http://127.0.0.1:11434",
             value_parser = config::non_empty_string,
-            help = "Ollama base URL for embedding calls (legacy; prefer --embedding-base-url / DOCDEX_EMBEDDING_BASE_URL)"
+            help = "Legacy Ollama embedding base URL (prefer --embedding-base-url / DOCDEX_EMBEDDING_BASE_URL)"
         )]
         ollama_base_url: String,
         #[arg(
             long,
             env = "DOCDEX_EMBEDDING_MODEL",
             default_value = "nomic-embed-text",
-            help = "Ollama embedding model identifier"
+            help = "Embedding model identifier"
         )]
         embedding_model: String,
         #[arg(
@@ -963,6 +968,22 @@ pub(crate) struct SetupArgs {
         help = "Explicit path to the Ollama binary (falls back to PATH)"
     )]
     pub ollama_path: Option<PathBuf>,
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum LlmCommand {
+    /// Show hardware-aware LLM recommendations.
+    List,
+    /// Detect installed local LLM services without starting or installing anything.
+    Detect {
+        #[arg(long, help = "Emit provider probe results as JSON")]
+        json: bool,
+    },
+    /// Show local LLM library defaults and selection diagnostics.
+    Diagnostics {
+        #[arg(long, help = "Emit local LLM diagnostics as JSON")]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -2306,6 +2327,7 @@ fn should_ensure_daemon(command: &Command) -> bool {
         Command::Serve { .. }
             | Command::Daemon { .. }
             | Command::HelpAll
+            | Command::Llm { .. }
             | Command::Setup { .. }
             | Command::Mswarm { .. }
             | Command::Tree { .. }

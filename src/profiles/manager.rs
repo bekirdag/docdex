@@ -168,7 +168,8 @@ impl ProfileManager {
         if let Some(agent_id) = agent_id {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, agent_id, content, category, last_updated
+                    "SELECT id, agent_id, content, category, last_updated,
+                            embedding_provider, embedding_model, embedding_dim
                      FROM preferences
                      WHERE agent_id = ?1
                      ORDER BY last_updated DESC, id ASC",
@@ -181,29 +182,44 @@ impl ProfileManager {
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, i64>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
                 ))
             })?;
             for row in rows {
-                let (id, agent_id, content, category_raw, last_updated) = match row {
+                let (
+                    id,
+                    agent_id,
+                    content,
+                    category_raw,
+                    last_updated,
+                    embedding_provider,
+                    embedding_model,
+                    embedding_dim,
+                ) = match row {
                     Ok(row) => row,
                     Err(_) => continue,
                 };
                 let Some(category) = parse_category(&category_raw) else {
                     continue;
                 };
-                preferences.push(Preference {
+                preferences.push(preference_from_parts(
                     id,
                     agent_id,
                     content,
-                    embedding: None,
                     category,
                     last_updated,
-                });
+                    embedding_provider,
+                    embedding_model,
+                    embedding_dim,
+                ));
             }
         } else {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, agent_id, content, category, last_updated
+                    "SELECT id, agent_id, content, category, last_updated,
+                            embedding_provider, embedding_model, embedding_dim
                      FROM preferences
                      ORDER BY last_updated DESC, id ASC",
                 )
@@ -215,24 +231,38 @@ impl ProfileManager {
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, i64>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
                 ))
             })?;
             for row in rows {
-                let (id, agent_id, content, category_raw, last_updated) = match row {
+                let (
+                    id,
+                    agent_id,
+                    content,
+                    category_raw,
+                    last_updated,
+                    embedding_provider,
+                    embedding_model,
+                    embedding_dim,
+                ) = match row {
                     Ok(row) => row,
                     Err(_) => continue,
                 };
                 let Some(category) = parse_category(&category_raw) else {
                     continue;
                 };
-                preferences.push(Preference {
+                preferences.push(preference_from_parts(
                     id,
                     agent_id,
                     content,
-                    embedding: None,
                     category,
                     last_updated,
-                });
+                    embedding_provider,
+                    embedding_model,
+                    embedding_dim,
+                ));
             }
         }
         Ok(preferences)
@@ -290,16 +320,29 @@ impl ProfileManager {
                     continue;
                 }
                 let embedding_blob = encode_embedding(embedding);
+                let embedding_provider =
+                    normalize_metadata_text(pref.embedding_provider.as_deref());
+                let embedding_model = normalize_metadata_text(pref.embedding_model.as_deref());
                 tx.execute(
                     "UPDATE preferences
-                     SET agent_id = ?1, content = ?2, embedding = ?3, category = ?4, last_updated = ?5
-                     WHERE id = ?6",
+                     SET agent_id = ?1,
+                         content = ?2,
+                         embedding = ?3,
+                         category = ?4,
+                         last_updated = ?5,
+                         embedding_provider = ?6,
+                         embedding_model = ?7,
+                         embedding_dim = ?8
+                     WHERE id = ?9",
                     params![
                         pref.agent_id,
                         pref.content,
                         embedding_blob,
                         pref.category.to_string(),
                         pref.last_updated,
+                        embedding_provider.as_deref(),
+                        embedding_model.as_deref(),
+                        embedding.len() as i64,
                         pref.id
                     ],
                 )
@@ -317,16 +360,24 @@ impl ProfileManager {
             }
 
             let embedding_blob = encode_embedding(embedding);
+            let embedding_provider = normalize_metadata_text(pref.embedding_provider.as_deref());
+            let embedding_model = normalize_metadata_text(pref.embedding_model.as_deref());
             tx.execute(
-                "INSERT INTO preferences (id, agent_id, content, embedding, category, last_updated)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO preferences (
+                    id, agent_id, content, embedding, category, last_updated,
+                    embedding_provider, embedding_model, embedding_dim
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     pref.id,
                     pref.agent_id,
                     pref.content,
                     embedding_blob,
                     pref.category.to_string(),
-                    pref.last_updated
+                    pref.last_updated,
+                    embedding_provider.as_deref(),
+                    embedding_model.as_deref(),
+                    embedding.len() as i64
                 ],
             )
             .context("insert preference during import")?;
@@ -357,6 +408,27 @@ impl ProfileManager {
         category: PreferenceCategory,
         last_updated: i64,
     ) -> Result<Preference> {
+        self.add_preference_with_embedding_metadata(
+            agent_id,
+            content,
+            embedding,
+            category,
+            last_updated,
+            None,
+            None,
+        )
+    }
+
+    pub fn add_preference_with_embedding_metadata(
+        &self,
+        agent_id: &str,
+        content: &str,
+        embedding: &[f32],
+        category: PreferenceCategory,
+        last_updated: i64,
+        embedding_provider: Option<&str>,
+        embedding_model: Option<&str>,
+    ) -> Result<Preference> {
         if embedding.len() != self.embedding_dim {
             anyhow::bail!(
                 "embedding dimension mismatch: expected {}, got {}",
@@ -368,16 +440,24 @@ impl ProfileManager {
         let conn = self.conn.lock();
         let id = Uuid::new_v4().to_string();
         let embedding_blob = encode_embedding(embedding);
+        let embedding_provider = normalize_metadata_text(embedding_provider);
+        let embedding_model = normalize_metadata_text(embedding_model);
         conn.execute(
-            "INSERT INTO preferences (id, agent_id, content, embedding, category, last_updated)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO preferences (
+                id, agent_id, content, embedding, category, last_updated,
+                embedding_provider, embedding_model, embedding_dim
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 id,
                 agent_id,
                 content,
                 embedding_blob,
                 category.to_string(),
-                last_updated
+                last_updated,
+                embedding_provider.as_deref(),
+                embedding_model.as_deref(),
+                embedding.len() as i64
             ],
         )
         .context("insert preference")?;
@@ -393,6 +473,9 @@ impl ProfileManager {
             agent_id: agent_id.to_string(),
             content: content.to_string(),
             embedding: None,
+            embedding_provider,
+            embedding_model,
+            embedding_dim: Some(embedding.len()),
             category,
             last_updated,
         })
@@ -416,7 +499,9 @@ impl ProfileManager {
         let query_json = embedding_to_json(query_embedding).context("serialize query embedding")?;
         let mut stmt = conn
             .prepare(
-                "SELECT p.id, p.agent_id, p.content, p.category, p.last_updated, v.distance
+                "SELECT p.id, p.agent_id, p.content, p.category, p.last_updated,
+                        p.embedding_provider, p.embedding_model, p.embedding_dim,
+                        v.distance
                  FROM preferences_vec v
                  JOIN preferences p ON p.rowid = v.rowid
                  WHERE p.agent_id = ?1
@@ -432,12 +517,25 @@ impl ProfileManager {
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, i64>(4)?,
-                row.get::<_, f64>(5)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<i64>>(7)?,
+                row.get::<_, f64>(8)?,
             ))
         })?;
         let mut results = Vec::new();
         for row in rows {
-            let (id, agent_id, content, category_raw, last_updated, distance) = match row {
+            let (
+                id,
+                agent_id,
+                content,
+                category_raw,
+                last_updated,
+                embedding_provider,
+                embedding_model,
+                embedding_dim,
+                distance,
+            ) = match row {
                 Ok(row) => row,
                 Err(_) => continue,
             };
@@ -445,14 +543,16 @@ impl ProfileManager {
                 continue;
             };
             results.push(PreferenceSearchResult {
-                preference: Preference {
+                preference: preference_from_parts(
                     id,
                     agent_id,
                     content,
-                    embedding: None,
                     category,
                     last_updated,
-                },
+                    embedding_provider,
+                    embedding_model,
+                    embedding_dim,
+                ),
                 score: distance_to_score(distance),
             });
         }
@@ -533,6 +633,25 @@ impl ProfileManager {
         embedding: &[f32],
         last_updated: i64,
     ) -> Result<()> {
+        self.update_preference_with_embedding_metadata(
+            preference_id,
+            new_content,
+            embedding,
+            last_updated,
+            None,
+            None,
+        )
+    }
+
+    pub fn update_preference_with_embedding_metadata(
+        &self,
+        preference_id: &str,
+        new_content: &str,
+        embedding: &[f32],
+        last_updated: i64,
+        embedding_provider: Option<&str>,
+        embedding_model: Option<&str>,
+    ) -> Result<()> {
         if embedding.len() != self.embedding_dim {
             anyhow::bail!(
                 "embedding dimension mismatch: expected {}, got {}",
@@ -554,9 +673,26 @@ impl ProfileManager {
             anyhow::bail!("preference not found");
         };
         let embedding_blob = encode_embedding(embedding);
+        let embedding_provider = normalize_metadata_text(embedding_provider);
+        let embedding_model = normalize_metadata_text(embedding_model);
         conn.execute(
-            "UPDATE preferences SET content = ?1, embedding = ?2, last_updated = ?3 WHERE id = ?4",
-            params![new_content, embedding_blob, last_updated, preference_id],
+            "UPDATE preferences
+             SET content = ?1,
+                 embedding = ?2,
+                 last_updated = ?3,
+                 embedding_provider = ?4,
+                 embedding_model = ?5,
+                 embedding_dim = ?6
+             WHERE id = ?7",
+            params![
+                new_content,
+                embedding_blob,
+                last_updated,
+                embedding_provider.as_deref(),
+                embedding_model.as_deref(),
+                embedding.len() as i64,
+                preference_id
+            ],
         )
         .context("update preference")?;
         let embedding_json = embedding_to_json(embedding).context("serialize embedding")?;
@@ -620,6 +756,42 @@ fn parse_category(raw: &str) -> Option<PreferenceCategory> {
         "workflow" => Some(PreferenceCategory::Workflow),
         _ => None,
     }
+}
+
+fn preference_from_parts(
+    id: String,
+    agent_id: String,
+    content: String,
+    category: PreferenceCategory,
+    last_updated: i64,
+    embedding_provider: Option<String>,
+    embedding_model: Option<String>,
+    embedding_dim: Option<i64>,
+) -> Preference {
+    Preference {
+        id,
+        agent_id,
+        content,
+        embedding: None,
+        embedding_provider: normalize_metadata_text(embedding_provider.as_deref()),
+        embedding_model: normalize_metadata_text(embedding_model.as_deref()),
+        embedding_dim: normalize_metadata_dim(embedding_dim),
+        category,
+        last_updated,
+    }
+}
+
+fn normalize_metadata_text(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn normalize_metadata_dim(value: Option<i64>) -> Option<usize> {
+    value
+        .and_then(|dim| usize::try_from(dim).ok())
+        .filter(|dim| *dim > 0)
 }
 
 impl ToString for PreferenceCategory {
@@ -1036,6 +1208,73 @@ mod tests {
         let results = manager.search_preferences("agent-add", &[0.0, 0.0], 5)?;
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].preference.id, added.id);
+        Ok(())
+    }
+
+    #[test]
+    fn add_preference_records_embedding_metadata() -> Result<()> {
+        let dir = tempdir()?;
+        let manager = ProfileManager::new(dir.path(), 2)?;
+        manager.create_agent("agent-metadata", "test", 1)?;
+        let added = manager.add_preference_with_embedding_metadata(
+            "agent-metadata",
+            "Use local embeddings",
+            &[0.0_f32, 0.0_f32],
+            PreferenceCategory::Tooling,
+            5,
+            Some("vllm"),
+            Some("bge-m3"),
+        )?;
+
+        assert_eq!(added.embedding_provider.as_deref(), Some("vllm"));
+        assert_eq!(added.embedding_model.as_deref(), Some("bge-m3"));
+        assert_eq!(added.embedding_dim, Some(2));
+
+        let row = {
+            let conn = manager.conn.lock();
+            conn.query_row(
+                "SELECT embedding_provider, embedding_model, embedding_dim FROM preferences WHERE id = ?1",
+                params![added.id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )?
+        };
+        assert_eq!(row, ("vllm".to_string(), "bge-m3".to_string(), 2));
+
+        let listed = manager.list_preferences(Some("agent-metadata"))?;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].embedding_provider.as_deref(), Some("vllm"));
+        assert_eq!(listed[0].embedding_model.as_deref(), Some("bge-m3"));
+        assert_eq!(listed[0].embedding_dim, Some(2));
+
+        let results = manager.search_preferences("agent-metadata", &[0.0, 0.0], 5)?;
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].preference.embedding_provider.as_deref(),
+            Some("vllm")
+        );
+        assert_eq!(
+            results[0].preference.embedding_model.as_deref(),
+            Some("bge-m3")
+        );
+        assert_eq!(results[0].preference.embedding_dim, Some(2));
+
+        let manifest = manager.export_manifest(Some("agent-metadata"))?;
+        assert_eq!(manifest.preferences.len(), 1);
+        assert_eq!(
+            manifest.preferences[0].embedding_provider.as_deref(),
+            Some("vllm")
+        );
+        assert_eq!(
+            manifest.preferences[0].embedding_model.as_deref(),
+            Some("bge-m3")
+        );
+        assert_eq!(manifest.preferences[0].embedding_dim, Some(2));
         Ok(())
     }
 

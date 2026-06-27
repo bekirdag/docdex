@@ -1094,6 +1094,62 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/GatesStatusResponse"
+  /v1/llm/diagnostics:
+    get:
+      tags:
+        - Observability
+      summary: Local LLM diagnostics
+      description: Returns local LLM service, model, delegation-agent, default-selection, and status-message diagnostics.
+      operationId: llmDiagnosticsGet
+      parameters:
+        - name: refresh
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: Refresh stale local-library cache before returning. Defaults to true.
+      responses:
+        "200":
+          description: Local LLM diagnostics payload
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - diagnostics
+                properties:
+                  diagnostics:
+                    type: object
+                    additionalProperties: true
+    post:
+      tags:
+        - Observability
+      summary: Local LLM diagnostics
+      description: Returns local LLM service, model, delegation-agent, default-selection, and status-message diagnostics.
+      operationId: llmDiagnosticsPost
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refresh:
+                  type: boolean
+                  description: Refresh stale local-library cache before returning. Defaults to true.
+      responses:
+        "200":
+          description: Local LLM diagnostics payload
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - diagnostics
+                properties:
+                  diagnostics:
+                    type: object
+                    additionalProperties: true
 components:
   securitySchemes:
     bearerAuth:

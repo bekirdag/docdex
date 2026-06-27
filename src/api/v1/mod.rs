@@ -13,6 +13,7 @@ pub mod index;
 pub mod initialize;
 pub mod kg;
 pub mod libs;
+pub mod llm;
 pub mod memory_layers;
 pub mod open;
 pub mod personal_preferences;

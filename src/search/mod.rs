@@ -820,6 +820,11 @@ pub fn router(state: AppState) -> Router {
             post(crate::api::v1::libs::libs_fetch_handler),
         )
         .route(
+            "/v1/llm/diagnostics",
+            get(crate::api::v1::llm::llm_diagnostics_handler)
+                .post(crate::api::v1::llm::llm_diagnostics_post_handler),
+        )
+        .route(
             "/v1/web/search",
             post(crate::api::v1::web::web_search_handler),
         )
@@ -1802,6 +1807,18 @@ async fn ai_help_handler(State(state): State<AppState>) -> impl IntoResponse {
                 path: "/v1/telemetry/delegation",
                 description: "Delegation savings telemetry (tokens + USD).",
                 params: &["repo_id=<optional>"],
+            },
+            AiHelpEndpoint {
+                method: "GET",
+                path: "/v1/llm/diagnostics",
+                description: "Local LLM/delegation library diagnostics.",
+                params: &["refresh=<bool optional>"],
+            },
+            AiHelpEndpoint {
+                method: "POST",
+                path: "/v1/llm/diagnostics",
+                description: "Local LLM/delegation library diagnostics.",
+                params: &["refresh=<bool optional>"],
             },
             AiHelpEndpoint {
                 method: "GET",

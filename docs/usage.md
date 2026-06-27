@@ -173,6 +173,7 @@ Core endpoints:
 - `GET /v1/impact/diagnostics`
 - `GET /v1/index/status`
 - `GET /v1/telemetry/delegation`
+- `GET /v1/llm/diagnostics`, `POST /v1/llm/diagnostics`
 
 Redaction note:
 - `POST /v1/conversations/:session_id/redact` removes transcript searchability and wake-up recall for that session, but `read` and `export` keep the original message slots with `[redacted]` placeholder content instead of dropping the array entirely.

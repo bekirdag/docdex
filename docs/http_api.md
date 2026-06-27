@@ -40,6 +40,8 @@ Repo selection rules:
 - `GET /metrics` - Prometheus counters and timers.
 - `GET /v1/telemetry/delegation` - delegation savings telemetry (repo-scoped by default; add `?all=true` for daemon-global totals across all mounted repos).
 - `GET /v1/gates/status` - quality gate summary.
+- `GET /v1/llm/diagnostics?refresh=false` - local LLM/delegation library diagnostics; omit `refresh=false` to refresh stale cache before returning.
+- `POST /v1/llm/diagnostics` - same response as GET; JSON body accepts `{ "refresh": false }`.
 
 ## Repo lifecycle
 

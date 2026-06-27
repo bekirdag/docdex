@@ -5969,6 +5969,7 @@ mod tests {
 
         let _home = EnvVarGuard::set("HOME", dir.path());
         let _userprofile = EnvVarGuard::set("USERPROFILE", dir.path());
+        let _disable_mcoda_cli = EnvVarGuard::set("DOCDEX_DISABLE_MCODA_CLI", "1");
         let agents = discover_mcoda_agents(None, &LlmConfig::default());
 
         assert_eq!(agents.len(), 1);
@@ -6041,6 +6042,7 @@ mod tests {
 
         let _home = EnvVarGuard::set("HOME", dir.path());
         let _userprofile = EnvVarGuard::set("USERPROFILE", dir.path());
+        let _disable_mcoda_cli = EnvVarGuard::set("DOCDEX_DISABLE_MCODA_CLI", "1");
         let agents = discover_mcoda_agents(Some(dir.path()), &LlmConfig::default());
 
         assert_eq!(agents.len(), 1);
@@ -6106,6 +6108,7 @@ mod tests {
 
         let _home = EnvVarGuard::set("HOME", dir.path());
         let _userprofile = EnvVarGuard::set("USERPROFILE", dir.path());
+        let _disable_mcoda_cli = EnvVarGuard::set("DOCDEX_DISABLE_MCODA_CLI", "1");
         let agents = discover_mcoda_agents(Some(dir.path()), &LlmConfig::default());
 
         assert_eq!(agents.len(), 1);

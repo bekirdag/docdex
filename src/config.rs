@@ -1691,6 +1691,7 @@ max_snippet_chars = 144
         std::env::remove_var("DOCDEX_REPO_ENCRYPTION_KEY_ENV");
         std::env::remove_var("DOCDEX_REPO_ENCRYPTION_KEY_ID");
         std::env::remove_var("DOCDEX_REPO_ENCRYPTION_PLAINTEXT_TERM_INDEX_ENABLED");
+        std::env::remove_var("DOCDEX_REPO_ENCRYPTION_WEB_DISCOVERY_ENABLED");
 
         let mut config = AppConfig {
             repo_encryption: RepoEncryptionConfig {
@@ -1721,6 +1722,7 @@ max_snippet_chars = 144
             "DOCDEX_REPO_ENCRYPTION_PLAINTEXT_TERM_INDEX_ENABLED",
             "false",
         );
+        std::env::set_var("DOCDEX_REPO_ENCRYPTION_WEB_DISCOVERY_ENABLED", "true");
 
         let mut config = AppConfig::default();
         apply_env_overrides(&mut config);
@@ -1735,11 +1737,13 @@ max_snippet_chars = 144
             Some("test-key-id")
         );
         assert!(!config.repo_encryption.plaintext_term_index_enabled);
+        assert!(config.repo_encryption.web_discovery_enabled);
 
         std::env::remove_var("DOCDEX_REPO_ENCRYPTION_ENABLED");
         std::env::remove_var("DOCDEX_REPO_ENCRYPTION_KEY_ENV");
         std::env::remove_var("DOCDEX_REPO_ENCRYPTION_KEY_ID");
         std::env::remove_var("DOCDEX_REPO_ENCRYPTION_PLAINTEXT_TERM_INDEX_ENABLED");
+        std::env::remove_var("DOCDEX_REPO_ENCRYPTION_WEB_DISCOVERY_ENABLED");
     }
 
     #[test]
@@ -1750,6 +1754,7 @@ max_snippet_chars = 144
         std::env::remove_var("DOCDEX_REPO_ENCRYPTION_KEY_ENV");
         std::env::remove_var("DOCDEX_REPO_ENCRYPTION_KEY_ID");
         std::env::remove_var("DOCDEX_REPO_ENCRYPTION_PLAINTEXT_TERM_INDEX_ENABLED");
+        std::env::remove_var("DOCDEX_REPO_ENCRYPTION_WEB_DISCOVERY_ENABLED");
 
         let mut config = AppConfig::default();
         apply_env_overrides(&mut config);

@@ -14,6 +14,7 @@ pub mod initialize;
 pub mod kg;
 pub mod libs;
 pub mod memory_layers;
+pub mod open;
 pub mod personal_preferences;
 pub mod profile;
 pub(crate) mod shared;

@@ -31,6 +31,24 @@ if ! /opt/docdex/bin/docdexd --version >/dev/null 2>&1; then
   exit 1
 fi
 
+if [[ -f /etc/docdex/docdex.env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source /etc/docdex/docdex.env
+  set +a
+fi
+
+if [[ "${DOCDEX_BROWSER_AUTO_INSTALL:-1}" != "0" ]]; then
+  if ! runuser -u docdex -- env \
+    HOME=/mnt/docdex \
+    DOCDEX_STATE_DIR="${DOCDEX_STATE_DIR:-/mnt/docdex/state}" \
+    DOCDEX_BROWSER_AUTO_INSTALL="${DOCDEX_BROWSER_AUTO_INSTALL:-1}" \
+    DOCDEX_WEB_ENABLED="${DOCDEX_WEB_ENABLED:-1}" \
+    /opt/docdex/bin/docdexd browser install >/dev/null; then
+    echo "warning: managed Chromium install failed; web fetch may be unavailable until docdexd browser install succeeds" >&2
+  fi
+fi
+
 systemctl daemon-reload
 systemctl enable docdex.service
 systemctl restart docdex.service

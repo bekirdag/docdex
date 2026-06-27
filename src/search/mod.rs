@@ -753,6 +753,11 @@ pub fn router(state: AppState) -> Router {
             post(crate::api::v1::hooks::hook_validate_handler),
         )
         .route(
+            "/v1/open",
+            get(crate::api::v1::open::open_get_handler)
+                .post(crate::api::v1::open::open_post_handler),
+        )
+        .route(
             "/v1/graph/impact",
             get(crate::api::v1::graph::impact_graph_handler),
         )

@@ -243,6 +243,9 @@ pub(crate) fn apply_env_overrides(config: &mut AppConfig) {
     if let Some(value) = env_bool("DOCDEX_REPO_ENCRYPTION_PLAINTEXT_TERM_INDEX_ENABLED") {
         config.repo_encryption.plaintext_term_index_enabled = value;
     }
+    if let Some(value) = env_bool("DOCDEX_REPO_ENCRYPTION_WEB_DISCOVERY_ENABLED") {
+        config.repo_encryption.web_discovery_enabled = value;
+    }
     config.repo_encryption.apply_defaults();
 }
 

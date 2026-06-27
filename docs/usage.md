@@ -266,6 +266,7 @@ docdexd open --repo /path/to/repo --file src/app.ts --start 10 --end 40 --clamp
 docdexd file ensure-newline --repo /path/to/repo --file README.md
 docdexd file write --repo /path/to/repo --file notes.txt --content "hello" --create
 ```
+Direct HTTP file reads are available through `GET /v1/open` or `POST /v1/open` with `path`, `start_line`, `end_line`, `head`, `clamp`, and optional `repo_id`. Full-file open remains disabled by default for encrypted repos unless `repo_encryption.full_file_open_enabled` is explicitly enabled; use `/search` and `/snippet/:doc_id` for encrypted deployments by default.
 
 ## Conversation memory
 
@@ -762,6 +763,7 @@ startup_timeout_sec = 300
 - `DOCDEX_WEB_BROWSER` / `DOCDEX_CHROME_PATH` to set a Chromium binary.
 - `web.scraper.engine` in `config.toml` is `chromium` (only supported engine).
 - `DOCDEX_BROWSER_AUTO_INSTALL=0` to disable Chromium auto-install.
+- Encrypted repository mode blocks web discovery unless `[repo_encryption].web_discovery_enabled = true` or `DOCDEX_REPO_ENCRYPTION_WEB_DISCOVERY_ENABLED=true` is set.
 - `docdexd mswarm configure|status|request-deletion|revoke` manages `~/.docdex/config.toml` entries for `[integrations.mswarm]` and the local telemetry-consent workflow.
 - mswarm web search settings can also be set manually:
   - `[integrations.mswarm].base_url`

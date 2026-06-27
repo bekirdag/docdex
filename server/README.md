@@ -9,6 +9,9 @@ daemon. It is intentionally separate from the client/runtime source tree.
 - The daemon binds to `127.0.0.1:28491`; public traffic terminates at nginx.
 - Persistent state, indexes, audit logs, and managed repository data live under
   `/mnt/docdex`.
+- Web discovery is enabled for the hosted daemon, including encrypted-repo
+  search policy, and release activation attempts to install Docdex-managed
+  Chromium under `/mnt/docdex/state` so link fetches work.
 - Runtime secrets live only in `/etc/docdex/docdex.env`.
 - CI deploys only the compiled `docdexd` binary; privileged installation is
   performed by the root-owned `/usr/local/sbin/docdex-apply-release` script.

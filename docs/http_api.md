@@ -174,6 +174,31 @@ Query params:
 - `text_only`
 - `max_tokens`
 
+### Open file slice
+
+`GET /v1/open`
+`POST /v1/open`
+
+Query params or JSON body:
+- `path` (repo-relative; `file` is accepted as an alias)
+- `start_line` / `end_line`
+- `head`
+- `clamp`
+- `repo_id`
+
+Response fields:
+- `path`
+- `start_line`
+- `end_line`
+- `total_lines`
+- `content`
+- `repo_root`
+- `project_root`
+
+Notes:
+- Paths must stay inside the selected repo and response content is capped at 10 MiB.
+- Encrypted repos reject full-file open unless `repo_encryption.full_file_open_enabled` is enabled; use `/search` and `/snippet/:doc_id` for encrypted deployments by default.
+
 ## Chat
 
 `POST /v1/chat/completions`
@@ -539,7 +564,14 @@ Query params:
 
 ## Folder tree
 
-Folder tree rendering is exposed via the CLI (`docdexd tree`) and the MCP tool `docdex_tree` (no HTTP endpoint).
+- `GET /v1/tree` - render a filtered folder tree.
+  - Query: `path`, `max_depth`, `dirs_only`, `repo_id`
+- `GET /v1/files` - list indexed documents.
+  - Query: `limit`, `offset`, `repo_id`
+- `GET /v1/stats` - return index size and update metadata.
+  - Query: `repo_id`
+- `GET /v1/repo/inspect` - return repo identity and state mapping details.
+  - Query: `repo_id`
 
 ## Library docs
 
@@ -596,6 +628,15 @@ Header:
   - Response header `x-docdex-mcp-session` contains the session id.
 - `POST /v1/mcp/message` - send MCP JSON-RPC to a session.
   - Use `x-docdex-mcp-session` header or `?session_id=` query.
+
+## Local-only operations
+
+Some CLI helpers intentionally remain local control-plane actions rather than remote HTTP endpoints:
+- `docdexd run-tests`, `docdexd test run-node`, and `docdexd hook pre-commit` execute or inspect the local working tree.
+- `docdexd file write` and `docdexd file ensure-newline` mutate repo files.
+- `docdexd mcp add`, `docdexd browser install/setup`, `docdexd setup`, `docdexd llm-list`, and `docdexd tui` configure or inspect the host.
+
+Use `/v1/mcp` or `/v1/mcp/sse` when a remote agent needs the MCP tool surface, and use the dedicated `/v1/...` endpoints above for direct HTTP integrations.
 
 ## Errors
 

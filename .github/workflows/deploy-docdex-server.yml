@@ -17,7 +17,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
@@ -31,6 +31,27 @@ jobs:
 
       - name: Build release binary
         run: cargo build --release --locked --bin docdexd
+
+      - name: Upload release binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: docdexd-linux-x64
+          path: target/release/docdexd
+          if-no-files-found: error
+
+  deploy:
+    needs: build
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - docdex-deploy
+    steps:
+      - name: Download release binary
+        uses: actions/download-artifact@v4
+        with:
+          name: docdexd-linux-x64
+          path: dist
 
       - name: Configure SSH
         env:
@@ -60,6 +81,6 @@ jobs:
           SSH_OPTS=(-i ~/.ssh/docdex_deploy_key -p "${DOCDEX_DEPLOY_PORT}" -o BatchMode=yes)
           SCP_OPTS=(-i ~/.ssh/docdex_deploy_key -P "${DOCDEX_DEPLOY_PORT}" -o BatchMode=yes)
           ssh "${SSH_OPTS[@]}" "${DOCDEX_DEPLOY_USER}@${DOCDEX_DEPLOY_HOST}" "install -d -m 0700 '${RELEASE_DIR}'"
-          scp "${SCP_OPTS[@]}" target/release/docdexd "${DOCDEX_DEPLOY_USER}@${DOCDEX_DEPLOY_HOST}:${RELEASE_DIR}/docdexd"
+          scp "${SCP_OPTS[@]}" dist/docdexd "${DOCDEX_DEPLOY_USER}@${DOCDEX_DEPLOY_HOST}:${RELEASE_DIR}/docdexd"
           ssh "${SSH_OPTS[@]}" "${DOCDEX_DEPLOY_USER}@${DOCDEX_DEPLOY_HOST}" \
             "chmod 0755 '${RELEASE_DIR}/docdexd' && sudo /usr/local/sbin/docdex-apply-release '${RELEASE_DIR}/docdexd' '${RELEASE_SHA}'"

@@ -164,6 +164,7 @@ fn build_config(base_url: Url, request_timeout: Duration) -> WebConfig {
         scraper_engine: "chromium".to_string(),
         scraper_headless: true,
         chrome_binary_path: None,
+        scraper_auto_install: false,
         scraper_browser_kind: None,
         scraper_user_data_dir: None,
         page_load_timeout: Duration::from_secs(1),

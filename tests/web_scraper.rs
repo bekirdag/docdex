@@ -67,6 +67,7 @@ fn base_config(chrome_binary_path: Option<PathBuf>, headless: bool) -> WebConfig
         scraper_engine: "chromium".to_string(),
         scraper_headless: headless,
         chrome_binary_path,
+        scraper_auto_install: false,
         scraper_browser_kind: Some("chromium".to_string()),
         scraper_user_data_dir: None,
         page_load_timeout: Duration::from_secs(1),

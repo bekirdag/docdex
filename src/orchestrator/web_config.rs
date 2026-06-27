@@ -28,6 +28,7 @@ pub struct WebConfig {
     pub scraper_engine: String,
     pub scraper_headless: bool,
     pub chrome_binary_path: Option<PathBuf>,
+    pub scraper_auto_install: bool,
     pub scraper_browser_kind: Option<String>,
     pub scraper_user_data_dir: Option<PathBuf>,
     pub page_load_timeout: Duration,
@@ -111,6 +112,10 @@ impl WebConfig {
         let scraper_engine = config_scraper_engine().unwrap_or_else(|| "chromium".to_string());
         let scraper_headless = config_scraper_headless().unwrap_or(true);
         let chrome_binary_path = config_scraper_chrome_binary();
+        let scraper_auto_install = env_bool(
+            "DOCDEX_BROWSER_AUTO_INSTALL",
+            config_scraper_auto_install().unwrap_or(true),
+        );
         let scraper_browser_kind =
             config_scraper_browser_kind().or_else(|| Some("chromium".to_string()));
         let scraper_user_data_dir = env::var("DOCDEX_BROWSER_USER_DATA_DIR")
@@ -154,6 +159,7 @@ impl WebConfig {
             scraper_engine,
             scraper_headless,
             chrome_binary_path,
+            scraper_auto_install,
             scraper_browser_kind,
             scraper_user_data_dir,
             page_load_timeout,
@@ -365,6 +371,15 @@ fn config_scraper_headless() -> Option<bool> {
     }
     let config = config::load_config_from_path(&path).ok()?;
     Some(config.web.scraper.headless)
+}
+
+fn config_scraper_auto_install() -> Option<bool> {
+    let path = config::default_config_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let config = config::load_config_from_path(&path).ok()?;
+    Some(config.web.scraper.auto_install)
 }
 
 fn config_scraper_chrome_binary() -> Option<PathBuf> {

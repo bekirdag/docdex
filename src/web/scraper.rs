@@ -14,6 +14,7 @@ use tracing::{debug, info, warn};
 use url::Url;
 
 use crate::orchestrator::web_config::WebConfig;
+use crate::web::browser_install;
 use crate::web::chrome::{fetch_dom as fetch_dom_chrome, ChromeFetchConfig, ChromeFetchResult};
 
 use crate::metrics;
@@ -727,9 +728,33 @@ impl ScraperEngine {
                 config.scraper_engine
             );
         }
-        let chrome_config = ChromeFetchConfig::from_web_config(config).ok_or_else(|| {
-            anyhow!("chromium browser not configured; run `docdexd browser install`")
-        })?;
+        let chrome_config = match ChromeFetchConfig::from_web_config(config) {
+            Some(chrome_config) => chrome_config,
+            None => match browser_install::install_if_missing(config.scraper_auto_install) {
+                Ok(Some(result)) => {
+                    info!(
+                        path = %result.path.display(),
+                        version = %result.version,
+                        "installed managed Chromium for web scraper"
+                    );
+                    let mut installed_config = config.clone();
+                    installed_config.chrome_binary_path = Some(result.path);
+                    ChromeFetchConfig::from_web_config(&installed_config).ok_or_else(|| {
+                        anyhow!("managed Chromium install completed but binary is unavailable")
+                    })?
+                }
+                Ok(None) => {
+                    return Err(anyhow!(
+                        "chromium browser not configured; run `docdexd browser install`"
+                    ));
+                }
+                Err(err) => {
+                    return Err(anyhow!(
+                        "chromium browser not configured and auto-install failed: {err}"
+                    ));
+                }
+            },
+        };
         Ok(ScraperEngine::Chrome {
             config: chrome_config,
         })

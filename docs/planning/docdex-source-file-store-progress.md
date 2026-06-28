@@ -8,9 +8,9 @@ Add repo-scoped original-file storage for integrations such as OKACAM Business A
 
 ## Status
 
-- Local implementation complete.
-- GitHub CI passed after the first mcoda registry test isolation fix.
-- Docdex deploy retry fix in progress: the self-hosted deploy runner still exposed an exact mcoda registry rating assertion mismatch (`8.17` vs `8.25`) in a pre-existing test.
+- Complete and deployed to production.
+- GitHub CI passed after the mcoda registry test isolation/rating assertion fixes.
+- Docdex self-hosted deploy completed successfully through the private deploy runner.
 
 ## Implementation Notes
 
@@ -36,3 +36,5 @@ Add repo-scoped original-file storage for integrations such as OKACAM Business A
 - `cargo test --locked --all` passed the full library suite and source-file tests, then hit an unrelated local `concurrency_http` healthz startup timeout.
 - `cargo test --locked -p docdexd --test concurrency_http -- --nocapture` passed on immediate rerun.
 - `docdexd hook pre-commit --repo /Users/bekirdag/Documents/apps/docdex` passed after the rating-assertion patch.
+- GitHub CI run `28320498361` passed for commit `df6a67e`.
+- Docdex production deploy run `28320498348` passed for commit `df6a67e`: tests passed, release binary built, artifact uploaded, and the self-hosted deploy activation step completed.

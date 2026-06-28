@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.78
+- Add packaged encrypted source file storage and large archive uploads so source documents can be stored encrypted, expanded server-side, and searched without base64 or JSON buffering.
+- Add packaged encrypted-deployment parity for open/web access plus an HTTP LLM diagnostics surface with updated API and usage documentation.
+- Auto-install packaged Chromium support for runtime web scraping, stabilize packaged mcoda registry discovery tests, and move the packaged release deploy workflow to the private self-hosted runner.
+- Bump packaged release metadata to 0.2.78.
+
 ## 0.2.77
 - Fix packaged setup CLI help so `docdexd setup --help` describes provider-neutral local LLM service detection and optional fallbacks instead of an Ollama-first wizard.
 - Sync packaged MCP server-card release metadata with the package version and add regression coverage for MCP/package metadata drift.

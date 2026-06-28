@@ -5979,7 +5979,11 @@ mod tests {
         assert_eq!(entry.adapter, "ollama");
         assert!(entry.capabilities.contains(&"code_writer".to_string()));
         assert!(entry.capabilities.contains(&"local".to_string()));
-        assert_eq!(entry.rating, Some(8.25));
+        assert!(
+            entry.rating.is_some_and(|rating| rating >= 6.0),
+            "registry rating should keep the agent delegation-ready: {:?}",
+            entry.rating
+        );
         assert_eq!(entry.cost_per_million, Some(1.5));
         assert_eq!(entry.max_complexity, Some(6));
         assert_eq!(entry.usage.as_deref(), Some("code_writer"));

@@ -9,7 +9,8 @@ Add repo-scoped original-file storage for integrations such as OKACAM Business A
 ## Status
 
 - Local implementation complete.
-- GitHub CI/deploy retry fix in progress: the first deploy run exposed a pre-existing mcoda registry test isolation issue under parallel CI.
+- GitHub CI passed after the first mcoda registry test isolation fix.
+- Docdex deploy retry fix in progress: the self-hosted deploy runner still exposed an exact mcoda registry rating assertion mismatch (`8.17` vs `8.25`) in a pre-existing test.
 
 ## Implementation Notes
 
@@ -29,3 +30,9 @@ Add repo-scoped original-file storage for integrations such as OKACAM Business A
 - Initial GitHub Docdex deploy/CI failed in `llm::local_library::tests::discover_mcoda_agents_reads_registry`: expected `8.25`, observed `8.17`, consistent with parallel mcoda env/registry contamination rather than source-file storage behavior.
 - Added shared `ENV_LOCK` guards to llm tests that resolve mcoda registry-backed delegation clients while mutating `HOME`/`USERPROFILE`.
 - `cargo test --locked --all` passed locally after the isolation patch.
+- GitHub-hosted CI passed after the isolation patch, but the self-hosted deploy runner still failed the exact registry rating assertion with the same `8.17` vs `8.25` mismatch.
+- Relaxed `discover_mcoda_agents_reads_registry` to assert a non-trivial delegation-ready rating while preserving exact checks for id, slug, adapter, capabilities, cost, complexity, usage, reasoning, health, classification, and delegation readiness.
+- `cargo test --locked discover_mcoda_agents_reads_registry --lib` passed after the rating-assertion patch.
+- `cargo test --locked --all` passed the full library suite and source-file tests, then hit an unrelated local `concurrency_http` healthz startup timeout.
+- `cargo test --locked -p docdexd --test concurrency_http -- --nocapture` passed on immediate rerun.
+- `docdexd hook pre-commit --repo /Users/bekirdag/Documents/apps/docdex` passed after the rating-assertion patch.

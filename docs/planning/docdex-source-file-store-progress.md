@@ -9,6 +9,7 @@ Add repo-scoped original-file storage for integrations such as OKACAM Business A
 ## Status
 
 - Local implementation complete.
+- GitHub CI/deploy retry fix in progress: the first deploy run exposed a pre-existing mcoda registry test isolation issue under parallel CI.
 
 ## Implementation Notes
 
@@ -25,3 +26,6 @@ Add repo-scoped original-file storage for integrations such as OKACAM Business A
 - `cargo test --lib` passed: 591 passed, 1 ignored.
 - `cargo check --bins` passed.
 - `docdexd run-tests --repo /Users/bekirdag/Documents/apps/docdex` was attempted after daemon health was confirmed but produced no output for several minutes and was stopped; direct full library tests and binary checks passed.
+- Initial GitHub Docdex deploy/CI failed in `llm::local_library::tests::discover_mcoda_agents_reads_registry`: expected `8.25`, observed `8.17`, consistent with parallel mcoda env/registry contamination rather than source-file storage behavior.
+- Added shared `ENV_LOCK` guards to llm tests that resolve mcoda registry-backed delegation clients while mutating `HOME`/`USERPROFILE`.
+- `cargo test --locked --all` passed locally after the isolation patch.

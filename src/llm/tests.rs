@@ -674,6 +674,7 @@ fn delegation_primary_cost_prefers_runtime_caller_agent() {
 #[test]
 fn delegation_primary_cost_resolves_runtime_caller_model_from_registry(
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let _guard = ENV_LOCK.lock();
     let temp = TempDir::new()?;
     let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
     let _profile = EnvGuard::set("USERPROFILE", temp.path().to_string_lossy().as_ref());
@@ -919,6 +920,7 @@ fn resolve_delegation_client_errors_for_non_ollama_fallback() {
 #[test]
 fn resolve_delegation_client_errors_for_missing_mcoda_agent(
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let _guard = ENV_LOCK.lock();
     let temp = TempDir::new()?;
     let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
     let _profile = EnvGuard::set("USERPROFILE", temp.path().to_string_lossy().as_ref());
@@ -933,6 +935,7 @@ fn resolve_delegation_client_errors_for_missing_mcoda_agent(
 #[test]
 fn resolve_delegation_client_missing_mcoda_agent_includes_available_slugs(
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let _guard = ENV_LOCK.lock();
     let temp = TempDir::new()?;
     let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
     let _profile = EnvGuard::set("USERPROFILE", temp.path().to_string_lossy().as_ref());
@@ -953,6 +956,7 @@ fn resolve_delegation_client_missing_mcoda_agent_includes_available_slugs(
 #[test]
 fn resolve_delegation_client_rejects_unhealthy_mcoda_agent(
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let _guard = ENV_LOCK.lock();
     let temp = TempDir::new()?;
     let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
     let _profile = EnvGuard::set("USERPROFILE", temp.path().to_string_lossy().as_ref());
@@ -973,6 +977,7 @@ fn resolve_delegation_client_rejects_unhealthy_mcoda_agent(
 #[test]
 fn resolve_delegation_client_allows_explicit_degraded_managed_cloud_agent(
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let _guard = ENV_LOCK.lock();
     let temp = TempDir::new()?;
     let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
     let _profile = EnvGuard::set("USERPROFILE", temp.path().to_string_lossy().as_ref());
@@ -1006,6 +1011,7 @@ fn resolve_delegation_client_allows_explicit_degraded_managed_cloud_agent(
 #[test]
 fn resolve_delegation_client_prefers_local_target_over_configured_default_agent(
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let _guard = ENV_LOCK.lock();
     let temp = TempDir::new()?;
     let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
     let _profile = EnvGuard::set("USERPROFILE", temp.path().to_string_lossy().as_ref());
@@ -1024,6 +1030,7 @@ fn resolve_delegation_client_prefers_local_target_over_configured_default_agent(
 
 #[test]
 fn resolve_delegation_client_supports_claude_cli_agent() -> Result<(), Box<dyn std::error::Error>> {
+    let _guard = ENV_LOCK.lock();
     let temp = TempDir::new()?;
     let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
     let _profile = EnvGuard::set("USERPROFILE", temp.path().to_string_lossy().as_ref());

@@ -119,6 +119,7 @@ pub enum RepoEncryptionIndexProtectionStatus {
 pub enum RepoEncryptionSourceStorageStatus {
     NotApplicable,
     CallerManaged,
+    ApplicationManagedEncrypted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -205,7 +206,7 @@ impl RepoEncryptionCapabilities {
             key_id,
             index_protection_status,
             source_storage_status: if enabled {
-                RepoEncryptionSourceStorageStatus::CallerManaged
+                RepoEncryptionSourceStorageStatus::ApplicationManagedEncrypted
             } else {
                 RepoEncryptionSourceStorageStatus::NotApplicable
             },

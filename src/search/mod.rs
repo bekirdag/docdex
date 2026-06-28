@@ -401,6 +401,32 @@ pub fn router(state: AppState) -> Router {
             post(crate::api::v1::admin::admin_repo_documents_ingest_handler),
         )
         .route(
+            "/v1/admin/repos/:repo_id/source-files",
+            get(crate::api::v1::source_files::admin_source_files_list_handler)
+                .post(crate::api::v1::source_files::admin_source_files_store_handler),
+        )
+        .route(
+            "/v1/admin/repos/:repo_id/source-files/:file_id",
+            get(crate::api::v1::source_files::admin_source_file_metadata_handler),
+        )
+        .route(
+            "/v1/admin/repos/:repo_id/source-files/:file_id/content",
+            get(crate::api::v1::source_files::admin_source_file_content_handler),
+        )
+        .route(
+            "/internal/docdex-encrypted-search/repos/:repo_id/source-files",
+            get(crate::api::v1::source_files::admin_source_files_list_handler)
+                .post(crate::api::v1::source_files::admin_source_files_store_handler),
+        )
+        .route(
+            "/internal/docdex-encrypted-search/repos/:repo_id/source-files/:file_id",
+            get(crate::api::v1::source_files::admin_source_file_metadata_handler),
+        )
+        .route(
+            "/internal/docdex-encrypted-search/repos/:repo_id/source-files/:file_id/content",
+            get(crate::api::v1::source_files::admin_source_file_content_handler),
+        )
+        .route(
             "/v1/admin/auth/cache/invalidate",
             post(crate::api::v1::admin::admin_auth_cache_invalidate_handler),
         )

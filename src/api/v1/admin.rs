@@ -543,7 +543,7 @@ async fn remove_dir_all_if_exists(path: &FsPath) -> Result<bool, AppError> {
     Ok(true)
 }
 
-fn require_service_admin(
+pub(crate) fn require_service_admin(
     state: &AppState,
     headers: &HeaderMap,
     path: &str,

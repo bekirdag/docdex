@@ -19,6 +19,7 @@ pub mod open;
 pub mod personal_preferences;
 pub mod profile;
 pub(crate) mod shared;
+pub mod source_files;
 pub mod symbols;
 pub mod telemetry;
 pub mod wakeup;

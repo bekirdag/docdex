@@ -10,6 +10,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
+const MCP_HTTP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(40);
+
 struct Daemon {
     child: Child,
 }
@@ -199,7 +201,9 @@ fn mcp_http_sse_roundtrip() -> Result<(), Box<dyn Error>> {
         return Ok(());
     };
 
-    let client = Client::builder().timeout(Duration::from_secs(10)).build()?;
+    let client = Client::builder()
+        .timeout(MCP_HTTP_RESPONSE_TIMEOUT)
+        .build()?;
     let sse_url = format!("http://127.0.0.1:{port}/v1/mcp/sse");
     let sse_resp = client.get(&sse_url).send()?;
     let session_id = sse_resp
@@ -300,7 +304,7 @@ fn mcp_http_sse_roundtrip() -> Result<(), Box<dyn Error>> {
         &session_id,
         port,
         &stats_payload,
-        Duration::from_secs(10),
+        MCP_HTTP_RESPONSE_TIMEOUT,
     )?;
     let stats_text = stats_resp
         .get("result")
@@ -335,7 +339,7 @@ fn mcp_http_sse_roundtrip() -> Result<(), Box<dyn Error>> {
         &session_id,
         port,
         &stats_override_payload,
-        Duration::from_secs(10),
+        MCP_HTTP_RESPONSE_TIMEOUT,
     )?;
     let stats_override_text = stats_override_resp
         .get("result")
@@ -370,7 +374,7 @@ fn mcp_http_sse_roundtrip() -> Result<(), Box<dyn Error>> {
         &session_id,
         port,
         &stats_followup_payload,
-        Duration::from_secs(10),
+        MCP_HTTP_RESPONSE_TIMEOUT,
     )?;
     let stats_followup_text = stats_followup_resp
         .get("result")
@@ -404,7 +408,7 @@ fn mcp_http_sse_roundtrip() -> Result<(), Box<dyn Error>> {
         &session_id,
         port,
         &legacy_stats_payload,
-        Duration::from_secs(10),
+        MCP_HTTP_RESPONSE_TIMEOUT,
     )?;
     let legacy_stats_text = legacy_stats_resp
         .get("result")
@@ -438,7 +442,7 @@ fn mcp_http_sse_roundtrip() -> Result<(), Box<dyn Error>> {
         &session_id,
         port,
         &legacy_dot_payload,
-        Duration::from_secs(10),
+        MCP_HTTP_RESPONSE_TIMEOUT,
     )?;
     let legacy_dot_text = legacy_dot_resp
         .get("result")

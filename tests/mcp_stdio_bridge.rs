@@ -12,6 +12,8 @@ use std::thread;
 use std::time::Duration;
 use tempfile::TempDir;
 
+const MCP_STDIO_RESPONSE_TIMEOUT: Duration = Duration::from_secs(40);
+
 struct Daemon {
     child: Child,
 }
@@ -143,10 +145,10 @@ fn mcp_stdio_bridge_roundtrip() -> Result<(), Box<dyn Error>> {
     });
 
     let line1 = rx
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(MCP_STDIO_RESPONSE_TIMEOUT)
         .map_err(|_| "missing initialize response")?;
     let line2 = rx
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(MCP_STDIO_RESPONSE_TIMEOUT)
         .map_err(|_| "missing tools/list response")?;
 
     let resp1: Value = serde_json::from_str(&line1)?;

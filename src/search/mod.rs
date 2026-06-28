@@ -35,7 +35,7 @@ use crate::tier2::Tier2Config;
 use anyhow::Result;
 use axum::body::HttpBody;
 use axum::{
-    extract::{ConnectInfo, Path, Query, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Path, Query, State},
     http::{header::CONTENT_LENGTH, HeaderMap, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Json, Response},
@@ -406,6 +406,14 @@ pub fn router(state: AppState) -> Router {
                 .post(crate::api::v1::source_files::admin_source_files_store_handler),
         )
         .route(
+            "/v1/admin/repos/:repo_id/source-files/upload",
+            post(crate::api::v1::source_files::admin_source_files_upload_handler).layer(
+                DefaultBodyLimit::max(
+                    crate::api::v1::source_files::SOURCE_FILE_MULTIPART_BODY_LIMIT_BYTES,
+                ),
+            ),
+        )
+        .route(
             "/v1/admin/repos/:repo_id/source-files/:file_id",
             get(crate::api::v1::source_files::admin_source_file_metadata_handler),
         )
@@ -417,6 +425,14 @@ pub fn router(state: AppState) -> Router {
             "/internal/docdex-encrypted-search/repos/:repo_id/source-files",
             get(crate::api::v1::source_files::admin_source_files_list_handler)
                 .post(crate::api::v1::source_files::admin_source_files_store_handler),
+        )
+        .route(
+            "/internal/docdex-encrypted-search/repos/:repo_id/source-files/upload",
+            post(crate::api::v1::source_files::admin_source_files_upload_handler).layer(
+                DefaultBodyLimit::max(
+                    crate::api::v1::source_files::SOURCE_FILE_MULTIPART_BODY_LIMIT_BYTES,
+                ),
+            ),
         )
         .route(
             "/internal/docdex-encrypted-search/repos/:repo_id/source-files/:file_id",
@@ -4234,7 +4250,8 @@ async fn security_middleware(
                     .into_response());
             }
         }
-        if state.security.max_request_bytes > 0 {
+        let source_file_upload_path = path.ends_with("/source-files/upload");
+        if state.security.max_request_bytes > 0 && !source_file_upload_path {
             if let Some(len) = request
                 .headers()
                 .get(CONTENT_LENGTH)

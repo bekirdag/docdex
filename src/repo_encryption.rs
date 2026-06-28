@@ -384,6 +384,39 @@ impl RepoEncryptionConfig {
     ) -> Result<String> {
         decrypt_repo_text(key, domain_id, rel_path, purpose, text)
     }
+
+    pub fn protect_bytes_chunk(
+        &self,
+        key: &ResolvedRepoEncryptionKey,
+        domain_id: &str,
+        rel_path: &str,
+        purpose: &str,
+        chunk_index: u64,
+        bytes: &[u8],
+    ) -> Result<([u8; 12], Vec<u8>)> {
+        encrypt_repo_bytes_chunk(key, domain_id, rel_path, purpose, chunk_index, bytes)
+    }
+
+    pub fn unprotect_bytes_chunk(
+        &self,
+        key: &ResolvedRepoEncryptionKey,
+        domain_id: &str,
+        rel_path: &str,
+        purpose: &str,
+        chunk_index: u64,
+        nonce_bytes: &[u8],
+        ciphertext: &[u8],
+    ) -> Result<Vec<u8>> {
+        decrypt_repo_bytes_chunk(
+            key,
+            domain_id,
+            rel_path,
+            purpose,
+            chunk_index,
+            nonce_bytes,
+            ciphertext,
+        )
+    }
 }
 
 pub fn parse_repo_encryption_mode(raw: &str) -> Option<RepoEncryptionMode> {
@@ -459,6 +492,20 @@ pub fn repo_encryption_domain_id(repo_root: &std::path::Path) -> String {
 
 fn encryption_aad(domain_id: &str, rel_path: &str, purpose: &str, key_id: &str) -> String {
     format!("docdex-repo-encryption:v1:{domain_id}:{rel_path}:{purpose}:{key_id}")
+}
+
+fn encryption_chunk_aad(
+    domain_id: &str,
+    rel_path: &str,
+    purpose: &str,
+    key_id: &str,
+    chunk_index: u64,
+) -> String {
+    format!(
+        "{}:chunk:{}",
+        encryption_aad(domain_id, rel_path, purpose, key_id),
+        chunk_index
+    )
 }
 
 fn encrypt_repo_text(
@@ -537,6 +584,64 @@ fn decrypt_repo_text(
             )
         })?;
     String::from_utf8(plaintext).context("decode repository plaintext")
+}
+
+fn encrypt_repo_bytes_chunk(
+    key: &ResolvedRepoEncryptionKey,
+    domain_id: &str,
+    rel_path: &str,
+    purpose: &str,
+    chunk_index: u64,
+    bytes: &[u8],
+) -> Result<([u8; 12], Vec<u8>)> {
+    let aes = Aes256Gcm::new_from_slice(&key.key_bytes).context("initialize repository cipher")?;
+    let nonce_seed = Uuid::new_v4().into_bytes();
+    let nonce_bytes: [u8; 12] = nonce_seed[..12]
+        .try_into()
+        .map_err(|_| anyhow!("invalid repository content nonce length"))?;
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let aad = encryption_chunk_aad(domain_id, rel_path, purpose, &key.key_id, chunk_index);
+    let ciphertext = aes
+        .encrypt(
+            nonce,
+            Payload {
+                msg: bytes,
+                aad: aad.as_bytes(),
+            },
+        )
+        .map_err(|err| anyhow!("encrypt repository bytes chunk: {err}"))?;
+    Ok((nonce_bytes, ciphertext))
+}
+
+fn decrypt_repo_bytes_chunk(
+    key: &ResolvedRepoEncryptionKey,
+    domain_id: &str,
+    rel_path: &str,
+    purpose: &str,
+    chunk_index: u64,
+    nonce_bytes: &[u8],
+    ciphertext: &[u8],
+) -> Result<Vec<u8>> {
+    if nonce_bytes.len() != 12 {
+        return Err(anyhow!("invalid repository content nonce length"));
+    }
+    let aes = Aes256Gcm::new_from_slice(&key.key_bytes).context("initialize repository cipher")?;
+    let nonce = Nonce::from_slice(nonce_bytes);
+    let aad = encryption_chunk_aad(domain_id, rel_path, purpose, &key.key_id, chunk_index);
+    aes.decrypt(
+        nonce,
+        Payload {
+            msg: ciphertext,
+            aad: aad.as_bytes(),
+        },
+    )
+    .map_err(|_| {
+        crate::error::AppError::new(
+            crate::error::ERR_REPO_ENCRYPTION_KEY_INVALID,
+            "repository encryption key material cannot decrypt this artifact",
+        )
+        .into()
+    })
 }
 
 #[cfg(test)]

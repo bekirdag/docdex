@@ -601,7 +601,7 @@ Each accepts `sources_path` and optional `repo_id`.
 
 ## Personal Preferences And Clone Context
 
-Available when `[personal_preferences].enabled = true`, `[memory.personal_preferences].enabled = true`, or `DOCDEX_PERSONAL_PREFERENCES_ENABLED=true` is set.
+Enabled by default with the server memory lanes. Disable it with `[personal_preferences].enabled = false`, `[memory.personal_preferences].enabled = false`, `DOCDEX_PERSONAL_PREFERENCES_ENABLED=false`, or top-level `DOCDEX_ENABLE_MEMORY=false`.
 
 - `GET /v1/personal-preferences/status`
 - `GET /v1/personal-preferences/search?q=<query>`

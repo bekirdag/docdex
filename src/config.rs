@@ -948,7 +948,7 @@ pub struct MemoryConversationConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryPersonalPreferencesConfig {
-    #[serde(default)]
+    #[serde(default = "default_personal_preferences_enabled")]
     pub enabled: bool,
     #[serde(default = "default_personal_preferences_storage_root")]
     pub storage_root: String,
@@ -1115,7 +1115,7 @@ impl Default for MemoryConversationConfig {
 impl Default for MemoryPersonalPreferencesConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: default_personal_preferences_enabled(),
             storage_root: default_personal_preferences_storage_root(),
             capture_enabled: default_personal_preferences_capture_enabled(),
             capture_docdex_conversations: default_personal_preferences_capture_docdex_conversations(
@@ -1767,6 +1767,50 @@ max_snippet_chars = 144
 
         std::env::remove_var("DOCDEX_REPO_ENCRYPTION_ENABLED");
         std::env::remove_var("DOCDEX_REPO_ENCRYPTION_MODE");
+    }
+
+    #[test]
+    fn default_config_enables_server_memory_lanes() {
+        let config = AppConfig::default();
+
+        assert!(config.memory.enabled);
+        assert!(config.memory.conversations.enabled);
+        assert!(config.memory.personal_preferences.enabled);
+        assert!(config.memory.personal_preferences.capture_enabled);
+        assert!(
+            config
+                .memory
+                .personal_preferences
+                .capture_docdex_conversations
+        );
+        assert!(
+            config
+                .memory
+                .personal_preferences
+                .capture_conversation_hooks
+        );
+        assert!(
+            config
+                .memory
+                .personal_preferences
+                .capture_imported_conversations
+        );
+        assert!(config.memory.personal_preferences.archive_raw_conversations);
+        assert!(config.memory.personal_preferences.digest_enabled);
+        assert!(config.memory.personal_preferences.process_in_background);
+        assert!(config.memory.personal_preferences.context_injection_enabled);
+        assert!(
+            config
+                .memory
+                .personal_preferences
+                .auto_project_safe_preferences_to_profile
+        );
+        assert!(
+            config
+                .memory
+                .personal_preferences
+                .transcript_secret_scrubber_enabled
+        );
     }
 
     #[test]

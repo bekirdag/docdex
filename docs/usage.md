@@ -667,7 +667,7 @@ Notes:
 - Set a default agent with `[server].default_agent_id` or `docdexd serve --agent-id` (`DOCDEX_AGENT_ID`).
 
 ## Personal Preferences And Mind Clone
-Personal preferences store conversation-derived behavior, routines, feedback, and clone context in the global state area. This is disabled by default for local installs, but hosted/server deployments should enable it explicitly so shared chat clients can write company-wide memory.
+Personal preferences store conversation-derived behavior, routines, feedback, and clone context in the global state area. Server memory lanes, personal preferences, and mind-clone context are enabled by default so shared chat clients can write company-wide memory out of the box. Set the env values below to pin hosted storage and capture policy; set `DOCDEX_ENABLE_MEMORY=false` or `DOCDEX_PERSONAL_PREFERENCES_ENABLED=false` to opt out.
 
 Server env:
 ```bash

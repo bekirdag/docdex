@@ -146,6 +146,10 @@ pub(crate) fn default_personal_preferences_storage_root() -> String {
     "~/.docdex/personal_preferences".to_string()
 }
 
+pub(crate) fn default_personal_preferences_enabled() -> bool {
+    true
+}
+
 pub(crate) fn default_personal_preferences_capture_enabled() -> bool {
     true
 }

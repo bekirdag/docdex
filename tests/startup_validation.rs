@@ -159,6 +159,45 @@ fn spawn_server_with_explicit_memory(
         .spawn()?)
 }
 
+fn spawn_server_with_default_memory(
+    state_dir: &Path,
+    repo_root: &Path,
+    port: u16,
+    personal_preferences_root: &Path,
+) -> Result<Child, Box<dyn Error>> {
+    let repo_arg = repo_root.to_string_lossy().to_string();
+    let state_arg = state_dir.to_string_lossy().to_string();
+    let config_path = state_dir.parent().unwrap_or(state_dir).join("config.toml");
+    let lock_path = state_dir.parent().unwrap_or(state_dir).join("daemon.lock");
+    Ok(Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
+        .env_remove("DOCDEX_ENABLE_MEMORY")
+        .env_remove("DOCDEX_PERSONAL_PREFERENCES_ENABLED")
+        .env("DOCDEX_ENABLE_MCP", "0")
+        .env("DOCDEX_DAEMON_LOCK_PATH", lock_path)
+        .env("DOCDEX_CONFIG_PATH", config_path)
+        .env(
+            "DOCDEX_PERSONAL_PREFERENCES_STORAGE_ROOT",
+            personal_preferences_root,
+        )
+        .env("DOCDEX_TEST_ALLOW_MULTI_DAEMON", "1")
+        .args([
+            "serve",
+            "--repo",
+            repo_arg.as_str(),
+            "--state-dir",
+            state_arg.as_str(),
+            "--port",
+            &port.to_string(),
+            "--log",
+            "warn",
+            "--secure-mode=false",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?)
+}
+
 fn parse_single_error_envelope(stderr: &[u8]) -> Result<Value, Box<dyn Error>> {
     let raw = String::from_utf8_lossy(stderr);
     let trimmed = raw.trim();
@@ -176,6 +215,44 @@ impl Drop for ChildGuard {
         self.0.kill().ok();
         self.0.wait().ok();
     }
+}
+
+#[test]
+fn default_memory_startup_enables_personal_preferences_status() -> Result<(), Box<dyn Error>> {
+    let repo = setup_repo()?;
+    let docdex_root = TempDir::new()?;
+    let state_dir = docdex_root.path().join("state");
+    let personal_preferences_root = docdex_root.path().join("personal_preferences");
+    let Some(port) = pick_free_port() else {
+        return Ok(());
+    };
+
+    let child = spawn_server_with_default_memory(
+        &state_dir,
+        repo.path(),
+        port,
+        &personal_preferences_root,
+    )?;
+    let _guard = ChildGuard(child);
+    wait_for_health("127.0.0.1", port)?;
+
+    let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
+    let response = client
+        .get(format!(
+            "http://127.0.0.1:{port}/v1/personal-preferences/status"
+        ))
+        .send()?;
+    assert!(
+        response.status().is_success(),
+        "personal preferences status should be enabled by default; got {}",
+        response.status()
+    );
+    let payload: Value = response.json()?;
+    assert_eq!(
+        payload.get("storage_root").and_then(Value::as_str),
+        Some(personal_preferences_root.to_string_lossy().as_ref())
+    );
+    Ok(())
 }
 
 #[test]

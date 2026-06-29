@@ -22,7 +22,7 @@ if [[ ! -f "${SOURCE_BIN}" ]]; then
 fi
 
 install -d -m 0755 -o root -g root /opt/docdex /opt/docdex/bin /opt/docdex/releases
-install -d -m 0750 -o docdex -g docdex /mnt/docdex/.docdex /mnt/docdex/state /mnt/docdex/repos /mnt/docdex/logs
+install -d -m 0750 -o docdex -g docdex /mnt/docdex/.docdex /mnt/docdex/personal_preferences /mnt/docdex/state /mnt/docdex/repos /mnt/docdex/logs
 install -m 0755 -o root -g root "${SOURCE_BIN}" "${RELEASE_BIN}"
 ln -sfn "${RELEASE_BIN}" /opt/docdex/bin/docdexd
 
@@ -30,6 +30,33 @@ if ! /opt/docdex/bin/docdexd --version >/dev/null 2>&1; then
   echo "installed binary failed --version smoke check" >&2
   exit 1
 fi
+
+ensure_env_default() {
+  local key="$1"
+  local value="$2"
+  if [[ ! -f /etc/docdex/docdex.env ]]; then
+    return
+  fi
+  if ! grep -Eq "^${key}=" /etc/docdex/docdex.env; then
+    printf '%s=%s\n' "${key}" "${value}" >> /etc/docdex/docdex.env
+  fi
+}
+
+ensure_env_default DOCDEX_ENABLE_MEMORY true
+ensure_env_default DOCDEX_CONVERSATION_MEMORY_ENABLED true
+ensure_env_default DOCDEX_CONVERSATION_AUTO_CAPTURE true
+ensure_env_default DOCDEX_PERSONAL_PREFERENCES_ENABLED true
+ensure_env_default DOCDEX_PERSONAL_PREFERENCES_STORAGE_ROOT /mnt/docdex/personal_preferences
+ensure_env_default DOCDEX_PERSONAL_PREFERENCES_CAPTURE_ENABLED true
+ensure_env_default DOCDEX_PERSONAL_PREFERENCES_CAPTURE_CHAT_COMPLETIONS true
+ensure_env_default DOCDEX_PERSONAL_PREFERENCES_CAPTURE_CONVERSATION_HOOKS true
+ensure_env_default DOCDEX_PERSONAL_PREFERENCES_CAPTURE_IMPORTED_CONVERSATIONS true
+ensure_env_default DOCDEX_PERSONAL_PREFERENCES_ARCHIVE_RAW true
+ensure_env_default DOCDEX_PERSONAL_PREFERENCES_DIGEST_ENABLED true
+ensure_env_default DOCDEX_PERSONAL_PREFERENCES_PROCESS_IN_BACKGROUND true
+ensure_env_default DOCDEX_PERSONAL_PREFERENCES_CONTEXT_INJECTION_ENABLED true
+ensure_env_default DOCDEX_PERSONAL_PREFERENCES_AUTO_PROJECT_SAFE_TO_PROFILE true
+ensure_env_default DOCDEX_PERSONAL_PREFERENCES_SECRET_SCRUBBER_ENABLED true
 
 if [[ -f /etc/docdex/docdex.env ]]; then
   set -a
@@ -55,12 +82,36 @@ systemctl restart docdex.service
 systemctl --no-pager --full status docdex.service
 for _ in {1..30}; do
   if curl -fsS http://127.0.0.1:28491/healthz >/dev/null 2>&1; then
-    echo "Docdex release ${SAFE_REVISION} is active."
-    exit 0
+    break
   fi
   sleep 1
 done
 
-journalctl -u docdex.service -n 80 --no-pager >&2 || true
-echo "docdex.service did not become healthy within 30 seconds" >&2
-exit 1
+if ! curl -fsS http://127.0.0.1:28491/healthz >/dev/null 2>&1; then
+  journalctl -u docdex.service -n 80 --no-pager >&2 || true
+  echo "docdex.service did not become healthy within 30 seconds" >&2
+  exit 1
+fi
+
+auth_header=()
+if [[ -n "${DOCDEX_AUTH_TOKEN:-}" ]]; then
+  auth_header=(-H "authorization: Bearer ${DOCDEX_AUTH_TOKEN}")
+fi
+
+status_payload="$(mktemp)"
+if ! curl -fsS "${auth_header[@]}" http://127.0.0.1:28491/v1/personal-preferences/status > "${status_payload}"; then
+  rm -f "${status_payload}"
+  journalctl -u docdex.service -n 80 --no-pager >&2 || true
+  echo "personal preferences status smoke check failed" >&2
+  exit 1
+fi
+if ! grep -q '"storage_root"' "${status_payload}"; then
+  cat "${status_payload}" >&2
+  rm -f "${status_payload}"
+  echo "personal preferences status payload did not include storage_root" >&2
+  exit 1
+fi
+rm -f "${status_payload}"
+
+echo "Docdex release ${SAFE_REVISION} is active with personal preferences enabled."
+exit 0

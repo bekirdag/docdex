@@ -113,6 +113,9 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
     } else {
         repo.state_dir_override()
     };
+    let personal_preferences_state_base = state_dir_override
+        .clone()
+        .or_else(|| config.core.global_state_dir.clone());
     let mut mcp_repo_args = repo.clone();
     mcp_repo_args.state_dir = state_dir_override.clone();
     if use_gateway_repo {
@@ -201,6 +204,29 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
     } else {
         config.memory.enabled
     };
+    let mut personal_preferences_config = config.memory.personal_preferences.clone();
+    if enable_memory && enable_memory_explicit && !personal_preferences_config.enabled {
+        personal_preferences_config.enabled = true;
+        if personal_preferences_config.storage_root
+            == config::default_personal_preferences_storage_root()
+            && std::env::var_os("DOCDEX_PERSONAL_PREFERENCES_STORAGE_ROOT").is_none()
+        {
+            if let Some(parent) = personal_preferences_state_base
+                .as_deref()
+                .and_then(|state_dir| state_dir.parent())
+            {
+                personal_preferences_config.storage_root = parent
+                    .join("personal_preferences")
+                    .to_string_lossy()
+                    .into_owned();
+            }
+        }
+        info!(
+            target: "docdexd",
+            storage_root = %personal_preferences_config.storage_root,
+            "enabling personal preferences because memory was explicitly enabled"
+        );
+    }
     let hook_socket_path = {
         let trimmed = config.server.hook_socket_path.trim();
         if trimmed.is_empty() {
@@ -315,7 +341,7 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
         config.auth.clone(),
         config.repo_encryption.clone(),
         config.memory.conversations.clone(),
-        config.memory.personal_preferences.clone(),
+        personal_preferences_config,
         default_agent_id,
         config.core.global_state_dir.clone(),
         daemon_mode,

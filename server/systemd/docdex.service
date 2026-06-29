@@ -8,6 +8,10 @@ Type=simple
 User=docdex
 Group=docdex
 EnvironmentFile=/etc/docdex/docdex.env
+Environment=DOCDEX_ENABLE_MEMORY=true
+Environment=DOCDEX_CONVERSATION_MEMORY_ENABLED=true
+Environment=DOCDEX_PERSONAL_PREFERENCES_ENABLED=true
+Environment=DOCDEX_PERSONAL_PREFERENCES_STORAGE_ROOT=/mnt/docdex/personal_preferences
 WorkingDirectory=/mnt/docdex
 ExecStart=/opt/docdex/bin/docdexd daemon --host 127.0.0.1 --port 28491 --enable-mcp true --enable-memory true
 Restart=on-failure

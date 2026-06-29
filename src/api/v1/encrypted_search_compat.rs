@@ -633,9 +633,17 @@ pub(crate) async fn personal_preferences_write_alias_handler(
         );
     }
     let store = personal_preferences.store.clone();
-    let archive_raw = personal_preferences.config.archive_raw_conversations;
+    let config = personal_preferences.config.clone();
     match tokio::task::spawn_blocking(move || {
-        store.capture_conversation(payload, true, archive_raw)
+        store.capture_conversation_with_options(
+            payload,
+            crate::personal_preferences::PersonalPreferencesCaptureOptions {
+                queue_for_processing: config.digest_enabled,
+                archive_raw_conversations: config.archive_raw_conversations,
+                secret_scrubber_enabled: config.transcript_secret_scrubber_enabled,
+                content_encryption_key_env: config.content_encryption_key_env.clone(),
+            },
+        )
     })
     .await
     {

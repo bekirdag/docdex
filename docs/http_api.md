@@ -599,6 +599,19 @@ Each accepts `sources_path` and optional `repo_id`.
 - `POST /v1/profile/export`
 - `POST /v1/profile/import`
 
+## Personal Preferences And Clone Context
+
+Available when `[personal_preferences].enabled = true`, `[memory.personal_preferences].enabled = true`, or `DOCDEX_PERSONAL_PREFERENCES_ENABLED=true` is set.
+
+- `GET /v1/personal-preferences/status`
+- `GET /v1/personal-preferences/search?q=<query>`
+- `POST /v1/personal-preferences/write`
+- `POST /v1/personal-preferences/clone/context`
+- `POST /v1/personal-preferences/clone/directive`
+- `POST /v1/personal-preferences/clone/evaluate`
+
+The encrypted-search compatibility aliases share this route family. `POST /v1/personal-preferences/write` stores captured conversations using the configured raw-archive, digest, secret-scrubber, and optional content-encryption settings.
+
 ## Hooks
 
 `POST /v1/hooks/validate`
@@ -654,6 +667,8 @@ See `docs/mcp/errors.md` for shared error codes.
 - `[memory.profile]` controls profile embedding config.
   - `embedding_model` (default `nomic-embed-text`)
   - `embedding_dim` (default `768`)
+- `DOCDEX_ENABLE_MEMORY=true` enables repo memory for server deployments.
+- `DOCDEX_PERSONAL_PREFERENCES_ENABLED=true` enables personal preferences and clone context. Use `DOCDEX_PERSONAL_PREFERENCES_STORAGE_ROOT` for the shared store path and `DOCDEX_PERSONAL_PREFERENCES_CONTENT_ENCRYPTION_KEY_ENV` to point at an optional capture encryption key env var.
 - `[server].default_agent_id` sets the fallback agent for requests without `agent_id`.
 - `[server].hook_socket_path` enables a Unix socket transport for hooks.
 - `[web.scraper]` stores browser detection and Linux auto-install settings.

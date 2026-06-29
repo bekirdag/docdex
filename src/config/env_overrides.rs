@@ -4,6 +4,81 @@ pub(crate) fn apply_env_overrides(config: &mut AppConfig) {
     if let Some(value) = env_trimmed("DOCDEX_LLM_AGENT").or_else(|| env_trimmed("DOCDEX_AGENT")) {
         config.llm.agent_id = value;
     }
+    if let Some(value) = env_bool("DOCDEX_ENABLE_MEMORY") {
+        config.memory.enabled = value;
+    }
+    if let Some(value) = env_bool("DOCDEX_CONVERSATION_MEMORY_ENABLED") {
+        config.memory.conversations.enabled = value;
+    }
+    if let Some(value) = env_bool("DOCDEX_CONVERSATION_AUTO_CAPTURE") {
+        config.memory.conversations.auto_capture = value;
+    }
+    if let Some(value) = env_bool("DOCDEX_PERSONAL_PREFERENCES_ENABLED")
+        .or_else(|| env_bool("DOCDEX_ENABLE_PERSONAL_PREFERENCES"))
+        .or_else(|| env_bool("DOCDEX_MIND_CLONE_ENABLED"))
+    {
+        config.memory.personal_preferences.enabled = value;
+    }
+    if let Some(value) = env_trimmed("DOCDEX_PERSONAL_PREFERENCES_STORAGE_ROOT") {
+        config.memory.personal_preferences.storage_root = value;
+    }
+    if let Some(value) = env_bool("DOCDEX_PERSONAL_PREFERENCES_CAPTURE_ENABLED") {
+        config.memory.personal_preferences.capture_enabled = value;
+    }
+    if let Some(value) = env_bool("DOCDEX_PERSONAL_PREFERENCES_CAPTURE_CHAT_COMPLETIONS") {
+        config
+            .memory
+            .personal_preferences
+            .capture_docdex_conversations = value;
+    }
+    if let Some(value) = env_bool("DOCDEX_PERSONAL_PREFERENCES_CAPTURE_CONVERSATION_HOOKS") {
+        config
+            .memory
+            .personal_preferences
+            .capture_conversation_hooks = value;
+    }
+    if let Some(value) = env_bool("DOCDEX_PERSONAL_PREFERENCES_CAPTURE_IMPORTED_CONVERSATIONS") {
+        config
+            .memory
+            .personal_preferences
+            .capture_imported_conversations = value;
+    }
+    if let Some(value) = env_bool("DOCDEX_PERSONAL_PREFERENCES_CAPTURE_CLIENT_TRANSCRIPTS") {
+        config
+            .memory
+            .personal_preferences
+            .capture_supported_client_transcripts = value;
+    }
+    if let Some(value) = env_bool("DOCDEX_PERSONAL_PREFERENCES_ARCHIVE_RAW") {
+        config.memory.personal_preferences.archive_raw_conversations = value;
+    }
+    if let Some(value) = env_bool("DOCDEX_PERSONAL_PREFERENCES_DIGEST_ENABLED") {
+        config.memory.personal_preferences.digest_enabled = value;
+    }
+    if let Some(value) = env_bool("DOCDEX_PERSONAL_PREFERENCES_PROCESS_IN_BACKGROUND") {
+        config.memory.personal_preferences.process_in_background = value;
+    }
+    if let Some(value) = env_bool("DOCDEX_PERSONAL_PREFERENCES_CONTEXT_INJECTION_ENABLED") {
+        config.memory.personal_preferences.context_injection_enabled = value;
+    }
+    if let Some(value) = env_bool("DOCDEX_PERSONAL_PREFERENCES_AUTO_PROJECT_SAFE_TO_PROFILE") {
+        config
+            .memory
+            .personal_preferences
+            .auto_project_safe_preferences_to_profile = value;
+    }
+    if let Some(value) = env_bool("DOCDEX_PERSONAL_PREFERENCES_SECRET_SCRUBBER_ENABLED") {
+        config
+            .memory
+            .personal_preferences
+            .transcript_secret_scrubber_enabled = value;
+    }
+    if let Some(value) = env_trimmed("DOCDEX_PERSONAL_PREFERENCES_CONTENT_ENCRYPTION_KEY_ENV") {
+        config
+            .memory
+            .personal_preferences
+            .content_encryption_key_env = Some(value);
+    }
     if let Some(value) = env_trimmed("DOCDEX_WEB_DISCOVERY_PROVIDER") {
         config.web.discovery_provider = value;
     }

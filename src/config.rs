@@ -1770,6 +1770,152 @@ max_snippet_chars = 144
     }
 
     #[test]
+    fn memory_env_overrides_enable_server_memory_lanes() {
+        let _guard = crate::setup::test_support::ENV_LOCK.lock();
+        std::env::set_var("DOCDEX_ENABLE_MEMORY", "true");
+        std::env::set_var("DOCDEX_CONVERSATION_MEMORY_ENABLED", "true");
+        std::env::set_var("DOCDEX_CONVERSATION_AUTO_CAPTURE", "true");
+        std::env::set_var("DOCDEX_PERSONAL_PREFERENCES_ENABLED", "true");
+        std::env::set_var(
+            "DOCDEX_PERSONAL_PREFERENCES_STORAGE_ROOT",
+            "/mnt/docdex/personal_preferences",
+        );
+        std::env::set_var("DOCDEX_PERSONAL_PREFERENCES_CAPTURE_ENABLED", "true");
+        std::env::set_var(
+            "DOCDEX_PERSONAL_PREFERENCES_CAPTURE_CHAT_COMPLETIONS",
+            "true",
+        );
+        std::env::set_var(
+            "DOCDEX_PERSONAL_PREFERENCES_CAPTURE_CONVERSATION_HOOKS",
+            "true",
+        );
+        std::env::set_var(
+            "DOCDEX_PERSONAL_PREFERENCES_CAPTURE_IMPORTED_CONVERSATIONS",
+            "true",
+        );
+        std::env::set_var("DOCDEX_PERSONAL_PREFERENCES_ARCHIVE_RAW", "true");
+        std::env::set_var("DOCDEX_PERSONAL_PREFERENCES_DIGEST_ENABLED", "true");
+        std::env::set_var("DOCDEX_PERSONAL_PREFERENCES_PROCESS_IN_BACKGROUND", "true");
+        std::env::set_var(
+            "DOCDEX_PERSONAL_PREFERENCES_CONTEXT_INJECTION_ENABLED",
+            "true",
+        );
+        std::env::set_var(
+            "DOCDEX_PERSONAL_PREFERENCES_AUTO_PROJECT_SAFE_TO_PROFILE",
+            "true",
+        );
+        std::env::set_var(
+            "DOCDEX_PERSONAL_PREFERENCES_SECRET_SCRUBBER_ENABLED",
+            "true",
+        );
+        std::env::set_var(
+            "DOCDEX_PERSONAL_PREFERENCES_CONTENT_ENCRYPTION_KEY_ENV",
+            "DOCDEX_PERSONAL_PREFERENCES_KEY",
+        );
+
+        let mut config = AppConfig::default();
+        config.memory.enabled = false;
+        config.memory.conversations.enabled = false;
+        config.memory.conversations.auto_capture = false;
+        config.memory.personal_preferences.enabled = false;
+        config.memory.personal_preferences.capture_enabled = false;
+        config
+            .memory
+            .personal_preferences
+            .capture_docdex_conversations = false;
+        config
+            .memory
+            .personal_preferences
+            .capture_conversation_hooks = false;
+        config
+            .memory
+            .personal_preferences
+            .capture_imported_conversations = false;
+        config.memory.personal_preferences.archive_raw_conversations = false;
+        config.memory.personal_preferences.digest_enabled = false;
+        config.memory.personal_preferences.process_in_background = false;
+        config.memory.personal_preferences.context_injection_enabled = false;
+        config
+            .memory
+            .personal_preferences
+            .auto_project_safe_preferences_to_profile = false;
+        config
+            .memory
+            .personal_preferences
+            .transcript_secret_scrubber_enabled = false;
+        apply_env_overrides(&mut config);
+
+        assert!(config.memory.enabled);
+        assert!(config.memory.conversations.enabled);
+        assert!(config.memory.conversations.auto_capture);
+        assert!(config.memory.personal_preferences.enabled);
+        assert_eq!(
+            config.memory.personal_preferences.storage_root,
+            "/mnt/docdex/personal_preferences"
+        );
+        assert!(config.memory.personal_preferences.capture_enabled);
+        assert!(
+            config
+                .memory
+                .personal_preferences
+                .capture_docdex_conversations
+        );
+        assert!(
+            config
+                .memory
+                .personal_preferences
+                .capture_conversation_hooks
+        );
+        assert!(
+            config
+                .memory
+                .personal_preferences
+                .capture_imported_conversations
+        );
+        assert!(config.memory.personal_preferences.archive_raw_conversations);
+        assert!(config.memory.personal_preferences.digest_enabled);
+        assert!(config.memory.personal_preferences.process_in_background);
+        assert!(config.memory.personal_preferences.context_injection_enabled);
+        assert!(
+            config
+                .memory
+                .personal_preferences
+                .auto_project_safe_preferences_to_profile
+        );
+        assert!(
+            config
+                .memory
+                .personal_preferences
+                .transcript_secret_scrubber_enabled
+        );
+        assert_eq!(
+            config
+                .memory
+                .personal_preferences
+                .content_encryption_key_env
+                .as_deref(),
+            Some("DOCDEX_PERSONAL_PREFERENCES_KEY")
+        );
+
+        std::env::remove_var("DOCDEX_ENABLE_MEMORY");
+        std::env::remove_var("DOCDEX_CONVERSATION_MEMORY_ENABLED");
+        std::env::remove_var("DOCDEX_CONVERSATION_AUTO_CAPTURE");
+        std::env::remove_var("DOCDEX_PERSONAL_PREFERENCES_ENABLED");
+        std::env::remove_var("DOCDEX_PERSONAL_PREFERENCES_STORAGE_ROOT");
+        std::env::remove_var("DOCDEX_PERSONAL_PREFERENCES_CAPTURE_ENABLED");
+        std::env::remove_var("DOCDEX_PERSONAL_PREFERENCES_CAPTURE_CHAT_COMPLETIONS");
+        std::env::remove_var("DOCDEX_PERSONAL_PREFERENCES_CAPTURE_CONVERSATION_HOOKS");
+        std::env::remove_var("DOCDEX_PERSONAL_PREFERENCES_CAPTURE_IMPORTED_CONVERSATIONS");
+        std::env::remove_var("DOCDEX_PERSONAL_PREFERENCES_ARCHIVE_RAW");
+        std::env::remove_var("DOCDEX_PERSONAL_PREFERENCES_DIGEST_ENABLED");
+        std::env::remove_var("DOCDEX_PERSONAL_PREFERENCES_PROCESS_IN_BACKGROUND");
+        std::env::remove_var("DOCDEX_PERSONAL_PREFERENCES_CONTEXT_INJECTION_ENABLED");
+        std::env::remove_var("DOCDEX_PERSONAL_PREFERENCES_AUTO_PROJECT_SAFE_TO_PROFILE");
+        std::env::remove_var("DOCDEX_PERSONAL_PREFERENCES_SECRET_SCRUBBER_ENABLED");
+        std::env::remove_var("DOCDEX_PERSONAL_PREFERENCES_CONTENT_ENCRYPTION_KEY_ENV");
+    }
+
+    #[test]
     fn auth_config_parses_external_and_service_providers() {
         let text = r#"
 [auth]

@@ -666,6 +666,37 @@ Notes:
 - Categories: `style`, `tooling`, `constraint`, `workflow`.
 - Set a default agent with `[server].default_agent_id` or `docdexd serve --agent-id` (`DOCDEX_AGENT_ID`).
 
+## Personal Preferences And Mind Clone
+Personal preferences store conversation-derived behavior, routines, feedback, and clone context in the global state area. This is disabled by default for local installs, but hosted/server deployments should enable it explicitly so shared chat clients can write company-wide memory.
+
+Server env:
+```bash
+DOCDEX_PERSONAL_PREFERENCES_ENABLED=true
+DOCDEX_PERSONAL_PREFERENCES_STORAGE_ROOT=/mnt/docdex/personal_preferences
+DOCDEX_PERSONAL_PREFERENCES_CAPTURE_ENABLED=true
+DOCDEX_PERSONAL_PREFERENCES_CAPTURE_CHAT_COMPLETIONS=true
+DOCDEX_PERSONAL_PREFERENCES_DIGEST_ENABLED=true
+DOCDEX_PERSONAL_PREFERENCES_PROCESS_IN_BACKGROUND=true
+DOCDEX_PERSONAL_PREFERENCES_CONTEXT_INJECTION_ENABLED=true
+DOCDEX_PERSONAL_PREFERENCES_AUTO_PROJECT_SAFE_TO_PROFILE=true
+DOCDEX_PERSONAL_PREFERENCES_SECRET_SCRUBBER_ENABLED=true
+```
+
+Useful endpoints:
+```bash
+curl "http://127.0.0.1:28491/v1/personal-preferences/status"
+curl -X POST "http://127.0.0.1:28491/v1/personal-preferences/write" \
+  -H "Content-Type: application/json" \
+  -d '{"source":"company-chat","agent_id":"okacam","messages":[{"role":"user","content":"Prefer concise status summaries."}]}'
+curl -X POST "http://127.0.0.1:28491/v1/personal-preferences/clone/context" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"deployment workflow","agent_id":"okacam"}'
+```
+
+Notes:
+- Set `DOCDEX_PERSONAL_PREFERENCES_CONTENT_ENCRYPTION_KEY_ENV=<ENV_NAME>` and provide that key env var if captures should be encrypted at rest.
+- The encrypted-search compatibility write endpoint uses the configured raw-archive, secret-scrubber, digest, and optional content-encryption settings.
+
 ## Hardware-aware LLM guidance
 Use `docdexd llm-list` or `docdex setup` to print your host RAM + GPU summary together with entries from `docs/llm_list.json`. The commands highlight a recommended entry that satisfies `minRamGb` and `requiresGpu`.
 
@@ -751,6 +782,9 @@ startup_timeout_sec = 300
 
 ### Memory and LLM
 - `--enable-memory <true|false>` / `DOCDEX_ENABLE_MEMORY`.
+- `DOCDEX_CONVERSATION_MEMORY_ENABLED` and `DOCDEX_CONVERSATION_AUTO_CAPTURE` for conversation memory.
+- `DOCDEX_PERSONAL_PREFERENCES_ENABLED` (alias: `DOCDEX_ENABLE_PERSONAL_PREFERENCES` or `DOCDEX_MIND_CLONE_ENABLED`) for personal preferences and mind clone.
+- `DOCDEX_PERSONAL_PREFERENCES_STORAGE_ROOT` to choose the shared personal-preferences store path.
 - `--embedding-base-url` / `DOCDEX_EMBEDDING_BASE_URL`.
 - `--ollama-base-url` / `DOCDEX_OLLAMA_BASE_URL`.
 - `--embedding-model` / `DOCDEX_EMBEDDING_MODEL` (default `nomic-embed-text`).

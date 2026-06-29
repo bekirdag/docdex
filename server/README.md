@@ -12,6 +12,9 @@ daemon. It is intentionally separate from the client/runtime source tree.
 - Web discovery is enabled for the hosted daemon, including encrypted-repo
   search policy, and release activation attempts to install Docdex-managed
   Chromium under `/mnt/docdex/state` so link fetches work.
+- Repo memory, conversation memory, profile memory, personal preferences, and
+  mind-clone context are enabled for hosted/company-wide chat clients. The
+  shared personal-preferences store lives at `/mnt/docdex/personal_preferences`.
 - Runtime secrets live only in `/etc/docdex/docdex.env`.
 - CI deploys only the compiled `docdexd` binary; privileged installation is
   performed by the root-owned `/usr/local/sbin/docdex-apply-release` script.
@@ -23,6 +26,8 @@ daemon. It is intentionally separate from the client/runtime source tree.
 /opt/docdex/releases/     immutable release binaries
 /etc/docdex/              runtime env, root-owned
 /mnt/docdex/state/        Docdex state directory
+/mnt/docdex/personal_preferences/
+                          shared personal preferences and mind-clone store
 /mnt/docdex/repos/        managed repository/index source storage
 /mnt/docdex/logs/         audit/service logs
 ```
@@ -67,5 +72,9 @@ sudo systemctl reload nginx
 
 ```bash
 curl -fsS http://127.0.0.1:28491/healthz
+curl -fsS http://127.0.0.1:28491/v1/personal-preferences/status
 curl -fsS https://api.docdex.org/healthz
 ```
+
+`docdex-apply-release` performs the local health check plus the
+`/v1/personal-preferences/status` smoke check after every activation.

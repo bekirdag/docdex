@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.79
+- Enable hosted/server memory lanes, personal preferences, and mind-clone context by default so encrypted-search tenants can use company-wide memory out of the box.
+- Preserve explicit personal-preferences enablement when repo/vector memory is disabled, allowing hosted chat clients to keep global user memory while local repo memory stays off.
+- Update server memory documentation and startup validation coverage for default-on personal-preferences status.
+- Bump release metadata to 0.2.79.
+
 ## 0.2.78
 - Add encrypted source file storage and large archive uploads so source documents can be stored encrypted, expanded server-side, and searched without base64 or JSON buffering.
 - Add encrypted-deployment parity for open/web access plus an HTTP LLM diagnostics surface with updated API and usage documentation.

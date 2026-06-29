@@ -1,6 +1,6 @@
 {
   "name": "docdex",
-  "version": "0.2.78",
+  "version": "0.2.79",
   "mcpName": "io.github.bekirdag/docdex",
   "description": "Local-first documentation and code indexer with HTTP/MCP search, AST, and agent memory.",
   "bin": {

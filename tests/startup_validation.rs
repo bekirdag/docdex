@@ -310,6 +310,7 @@ fn daemon_refuses_requests_until_state_validation_completes() -> Result<(), Box<
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root.path())
         .env("DOCDEX_ENABLE_MCP", "0")
+        .env("DOCDEX_PERSONAL_PREFERENCES_ENABLED", "0")
         .env("DOCDEX_DAEMON_LOCK_PATH", &lock_path)
         .env("DOCDEX_CONFIG_PATH", &config_path)
         .env("DOCDEX_TEST_ALLOW_MULTI_DAEMON", "1")

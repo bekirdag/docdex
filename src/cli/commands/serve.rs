@@ -11,7 +11,7 @@ use crate::search;
 use crate::web;
 use anyhow::Result;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::info;
 
 pub(crate) async fn run(args: ServeArgs) -> Result<()> {
@@ -69,6 +69,10 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
         unshare_net,
         allow_ip,
     } = args;
+    let personal_preferences_enabled_config_present = config::default_config_path()
+        .ok()
+        .filter(|path| path.exists())
+        .is_some_and(|path| personal_preferences_enabled_key_present(&path));
     let config = config::AppConfig::load_default().map_err(|err| {
         StartupError::new(
             "startup_config_invalid",
@@ -205,7 +209,10 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
         config.memory.enabled
     };
     let mut personal_preferences_config = config.memory.personal_preferences.clone();
-    if !enable_memory {
+    if !enable_memory
+        && !personal_preferences_enabled_env_present()
+        && !personal_preferences_enabled_config_present
+    {
         personal_preferences_config.enabled = false;
     }
     if enable_memory
@@ -351,6 +358,30 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
         use_gateway_repo,
     )
     .await
+}
+
+fn personal_preferences_enabled_env_present() -> bool {
+    std::env::var_os("DOCDEX_PERSONAL_PREFERENCES_ENABLED").is_some()
+        || std::env::var_os("DOCDEX_ENABLE_PERSONAL_PREFERENCES").is_some()
+        || std::env::var_os("DOCDEX_MIND_CLONE_ENABLED").is_some()
+}
+
+fn personal_preferences_enabled_key_present(path: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(value) = text.parse::<toml::Value>() else {
+        return false;
+    };
+    value
+        .get("personal_preferences")
+        .and_then(|section| section.get("enabled"))
+        .is_some()
+        || value
+            .get("memory")
+            .and_then(|section| section.get("personal_preferences"))
+            .and_then(|section| section.get("enabled"))
+            .is_some()
 }
 
 fn resolve_bind_addr(

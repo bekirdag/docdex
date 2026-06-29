@@ -601,7 +601,7 @@ Each accepts `sources_path` and optional `repo_id`.
 
 ## Personal Preferences And Clone Context
 
-Enabled by default with the server memory lanes. Disable it with `[personal_preferences].enabled = false`, `[memory.personal_preferences].enabled = false`, `DOCDEX_PERSONAL_PREFERENCES_ENABLED=false`, or top-level `DOCDEX_ENABLE_MEMORY=false`.
+Enabled by default with the server memory lanes. Disable it with `[personal_preferences].enabled = false`, `[memory.personal_preferences].enabled = false`, or `DOCDEX_PERSONAL_PREFERENCES_ENABLED=false`. `DOCDEX_ENABLE_MEMORY=false` disables repo/vector memory; explicitly configured personal preferences can still run for hosted chat clients.
 
 - `GET /v1/personal-preferences/status`
 - `GET /v1/personal-preferences/search?q=<query>`

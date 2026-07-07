@@ -1,7 +1,7 @@
 use crate::config::LlmConfig;
 use crate::llm::adapter::{
-    resolve_agent_adapter, resolve_local_openai_compatible_adapter, LlmClient, LlmCompletion,
-    LlmFuture,
+    resolve_agent_adapter, resolve_agent_adapter_with_extra_body,
+    resolve_local_openai_compatible_adapter, LlmClient, LlmCompletion, LlmFuture,
 };
 use crate::llm::delegation_rating::{
     compute_budgets, compute_run_score, estimate_complexity, fallback_quality_score,
@@ -23,7 +23,7 @@ use crate::ollama::OllamaClient;
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -46,6 +46,7 @@ const LOCAL_DELEGATION_TIMEOUT_FLOOR: Duration = Duration::from_secs(300);
 const LOCAL_TARGET_FAILURE_THRESHOLD_ENV: &str = "DOCDEX_DELEGATION_FAILURE_THRESHOLD";
 const LOCAL_TARGET_FAILURE_LOOKBACK_ENV: &str = "DOCDEX_DELEGATION_FAILURE_LOOKBACK_SECS";
 const LOCAL_TARGET_FAILURE_COOLDOWN_ENV: &str = "DOCDEX_DELEGATION_FAILURE_COOLDOWN_SECS";
+const DOCDEX_LOCAL_DELEGATION_MSWARM_PRIORITY: i64 = -2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DelegationTaskKind {
@@ -2394,6 +2395,51 @@ fn managed_mswarm_cloud_agent(agent: &McodaAgent) -> bool {
             .unwrap_or(false)
 }
 
+fn config_string_value(config: Option<&Value>, key: &str) -> Option<String> {
+    config
+        .and_then(|value| value.get(key))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn config_contains_mswarm_endpoint(config: Option<&Value>) -> bool {
+    ["baseUrl", "apiBaseUrl", "openAiBaseUrl"]
+        .iter()
+        .filter_map(|key| config_string_value(config, key))
+        .any(|value| value.to_ascii_lowercase().contains("mswarm"))
+}
+
+pub(crate) fn mcoda_agent_accepts_mswarm_scheduling(agent: &McodaAgent) -> bool {
+    let id = agent.id.trim();
+    let slug = agent.slug.trim();
+    id.starts_with("mswarm-")
+        || slug.starts_with("mswarm-")
+        || managed_mswarm_cloud_agent(agent)
+        || config_contains_mswarm_endpoint(agent.config.as_ref())
+}
+
+pub(crate) fn docdex_local_delegation_mswarm_extra_body() -> Value {
+    json!({
+        "scheduling": {
+            "priority": DOCDEX_LOCAL_DELEGATION_MSWARM_PRIORITY,
+            "reason_code": "docdex_local_delegation",
+            "fairness_key": "docdex"
+        }
+    })
+}
+
+fn resolve_local_delegation_agent_adapter(
+    agent: &McodaAgent,
+) -> Result<crate::llm::adapter::LlmAdapter> {
+    if !mcoda_agent_accepts_mswarm_scheduling(agent) {
+        return resolve_agent_adapter(agent);
+    }
+    let extra_body = docdex_local_delegation_mswarm_extra_body();
+    resolve_agent_adapter_with_extra_body(agent, Some(&extra_body))
+}
+
 fn mcoda_agent_health_retry_after_ms(agent: &McodaAgent) -> Option<u64> {
     agent.health_details.as_ref().and_then(|details| {
         details
@@ -2507,7 +2553,7 @@ pub fn resolve_delegation_client(
             .context("load mcoda registry")?
             .ok_or_else(|| anyhow!("mcoda registry not found"))?;
         let agent = resolve_mcoda_agent(&registry, agent_id, true)?;
-        let adapter = resolve_agent_adapter(agent)
+        let adapter = resolve_local_delegation_agent_adapter(agent)
             .with_context(|| format!("resolve mcoda agent adapter {agent_id}"))?;
         return Ok(Arc::new(adapter));
     }
@@ -2519,7 +2565,7 @@ pub fn resolve_delegation_client(
                     .context("load mcoda registry")?
                     .ok_or_else(|| anyhow!("mcoda registry not found"))?;
                 let agent = resolve_mcoda_agent(&registry, agent_id, false)?;
-                let adapter = resolve_agent_adapter(agent)
+                let adapter = resolve_local_delegation_agent_adapter(agent)
                     .with_context(|| format!("resolve mcoda agent adapter {agent_id}"))?;
                 return Ok(Arc::new(adapter));
             }
@@ -2566,7 +2612,7 @@ pub fn resolve_delegation_client(
             .context("load mcoda registry")?
             .ok_or_else(|| anyhow!("mcoda registry not found"))?;
         let agent = resolve_mcoda_agent(&registry, configured_agent_id, true)?;
-        let adapter = resolve_agent_adapter(agent)
+        let adapter = resolve_local_delegation_agent_adapter(agent)
             .with_context(|| format!("resolve mcoda agent adapter {configured_agent_id}"))?;
         return Ok(Arc::new(adapter));
     }
@@ -2710,7 +2756,7 @@ pub fn resolve_primary_client(
         }
     };
 
-    match resolve_agent_adapter(agent) {
+    match resolve_local_delegation_agent_adapter(agent) {
         Ok(adapter) => Ok(Some(Arc::new(adapter))),
         Err(err) => {
             warn!(

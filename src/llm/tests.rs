@@ -1,6 +1,7 @@
 use super::delegation::{
     allowlist_allows, build_local_target_candidates_with_config, compute_delegation_savings,
-    filter_automatic_local_targets_by_cost, local_selection_policy_requires_fresh_library,
+    docdex_local_delegation_mswarm_extra_body, filter_automatic_local_targets_by_cost,
+    local_selection_policy_requires_fresh_library, mcoda_agent_accepts_mswarm_scheduling,
     mode_from_config, parse_local_target_override, reevaluation_should_use_primary_client,
     render_prompt, resolve_delegation_client, resolve_delegation_timeout,
     resolve_local_cost_per_million, resolve_primary_cost_per_million,
@@ -26,6 +27,7 @@ use crate::llm::local_library::{
     LocalServiceModelEntry,
 };
 use crate::mcoda::ratings::{apply_agent_rating, AgentRunRating};
+use crate::mcoda::registry::McodaAgent;
 use crate::setup::test_support::ENV_LOCK;
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
@@ -169,6 +171,34 @@ fn seed_mcoda_registry(
     status: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     seed_mcoda_registry_with_adapter(home, agent_id, slug, "ollama-remote", status)
+}
+
+fn scheduling_test_mcoda_agent(
+    id: &str,
+    slug: &str,
+    config: Option<serde_json::Value>,
+) -> McodaAgent {
+    McodaAgent {
+        id: id.to_string(),
+        slug: slug.to_string(),
+        adapter: "openai-api".to_string(),
+        default_model: Some("qwen-test".to_string()),
+        config,
+        created_at: None,
+        updated_at: None,
+        rating: None,
+        cost_per_million: None,
+        max_complexity: None,
+        best_usage: None,
+        reasoning_rating: None,
+        health_status: Some("healthy".to_string()),
+        health_details: None,
+        cli_binary: None,
+        capabilities: Vec::new(),
+        models: Vec::new(),
+        auth: None,
+        usage_limits: Vec::new(),
+    }
 }
 
 fn seed_mcoda_registry_priced_agent(
@@ -1006,6 +1036,43 @@ fn resolve_delegation_client_allows_explicit_degraded_managed_cloud_agent(
     );
     assert!(result.is_ok());
     Ok(())
+}
+
+#[test]
+fn docdex_local_delegation_marks_mswarm_agents_with_negative_priority() {
+    let mswarm_agent = scheduling_test_mcoda_agent(
+        "agent-1",
+        "mswarm-self-hosted-mcoda-sukunahikona-qwen3-6-llama-cpp",
+        Some(serde_json::json!({ "baseUrl": "https://api.mswarm.org/v1" })),
+    );
+    let generic_agent = scheduling_test_mcoda_agent(
+        "agent-2",
+        "plain-openai-agent",
+        Some(serde_json::json!({ "baseUrl": "https://api.openai.com/v1" })),
+    );
+
+    assert!(mcoda_agent_accepts_mswarm_scheduling(&mswarm_agent));
+    assert!(!mcoda_agent_accepts_mswarm_scheduling(&generic_agent));
+
+    let extra_body = docdex_local_delegation_mswarm_extra_body();
+    assert_eq!(
+        extra_body
+            .pointer("/scheduling/priority")
+            .and_then(serde_json::Value::as_i64),
+        Some(-2)
+    );
+    assert_eq!(
+        extra_body
+            .pointer("/scheduling/reason_code")
+            .and_then(serde_json::Value::as_str),
+        Some("docdex_local_delegation")
+    );
+    assert_eq!(
+        extra_body
+            .pointer("/scheduling/fairness_key")
+            .and_then(serde_json::Value::as_str),
+        Some("docdex")
+    );
 }
 
 #[test]

@@ -97,6 +97,13 @@ impl LlmClient for LlmAdapter {
 }
 
 pub fn resolve_agent_adapter(agent: &McodaAgent) -> Result<LlmAdapter> {
+    resolve_agent_adapter_with_extra_body(agent, None)
+}
+
+pub(crate) fn resolve_agent_adapter_with_extra_body(
+    agent: &McodaAgent,
+    extra_body: Option<&Value>,
+) -> Result<LlmAdapter> {
     let has_secret = agent
         .auth
         .as_ref()
@@ -105,7 +112,8 @@ pub fn resolve_agent_adapter(agent: &McodaAgent) -> Result<LlmAdapter> {
         .unwrap_or(false);
     let adapter_type = resolve_adapter_type(agent, has_secret)?;
     let model = resolve_model(agent);
-    let config = agent.config.as_ref();
+    let config_with_extra_body = merge_config_extra_body(agent.config.as_ref(), extra_body);
+    let config = config_with_extra_body.as_ref().or(agent.config.as_ref());
     let adapter = match adapter_type.as_str() {
         "ollama-remote" => {
             LlmAdapter::OllamaRemote(OllamaRemoteClient::new(model, adapter_type, config)?)
@@ -158,6 +166,26 @@ pub fn resolve_agent_adapter(agent: &McodaAgent) -> Result<LlmAdapter> {
         _ => return Err(anyhow!("unsupported adapter type: {adapter_type}")),
     };
     Ok(adapter)
+}
+
+fn merge_config_extra_body(config: Option<&Value>, extra_body: Option<&Value>) -> Option<Value> {
+    let Some(extra_body) = extra_body.and_then(Value::as_object) else {
+        return None;
+    };
+    let mut config_obj = config
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut merged_extra_body = config_obj
+        .get("extraBody")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    for (key, value) in extra_body {
+        merged_extra_body.insert(key.clone(), value.clone());
+    }
+    config_obj.insert("extraBody".to_string(), Value::Object(merged_extra_body));
+    Some(Value::Object(config_obj))
 }
 
 pub(crate) fn resolve_local_openai_compatible_adapter(
@@ -1213,6 +1241,50 @@ mod tests {
         assert_eq!(
             extract_chat_completion_output(&zhipu_payload),
             Some("step 1, step 2".to_string())
+        );
+    }
+
+    #[test]
+    fn merge_config_extra_body_preserves_config_and_overrides_extra_body_fields() {
+        let config = json!({
+            "baseUrl": "https://api.mswarm.org/v1",
+            "extraBody": {
+                "metadata": { "source": "existing" },
+                "scheduling": { "priority": 10 }
+            }
+        });
+        let extra_body = json!({
+            "scheduling": {
+                "priority": -2,
+                "reason_code": "docdex_local_delegation",
+                "fairness_key": "docdex"
+            }
+        });
+
+        let merged =
+            merge_config_extra_body(Some(&config), Some(&extra_body)).expect("merged config");
+
+        assert_eq!(
+            merged.pointer("/baseUrl").and_then(Value::as_str),
+            Some("https://api.mswarm.org/v1")
+        );
+        assert_eq!(
+            merged
+                .pointer("/extraBody/metadata/source")
+                .and_then(Value::as_str),
+            Some("existing")
+        );
+        assert_eq!(
+            merged
+                .pointer("/extraBody/scheduling/priority")
+                .and_then(Value::as_i64),
+            Some(-2)
+        );
+        assert_eq!(
+            merged
+                .pointer("/extraBody/scheduling/reason_code")
+                .and_then(Value::as_str),
+            Some("docdex_local_delegation")
         );
     }
 

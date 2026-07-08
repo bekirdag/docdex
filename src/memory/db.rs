@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 const MEMORY_WARN_ROWS: i64 = 50_000;
 const MEMORY_PRUNE_TARGET_ROWS: i64 = 45_000;
+const MEMORY_BUSY_TIMEOUT_SECS: u64 = 5;
 const MEMORY_META_EMBED_DIM: &str = "embedding_dim";
 const MEMORY_META_SCHEMA_VERSION: &str = "schema_version";
 const MEMORY_SCHEMA_VERSION: u32 = 1;
@@ -66,6 +67,8 @@ impl MemoryStore {
                 | OpenFlags::SQLITE_OPEN_FULL_MUTEX,
         )
         .with_context(|| format!("open {}", self.path.display()))?;
+        conn.busy_timeout(std::time::Duration::from_secs(MEMORY_BUSY_TIMEOUT_SECS))
+            .context("set memory database busy timeout")?;
         let stored_dim = ensure_schema(&conn, embedding_dim)?;
         Ok((conn, stored_dim))
     }
@@ -420,7 +423,9 @@ fn ensure_vec_extension_loaded() -> Result<()> {
 
 fn ensure_schema(conn: &Connection, embedding_dim: Option<usize>) -> Result<Option<usize>> {
     conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS memories(
+        "PRAGMA journal_mode = WAL;
+        PRAGMA foreign_keys = ON;
+        CREATE TABLE IF NOT EXISTS memories(
             id TEXT PRIMARY KEY,
             content TEXT NOT NULL,
             embedding BLOB NOT NULL,
@@ -703,6 +708,21 @@ fn decode_embedding(blob: &[u8]) -> Option<Vec<f32>> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn open_connection_enables_wal_and_busy_timeout() -> Result<()> {
+        let dir = TempDir::new()?;
+        let store = MemoryStore::new(dir.path());
+
+        let (conn, _) = store.open_connection(None)?;
+        let journal_mode: String = conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+        let busy_timeout_ms: i64 = conn.query_row("PRAGMA busy_timeout", [], |row| row.get(0))?;
+
+        assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
+        assert!(busy_timeout_ms >= (MEMORY_BUSY_TIMEOUT_SECS as i64) * 1000);
+
+        Ok(())
+    }
 
     #[test]
     fn delete_removes_memory_and_vector_once() -> Result<()> {

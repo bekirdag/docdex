@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.81
+- Harden repo memory storage by enabling SQLite WAL mode and a 5-second busy timeout so concurrent Docdex agents can tolerate transient `database is locked` contention during memory saves.
+- Add regression coverage for repo memory connection settings.
+- Bump release metadata to 0.2.81.
+
 ## 0.2.79
 - Enable hosted/server memory lanes, personal preferences, and mind-clone context by default so encrypted-search tenants can use company-wide memory out of the box.
 - Preserve explicit personal-preferences enablement when repo/vector memory is disabled, allowing hosted chat clients to keep global user memory while local repo memory stays off.

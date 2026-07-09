@@ -3,7 +3,7 @@ use fs4::FileExt;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -399,14 +399,25 @@ fn probe_health(port: u16) -> bool {
     if stream.write_all(request.as_bytes()).is_err() {
         return false;
     }
-    let mut buf = [0u8; 128];
-    let Ok(read) = stream.read(&mut buf) else {
-        return false;
-    };
-    if read == 0 {
+    let mut response = Vec::new();
+    let mut buf = [0u8; 256];
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => break,
+            Ok(read) => {
+                response.extend_from_slice(&buf[..read]);
+                if response.len() >= 4096 {
+                    break;
+                }
+            }
+            Err(err) if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => break,
+            Err(_) => return false,
+        }
+    }
+    if response.is_empty() {
         return false;
     }
-    let head = std::str::from_utf8(&buf[..read]).unwrap_or("");
+    let head = std::str::from_utf8(&response).unwrap_or("");
     let (status, body) = head.split_once("\r\n\r\n").unwrap_or((head, ""));
     let status_ok = status.starts_with("HTTP/1.1 200") || status.starts_with("HTTP/1.0 200");
     status_ok && body.trim() == "ok"

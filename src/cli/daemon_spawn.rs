@@ -19,7 +19,8 @@ const DETACHED_PROCESS: u32 = 0x00000008;
 #[cfg(windows)]
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
 
-const DAEMON_AUTO_START_TIMEOUT_SECS: u64 = 5;
+const DAEMON_AUTO_START_TIMEOUT_DEFAULT_SECS: u64 = 30;
+const DAEMON_AUTO_START_TIMEOUT_ENV: &str = "DOCDEX_DAEMON_AUTO_START_TIMEOUT_SECS";
 
 #[cfg(windows)]
 const DOCDEXD_PROCESS_NAMES: &[&str] = &["docdexd.exe", "docdexd"];
@@ -78,7 +79,8 @@ pub fn ensure_daemon_running(config: &AppConfig, repo_hint: Option<PathBuf>) -> 
         return Ok(());
     }
     spawn_daemon(addr, repo_hint)?;
-    let deadline = Instant::now() + Duration::from_secs(DAEMON_AUTO_START_TIMEOUT_SECS);
+    let timeout_secs = daemon_auto_start_timeout_secs();
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     while Instant::now() < deadline {
         if daemon_healthy(addr) {
             return Ok(());
@@ -87,9 +89,18 @@ pub fn ensure_daemon_running(config: &AppConfig, repo_hint: Option<PathBuf>) -> 
     }
     Err(anyhow!(
         "docdex daemon did not become healthy within {}s on {}; check for port conflicts or run `docdexd daemon` manually",
-        DAEMON_AUTO_START_TIMEOUT_SECS,
+        timeout_secs,
         addr
     ))
+}
+
+fn daemon_auto_start_timeout_secs() -> u64 {
+    std::env::var(DAEMON_AUTO_START_TIMEOUT_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .map(|value| value.clamp(1, 300))
+        .unwrap_or(DAEMON_AUTO_START_TIMEOUT_DEFAULT_SECS)
 }
 
 fn parse_bind_addr(value: &str) -> Result<SocketAddr> {

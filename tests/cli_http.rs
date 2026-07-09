@@ -38,6 +38,7 @@ fn spawn_server(
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MCP", "0")
+        .env("DOCDEX_DELEGATION_CLOUD_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env(
             "DOCDEX_DAEMON_LOCK_PATH",
@@ -75,6 +76,7 @@ fn spawn_daemon(
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MCP", "0")
+        .env("DOCDEX_DELEGATION_CLOUD_ENABLED", "0")
         .env("DOCDEX_DAEMON_LOCK_PATH", lock_path)
         .args([
             "daemon",
@@ -100,7 +102,7 @@ fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
         .timeout(Duration::from_secs(1))
         .build()?;
     let url = format!("http://{host}:{port}/healthz");
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
         match client.get(&url).send() {
             Ok(resp) if resp.status().is_success() => return Ok(()),
@@ -420,6 +422,7 @@ fn daemon_singleton_exits_when_running() -> Result<(), Box<dyn Error>> {
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MCP", "0")
+        .env("DOCDEX_DELEGATION_CLOUD_ENABLED", "0")
         .env("DOCDEX_DAEMON_LOCK_PATH", &lock_path)
         .args([
             "daemon",

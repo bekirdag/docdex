@@ -5970,7 +5970,9 @@ mod tests {
         let _home = EnvVarGuard::set("HOME", dir.path());
         let _userprofile = EnvVarGuard::set("USERPROFILE", dir.path());
         let _disable_mcoda_cli = EnvVarGuard::set("DOCDEX_DISABLE_MCODA_CLI", "1");
-        let agents = discover_mcoda_agents(None, &LlmConfig::default());
+        let mut llm_config = LlmConfig::default();
+        llm_config.delegation.cloud.enabled = false;
+        let agents = discover_mcoda_agents(None, &llm_config);
 
         assert_eq!(agents.len(), 1);
         let entry = &agents[0];

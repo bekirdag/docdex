@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.82
+- Distinguish packaged daemon startup-in-progress locks from healthy already-running daemons so `docdexd daemon` tells clients to wait for `/healthz` and `/v1/mcp` readiness instead of advertising an unavailable MCP endpoint.
+- Harden packaged npm postinstall daemon readiness checks by requiring both `/healthz` and the streamable MCP `/v1/mcp` route before treating a started or reused daemon as ready.
+- Bump packaged release metadata to 0.2.82.
+
 ## 0.2.81
 - Harden packaged repo memory storage by enabling SQLite WAL mode and a 5-second busy timeout so concurrent Docdex agents can tolerate transient `database is locked` contention during memory saves.
 - Add packaged regression coverage for repo memory connection settings.

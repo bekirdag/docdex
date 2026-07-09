@@ -415,6 +415,30 @@ pub async fn serve(
                 }
                 return Ok(());
             }
+            lock::DaemonLockOutcome::Starting(metadata) => {
+                if let Some(path) = lock_path {
+                    println!(
+                        "docdexd is starting (pid={} port={}, lock={})",
+                        metadata.pid,
+                        metadata.port,
+                        path.display()
+                    );
+                } else {
+                    println!(
+                        "docdexd is starting (pid={} port={})",
+                        metadata.pid, metadata.port
+                    );
+                }
+                if metadata.port != 0 {
+                    println!(
+                        "Wait for http://127.0.0.1:{}/healthz to return ok before using MCP at http://127.0.0.1:{}/v1/mcp.",
+                        metadata.port, metadata.port
+                    );
+                } else {
+                    println!("A docdexd process was detected, but its HTTP port is not ready yet.");
+                }
+                return Ok(());
+            }
         }
     };
 

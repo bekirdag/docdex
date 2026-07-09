@@ -25,6 +25,7 @@ const DAEMON_HEALTH_TIMEOUT_MS = 8000;
 const DAEMON_HEALTH_REQUEST_TIMEOUT_MS = 1000;
 const DAEMON_HEALTH_POLL_INTERVAL_MS = 200;
 const DAEMON_HEALTH_PATH = "/healthz";
+const DAEMON_MCP_READY_PATH = "/v1/mcp";
 const DAEMON_INFO_PATH = "/ai-help";
 const DAEMON_PORT_RELEASE_TIMEOUT_MS = 5000;
 const STARTUP_FAILURE_MARKER = "startup_registration_failed.json";
@@ -128,6 +129,52 @@ function checkDaemonHealth({ host, port, timeoutMs = DAEMON_HEALTH_REQUEST_TIMEO
   });
 }
 
+function checkDaemonMcpReady({ host, port, timeoutMs = DAEMON_HEALTH_REQUEST_TIMEOUT_MS }) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    const payload = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ping",
+      params: {}
+    });
+    const req = http.request(
+      {
+        host,
+        port,
+        path: DAEMON_MCP_READY_PATH,
+        method: "POST",
+        timeout: timeoutMs,
+        headers: {
+          "content-type": "application/json",
+          "content-length": Buffer.byteLength(payload)
+        }
+      },
+      (res) => {
+        let body = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => {
+          if (body.length < 4096) body += chunk;
+        });
+        res.on("end", () => {
+          finish(res.statusCode === 200 && body.includes("\"jsonrpc\""));
+        });
+      }
+    );
+    req.on("timeout", () => {
+      req.destroy();
+      finish(false);
+    });
+    req.on("error", () => finish(false));
+    req.end(payload);
+  });
+}
+
 async function waitForDaemonHealthy({ host, port, timeoutMs = DAEMON_HEALTH_TIMEOUT_MS }) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -135,6 +182,33 @@ async function waitForDaemonHealthy({ host, port, timeoutMs = DAEMON_HEALTH_TIME
       return true;
     }
     await sleep(DAEMON_HEALTH_POLL_INTERVAL_MS);
+  }
+  return false;
+}
+
+async function waitForDaemonReady({
+  host,
+  port,
+  timeoutMs = DAEMON_HEALTH_TIMEOUT_MS,
+  deps
+}) {
+  const helpers = {
+    checkDaemonHealth,
+    checkDaemonMcpReady,
+    sleep
+  };
+  if (deps && typeof deps === "object") {
+    Object.assign(helpers, deps);
+  }
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (
+      await helpers.checkDaemonHealth({ host, port }) &&
+      await helpers.checkDaemonMcpReady({ host, port })
+    ) {
+      return true;
+    }
+    await helpers.sleep(DAEMON_HEALTH_POLL_INTERVAL_MS);
   }
   return false;
 }
@@ -265,11 +339,16 @@ async function resolveDaemonPortState({ host, port, logger, deps } = {}) {
   const lockRunning = lockMeta ? helpers.isPidRunning(lockMeta.pid) : false;
   const healthy = await helpers.checkDaemonHealth({ host, port });
   const identity = lockRunning ? true : await helpers.checkDocdexIdentity({ host, port });
+  const starting = Boolean(lockRunning && !healthy);
   const reuseExisting = Boolean(lockRunning || healthy || identity);
   if (reuseExisting) {
-    log.warn?.(`[docdex] ${host}:${port} already in use by a running docdex daemon; reusing it.`);
+    if (starting) {
+      log.warn?.(`[docdex] ${host}:${port} has a running docdex daemon process that is still starting; waiting for readiness.`);
+    } else {
+      log.warn?.(`[docdex] ${host}:${port} already in use by a running docdex daemon; reusing it.`);
+    }
   }
-  return { available: false, reuseExisting, stopped: false };
+  return { available: false, reuseExisting, starting, stopped: false };
 }
 
 function parseServerBind(contents) {
@@ -2690,11 +2769,12 @@ async function startDaemonWithHealthCheck({
   logger,
   distBaseDir,
   startNow = true,
+  waitForReady = startNow,
   deps
 }) {
   const helpers = {
     registerStartup,
-    waitForDaemonHealthy,
+    waitForDaemonReady,
     stopDaemonService,
     stopDaemonFromLock,
     stopDaemonByName,
@@ -2716,21 +2796,29 @@ async function startDaemonWithHealthCheck({
     return { ok: false, reason: "startup_failed" };
   }
   if (!startNow) {
+    if (waitForReady) {
+      const ready = await helpers.waitForDaemonReady({ host, port });
+      if (ready) {
+        return { ok: true, reason: "ready" };
+      }
+      logger?.warn?.(`[docdex] daemon failed readiness check on ${host}:${port}`);
+      return { ok: false, reason: "readiness_failed" };
+    }
     return { ok: true, reason: "registered" };
   }
   // `registerStartup(..., startNow: true)` already starts the service on all
   // supported platforms. Starting it again here can interrupt the first boot
   // and leave the daemon stuck behind its own lock file.
-  const healthy = await helpers.waitForDaemonHealthy({ host, port });
-  if (healthy) {
-    return { ok: true, reason: "healthy" };
+  const ready = await helpers.waitForDaemonReady({ host, port });
+  if (ready) {
+    return { ok: true, reason: "ready" };
   }
-  logger?.warn?.(`[docdex] daemon failed health check on ${host}:${port}`);
+  logger?.warn?.(`[docdex] daemon failed readiness check on ${host}:${port}`);
   helpers.stopDaemonService({ logger });
   helpers.stopDaemonFromLock({ logger });
   helpers.stopDaemonByName({ logger });
   helpers.clearDaemonLocks();
-  return { ok: false, reason: "health_failed" };
+  return { ok: false, reason: "readiness_failed" };
 }
 
 function recordStartupFailure(details) {
@@ -2997,7 +3085,8 @@ async function runPostInstallSetup({ binaryPath, logger, env, skipDaemon, distBa
       host: DEFAULT_HOST,
       logger: log,
       distBaseDir: resolvedDistBaseDir,
-      startNow: !reuseExisting && allowStartNow
+      startNow: !reuseExisting && allowStartNow,
+      waitForReady: reuseExisting || (!reuseExisting && allowStartNow)
     });
     if (!result.ok) {
       log.warn?.(`[docdex] daemon failed to start on ${DEFAULT_HOST}:${port}.`);
@@ -3096,6 +3185,8 @@ module.exports = {
   buildDaemonEnv,
   buildLaunchAgentPlist,
   startDaemonWithHealthCheck,
+  checkDaemonMcpReady,
+  waitForDaemonReady,
   resolveDaemonPortState,
   normalizeVersion
 };

@@ -35,6 +35,7 @@ pub struct DaemonLock {
 pub enum DaemonLockOutcome {
     Acquired(DaemonLock),
     AlreadyRunning(DaemonLockMetadata),
+    Starting(DaemonLockMetadata),
 }
 
 impl DaemonLock {
@@ -213,12 +214,12 @@ fn acquire_or_reuse_at_path(
             return Ok(DaemonLockOutcome::AlreadyRunning(metadata));
         }
         if lock_held(path)? {
-            return Ok(DaemonLockOutcome::AlreadyRunning(metadata));
+            return Ok(DaemonLockOutcome::Starting(metadata));
         }
         if metadata.pid != std::process::id()
             && pid_matches_expected_names(metadata.pid, expected_names, expected_cmd_terms)
         {
-            return Ok(DaemonLockOutcome::AlreadyRunning(metadata));
+            return Ok(DaemonLockOutcome::Starting(metadata));
         }
     }
     if should_scan_processes(path, lock_env, lock_file) {
@@ -231,7 +232,7 @@ fn acquire_or_reuse_at_path(
                     .unwrap_or_default()
                     .as_millis(),
             };
-            return Ok(DaemonLockOutcome::AlreadyRunning(metadata));
+            return Ok(DaemonLockOutcome::Starting(metadata));
         }
     }
     let lock = acquire_lock_at_path(path, port)?;
@@ -583,8 +584,47 @@ mod tests {
             DaemonLockOutcome::Acquired(_) => {
                 panic!("expected existing daemon detection");
             }
+            DaemonLockOutcome::Starting(_) => {
+                panic!("expected healthy daemon detection");
+            }
         }
         let _ = handle.join();
+        Ok(())
+    }
+
+    #[test]
+    fn acquire_or_reuse_reports_starting_when_lock_held_but_unhealthy() -> Result<()> {
+        let dir = TempDir::new()?;
+        let path = dir.path().join("daemon.lock");
+        let Some(port) = unused_port() else {
+            eprintln!("skipping starting lock test: TCP bind not permitted");
+            return Ok(());
+        };
+        if probe_health(port) {
+            eprintln!("skipping starting lock test: port already in use");
+            return Ok(());
+        }
+        let _lock = acquire_lock_at_path(&path, port)?;
+        let outcome = acquire_or_reuse_at_path(
+            &path,
+            9999,
+            DOCDEXD_PROCESS_NAMES,
+            DOCDEXD_DAEMON_ARGS,
+            DAEMON_LOCK_ENV,
+            DAEMON_LOCK_FILE,
+        )?;
+        match outcome {
+            DaemonLockOutcome::Starting(metadata) => {
+                assert_eq!(metadata.port, port);
+                assert_eq!(metadata.pid, std::process::id());
+            }
+            DaemonLockOutcome::AlreadyRunning(_) => {
+                panic!("unhealthy held lock should be reported as starting");
+            }
+            DaemonLockOutcome::Acquired(_) => {
+                panic!("held daemon lock should not be replaced");
+            }
+        }
         Ok(())
     }
 
@@ -623,6 +663,15 @@ mod tests {
         let lock = match outcome {
             DaemonLockOutcome::Acquired(lock) => lock,
             DaemonLockOutcome::AlreadyRunning(_) => {
+                if !env_boolish(TEST_ALLOW_MULTI_DAEMON_ENV)
+                    && find_running_pid(DOCDEXD_PROCESS_NAMES, DOCDEXD_DAEMON_ARGS).is_some()
+                {
+                    eprintln!("skipping stale lock test: docdexd started during test");
+                    return Ok(());
+                }
+                panic!("expected stale lock replacement");
+            }
+            DaemonLockOutcome::Starting(_) => {
                 if !env_boolish(TEST_ALLOW_MULTI_DAEMON_ENV)
                     && find_running_pid(DOCDEXD_PROCESS_NAMES, DOCDEXD_DAEMON_ARGS).is_some()
                 {

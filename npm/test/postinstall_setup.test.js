@@ -30,7 +30,8 @@ const {
   applyAgentInstructions,
   buildDaemonEnv,
   buildLaunchAgentPlist,
-  startDaemonWithHealthCheck
+  startDaemonWithHealthCheck,
+  waitForDaemonReady
 } = require("../lib/postinstall_setup");
 
 test("upsertServerConfig adds server section when missing", () => {
@@ -521,6 +522,31 @@ test("resolveDaemonPortState reports busy when port in use by non-docdex", async
   assert.equal(state.reuseExisting, false);
 });
 
+test("resolveDaemonPortState reports starting when lock pid is running but health is not ready", async () => {
+  const warnings = [];
+  const state = await resolveDaemonPortState({
+    host: "127.0.0.1",
+    port: 28491,
+    logger: { warn: (message) => warnings.push(message) },
+    deps: {
+      isPortAvailable: async () => false,
+      stopDaemonService: () => {},
+      stopDaemonFromLock: () => {},
+      stopDaemonByName: () => {},
+      clearDaemonLocks: () => {},
+      sleep: async () => {},
+      checkDaemonHealth: async () => false,
+      checkDocdexIdentity: async () => false,
+      readDaemonLockMetadataForPort: () => ({ pid: 1234, port: 28491 }),
+      isPidRunning: () => true
+    }
+  });
+  assert.equal(state.available, false);
+  assert.equal(state.reuseExisting, true);
+  assert.equal(state.starting, true);
+  assert.ok(warnings.some((message) => message.includes("still starting")));
+});
+
 test("startDaemonWithHealthCheck relies on registerStartup for startNow", async () => {
   const calls = [];
   const result = await startDaemonWithHealthCheck({
@@ -532,8 +558,8 @@ test("startDaemonWithHealthCheck relies on registerStartup for startNow", async 
         calls.push({ type: "registerStartup", options });
         return { ok: true };
       },
-      waitForDaemonHealthy: async (options) => {
-        calls.push({ type: "waitForDaemonHealthy", options });
+      waitForDaemonReady: async (options) => {
+        calls.push({ type: "waitForDaemonReady", options });
         return true;
       },
       stopDaemonService: () => {
@@ -552,11 +578,11 @@ test("startDaemonWithHealthCheck relies on registerStartup for startNow", async 
   });
   assert.deepEqual(
     calls.map((entry) => entry.type),
-    ["registerStartup", "waitForDaemonHealthy"]
+    ["registerStartup", "waitForDaemonReady"]
   );
   assert.equal(calls[0].options.startNow, true);
   assert.equal(result.ok, true);
-  assert.equal(result.reason, "healthy");
+  assert.equal(result.reason, "ready");
 });
 
 test("startDaemonWithHealthCheck cleans up after health failure", async () => {
@@ -567,7 +593,7 @@ test("startDaemonWithHealthCheck cleans up after health failure", async () => {
     port: 28491,
     deps: {
       registerStartup: () => ({ ok: true }),
-      waitForDaemonHealthy: async () => false,
+      waitForDaemonReady: async () => false,
       stopDaemonService: () => {
         calls.push("stopDaemonService");
       },
@@ -583,13 +609,63 @@ test("startDaemonWithHealthCheck cleans up after health failure", async () => {
     }
   });
   assert.equal(result.ok, false);
-  assert.equal(result.reason, "health_failed");
+  assert.equal(result.reason, "readiness_failed");
   assert.deepEqual(calls, [
     "stopDaemonService",
     "stopDaemonFromLock",
     "stopDaemonByName",
     "clearDaemonLocks"
   ]);
+});
+
+test("startDaemonWithHealthCheck can wait for reused daemon readiness without starting", async () => {
+  const calls = [];
+  const result = await startDaemonWithHealthCheck({
+    binaryPath: "/tmp/docdexd",
+    host: "127.0.0.1",
+    port: 28491,
+    startNow: false,
+    waitForReady: true,
+    deps: {
+      registerStartup: (options) => {
+        calls.push({ type: "registerStartup", options });
+        return { ok: true };
+      },
+      waitForDaemonReady: async (options) => {
+        calls.push({ type: "waitForDaemonReady", options });
+        return true;
+      }
+    }
+  });
+  assert.deepEqual(
+    calls.map((entry) => entry.type),
+    ["registerStartup", "waitForDaemonReady"]
+  );
+  assert.equal(calls[0].options.startNow, false);
+  assert.equal(result.ok, true);
+  assert.equal(result.reason, "ready");
+});
+
+test("waitForDaemonReady requires both health and MCP route readiness", async () => {
+  const calls = [];
+  const ready = await waitForDaemonReady({
+    host: "127.0.0.1",
+    port: 28491,
+    timeoutMs: 50,
+    deps: {
+      checkDaemonHealth: async () => {
+        calls.push("health");
+        return true;
+      },
+      checkDaemonMcpReady: async () => {
+        calls.push("mcp");
+        return true;
+      },
+      sleep: async () => {}
+    }
+  });
+  assert.equal(ready, true);
+  assert.deepEqual(calls, ["health", "mcp"]);
 });
 
 test("normalizeVersion strips v prefix and trims whitespace", () => {

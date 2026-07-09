@@ -40,7 +40,7 @@ jobs:
         run: |
           cargo install cargo-audit --locked
           cargo install cargo-sbom --locked
-          npm install -g npm@latest
+          npm install -g npm@11.18.0
 
       - name: Security audit
         run: scripts/security_audit.sh

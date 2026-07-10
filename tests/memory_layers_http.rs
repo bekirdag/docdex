@@ -48,7 +48,10 @@ fn memory_layers_http_reports_all_six_layers() -> Result<(), Box<dyn Error>> {
         host,
         port,
         false,
-        &[("DOCDEX_ENABLE_MEMORY", "1")],
+        &[
+            ("DOCDEX_ENABLE_MEMORY", "1"),
+            ("DOCDEX_PERSONAL_PREFERENCES_ENABLED", "1"),
+        ],
     )?;
     wait_for_health(host, port)?;
 
@@ -88,14 +91,17 @@ fn memory_layers_http_reports_all_six_layers() -> Result<(), Box<dyn Error>> {
                 .map(|path| path.ends_with("knowledge.db"))
                 == Some(true)
     }));
-    assert!(layers.iter().any(|layer| {
-        layer.get("id").and_then(Value::as_str) == Some("personal_preferences")
-            && layer
-                .get("agent_awareness")
-                .and_then(|value| value.get("status"))
-                .and_then(Value::as_str)
-                == Some("strong")
-    }));
+    assert!(
+        layers.iter().any(|layer| {
+            layer.get("id").and_then(Value::as_str) == Some("personal_preferences")
+                && layer
+                    .get("agent_awareness")
+                    .and_then(|value| value.get("status"))
+                    .and_then(Value::as_str)
+                    == Some("strong")
+        }),
+        "personal preferences layer was not strongly enabled: {body}"
+    );
 
     server.shutdown();
     Ok(())
@@ -121,7 +127,10 @@ fn memory_route_http_ranks_core_and_retrievable_lanes() -> Result<(), Box<dyn Er
         host,
         port,
         false,
-        &[("DOCDEX_ENABLE_MEMORY", "1")],
+        &[
+            ("DOCDEX_ENABLE_MEMORY", "1"),
+            ("DOCDEX_PERSONAL_PREFERENCES_ENABLED", "1"),
+        ],
     )?;
     wait_for_health(host, port)?;
 

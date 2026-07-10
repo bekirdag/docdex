@@ -47,7 +47,10 @@ fn cli_memory_layers_supports_conversation_namespace_scope() -> Result<(), Box<d
         host,
         port,
         false,
-        &[("DOCDEX_ENABLE_MEMORY", "1")],
+        &[
+            ("DOCDEX_ENABLE_MEMORY", "1"),
+            ("DOCDEX_PERSONAL_PREFERENCES_ENABLED", "1"),
+        ],
     )?;
     wait_for_health(host, port)?;
 
@@ -106,7 +109,10 @@ fn cli_memory_route_returns_ranked_lane_guidance() -> Result<(), Box<dyn Error>>
         host,
         port,
         false,
-        &[("DOCDEX_ENABLE_MEMORY", "1")],
+        &[
+            ("DOCDEX_ENABLE_MEMORY", "1"),
+            ("DOCDEX_PERSONAL_PREFERENCES_ENABLED", "1"),
+        ],
     )?;
     wait_for_health(host, port)?;
 

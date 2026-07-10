@@ -60,7 +60,10 @@ fn mcp_memory_layers_reports_agent_usage_map() -> Result<(), Box<dyn Error>> {
         host,
         port,
         true,
-        &[("DOCDEX_ENABLE_MEMORY", "1")],
+        &[
+            ("DOCDEX_ENABLE_MEMORY", "1"),
+            ("DOCDEX_PERSONAL_PREFERENCES_ENABLED", "1"),
+        ],
     )?;
     wait_for_health(host, port)?;
 
@@ -139,7 +142,10 @@ fn mcp_memory_route_returns_ranked_lane_guidance() -> Result<(), Box<dyn Error>>
         host,
         port,
         true,
-        &[("DOCDEX_ENABLE_MEMORY", "1")],
+        &[
+            ("DOCDEX_ENABLE_MEMORY", "1"),
+            ("DOCDEX_PERSONAL_PREFERENCES_ENABLED", "1"),
+        ],
     )?;
     wait_for_health(host, port)?;
 

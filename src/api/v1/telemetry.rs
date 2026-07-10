@@ -373,6 +373,8 @@ mod tests {
             conversations: None,
             personal_preferences: None,
             profile_state: None,
+            user_memory_sync: crate::config::MemoryUserSyncConfig::default(),
+            user_memory_sync_identity: crate::user_memory_sync::UserMemorySyncIdentity::default(),
             features: crate::config::FeatureFlagsConfig::default(),
             auth: crate::auth::AuthRuntime::new_for_tests(
                 crate::auth::AuthConfig::default(),

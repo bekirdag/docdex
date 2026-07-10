@@ -66,7 +66,7 @@ fn pick_free_port() -> Option<u16> {
 fn wait_for_health(port: u16) -> Result<(), Box<dyn Error>> {
     let client = Client::builder().timeout(Duration::from_secs(1)).build()?;
     let url = format!("http://127.0.0.1:{port}/healthz");
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
         match client.get(&url).send() {
             Ok(resp) if resp.status().is_success() => return Ok(()),

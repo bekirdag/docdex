@@ -48,6 +48,7 @@ pub mod state_paths;
 pub mod symbols;
 pub mod tier2;
 pub mod tree;
+pub mod user_memory_sync;
 pub mod util;
 pub mod watcher;
 pub mod web;

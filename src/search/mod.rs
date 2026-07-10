@@ -255,6 +255,8 @@ pub struct AppState {
     pub conversations: Option<ConversationState>,
     pub personal_preferences: Option<PersonalPreferencesState>,
     pub profile_state: Option<ProfileState>,
+    pub user_memory_sync: crate::config::MemoryUserSyncConfig,
+    pub user_memory_sync_identity: crate::user_memory_sync::UserMemorySyncIdentity,
     pub features: crate::config::FeatureFlagsConfig,
     pub auth: AuthRuntime,
     pub repo_encryption: crate::repo_encryption::RepoEncryptionConfig,
@@ -480,6 +482,38 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/profile/import",
             post(crate::api::v1::profile::profile_import_handler),
+        )
+        .route(
+            "/v1/user-memory/sync/status",
+            get(crate::api::v1::user_memory_sync::user_memory_sync_status_handler),
+        )
+        .route(
+            "/v1/user-memory/sync/dry-run",
+            post(crate::api::v1::user_memory_sync::user_memory_sync_dry_run_handler),
+        )
+        .route(
+            "/v1/user-memory/sync/bundle/dry-run",
+            post(crate::api::v1::user_memory_sync::user_memory_sync_bundle_dry_run_handler),
+        )
+        .route(
+            "/v1/user-memory/devices/register",
+            post(crate::api::v1::user_memory_sync::user_memory_sync_device_register_handler),
+        )
+        .route(
+            "/v1/user-memory/sync/push",
+            post(crate::api::v1::user_memory_sync::user_memory_sync_push_handler),
+        )
+        .route(
+            "/v1/user-memory/sync/feed",
+            get(crate::api::v1::user_memory_sync::user_memory_sync_feed_handler),
+        )
+        .route(
+            "/v1/user-memory/sync/apply",
+            post(crate::api::v1::user_memory_sync::user_memory_sync_apply_handler),
+        )
+        .route(
+            "/v1/user-memory/sync/ack",
+            post(crate::api::v1::user_memory_sync::user_memory_sync_ack_handler),
         )
         .route(
             "/v1/personal-preferences/status",

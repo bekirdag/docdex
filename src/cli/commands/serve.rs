@@ -312,6 +312,10 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
             .into());
         }
     }
+    let user_memory_sync_identity = crate::user_memory_sync::user_memory_sync_identity_from_config(
+        config.integrations.mswarm.api_key.as_deref(),
+        config.memory.user_memory_sync.api_key_env.as_deref(),
+    );
     daemon::serve(
         repo_root,
         host,
@@ -352,6 +356,8 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
         config.repo_encryption.clone(),
         config.memory.conversations.clone(),
         personal_preferences_config,
+        config.memory.user_memory_sync.clone(),
+        user_memory_sync_identity,
         default_agent_id,
         config.core.global_state_dir.clone(),
         daemon_mode,

@@ -238,6 +238,22 @@ pub(crate) fn default_personal_preferences_derived_retention_days() -> u32 {
     DEFAULT_PERSONAL_PREFERENCES_DERIVED_RETENTION_DAYS
 }
 
+pub(crate) fn default_user_memory_sync_enabled() -> bool {
+    false
+}
+
+pub(crate) fn default_user_memory_sync_raw_evidence_enabled() -> bool {
+    false
+}
+
+pub(crate) fn default_user_memory_sync_pull_interval_seconds() -> u64 {
+    DEFAULT_USER_MEMORY_SYNC_PULL_INTERVAL_SECONDS
+}
+
+pub(crate) fn default_user_memory_sync_max_upload_bytes_per_cycle() -> usize {
+    DEFAULT_USER_MEMORY_SYNC_MAX_UPLOAD_BYTES_PER_CYCLE
+}
+
 pub(crate) fn default_http_bind_addr() -> String {
     DEFAULT_HTTP_BIND_ADDR.to_string()
 }

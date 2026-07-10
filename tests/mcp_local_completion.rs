@@ -7,11 +7,19 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Mutex, MutexGuard, OnceLock,
 };
 use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
+
+fn mcp_local_completion_test_guard() -> MutexGuard<'static, ()> {
+    static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    TEST_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("mcp local completion test lock poisoned")
+}
 
 fn docdex_bin() -> PathBuf {
     std::env::set_var("DOCDEX_CLI_LOCAL", "1");
@@ -64,7 +72,7 @@ fn pick_free_port() -> Option<u16> {
 fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
     let client = Client::builder().timeout(Duration::from_secs(1)).build()?;
     let url = format!("http://{host}:{port}/healthz");
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
         match client.get(&url).send() {
             Ok(resp) if resp.status().is_success() => return Ok(()),
@@ -224,6 +232,7 @@ fn write_config(path: &Path, ollama_port: u16) -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn mcp_local_completion_tool_returns_output() -> Result<(), Box<dyn Error>> {
+    let _serial = mcp_local_completion_test_guard();
     let temp = TempDir::new()?;
     let repo_root = temp.path().join("repo");
     let state_root = temp.path().join("state");
@@ -262,8 +271,10 @@ fn mcp_local_completion_tool_returns_output() -> Result<(), Box<dyn Error>> {
         .post(format!("http://127.0.0.1:{port}/v1/mcp"))
         .json(&payload)
         .send()?;
-    assert!(resp.status().is_success());
-    let body: Value = resp.json()?;
+    let status = resp.status();
+    let body_text = resp.text()?;
+    assert!(status.is_success(), "status={status} body={body_text}");
+    let body: Value = serde_json::from_str(&body_text)?;
     let text = body
         .get("result")
         .and_then(|value| value.get("content"))
@@ -320,6 +331,7 @@ fn mcp_local_completion_tool_returns_output() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn mcp_local_completion_failure_updates_telemetry() -> Result<(), Box<dyn Error>> {
+    let _serial = mcp_local_completion_test_guard();
     let temp = TempDir::new()?;
     let repo_root = temp.path().join("repo");
     let state_root = temp.path().join("state");
@@ -358,8 +370,10 @@ fn mcp_local_completion_failure_updates_telemetry() -> Result<(), Box<dyn Error>
         .post(format!("http://127.0.0.1:{port}/v1/mcp"))
         .json(&payload)
         .send()?;
-    assert!(resp.status().is_success());
-    let body: Value = resp.json()?;
+    let status = resp.status();
+    let body_text = resp.text()?;
+    assert!(status.is_success(), "status={status} body={body_text}");
+    let body: Value = serde_json::from_str(&body_text)?;
     assert!(
         body.get("error").is_some(),
         "expected MCP tool error response"

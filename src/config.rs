@@ -53,6 +53,8 @@ const DEFAULT_PERSONAL_PREFERENCES_MAX_PARALLEL_DIGEST_JOBS: usize = 1;
 const DEFAULT_PERSONAL_PREFERENCES_DIGEST_INTERVAL_SECONDS: u64 = 30;
 const DEFAULT_PERSONAL_PREFERENCES_RAW_RETENTION_DAYS: u32 = 0;
 const DEFAULT_PERSONAL_PREFERENCES_DERIVED_RETENTION_DAYS: u32 = 0;
+const DEFAULT_USER_MEMORY_SYNC_PULL_INTERVAL_SECONDS: u64 = 300;
+const DEFAULT_USER_MEMORY_SYNC_MAX_UPLOAD_BYTES_PER_CYCLE: usize = 2 * 1024 * 1024;
 const DEFAULT_DISCOVERY_PROVIDER: &str = "duckduckgo_lite";
 const DEFAULT_WEB_ENGINE: &str = "chromium";
 const DEFAULT_MSWARM_BASE_URL: &str = "https://api.mswarm.org/";
@@ -113,6 +115,7 @@ struct MemoryConfigWrite<'a> {
     backend: &'a str,
     profile: &'a MemoryProfileConfig,
     conversations: &'a MemoryConversationConfig,
+    user_memory_sync: &'a MemoryUserSyncConfig,
 }
 
 impl<'a> From<&'a AppConfig> for AppConfigWrite<'a> {
@@ -128,6 +131,7 @@ impl<'a> From<&'a AppConfig> for AppConfigWrite<'a> {
                 backend: config.memory.backend.as_str(),
                 profile: &config.memory.profile,
                 conversations: &config.memory.conversations,
+                user_memory_sync: &config.memory.user_memory_sync,
             },
             features: &config.features,
             server: &config.server,
@@ -373,6 +377,61 @@ impl AppConfig {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned);
+        self.memory.user_memory_sync.server_base_url = self
+            .memory
+            .user_memory_sync
+            .server_base_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        self.memory.user_memory_sync.api_key_env = self
+            .memory
+            .user_memory_sync
+            .api_key_env
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        self.memory.user_memory_sync.encryption_key_env = self
+            .memory
+            .user_memory_sync
+            .encryption_key_env
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        self.memory.user_memory_sync.device_id = self
+            .memory
+            .user_memory_sync
+            .device_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        self.memory
+            .user_memory_sync
+            .enabled_lanes
+            .retain(|item| !item.trim().is_empty());
+        for lane in &mut self.memory.user_memory_sync.enabled_lanes {
+            *lane = lane.trim().to_ascii_lowercase();
+        }
+        if self.memory.user_memory_sync.pull_interval_seconds == 0 {
+            warn!(
+                target: "docdexd",
+                "memory.user_memory_sync.pull_interval_seconds must be > 0; using default"
+            );
+            self.memory.user_memory_sync.pull_interval_seconds =
+                default_user_memory_sync_pull_interval_seconds();
+        }
+        if self.memory.user_memory_sync.max_upload_bytes_per_cycle == 0 {
+            warn!(
+                target: "docdexd",
+                "memory.user_memory_sync.max_upload_bytes_per_cycle must be > 0; using default"
+            );
+            self.memory.user_memory_sync.max_upload_bytes_per_cycle =
+                default_user_memory_sync_max_upload_bytes_per_cycle();
+        }
         if self.code_intelligence.dynamic_import_scan_limit == 0 {
             warn!(
                 target: "docdexd",
@@ -882,6 +941,8 @@ pub struct MemoryConfig {
     pub conversations: MemoryConversationConfig,
     #[serde(default)]
     pub personal_preferences: MemoryPersonalPreferencesConfig,
+    #[serde(default)]
+    pub user_memory_sync: MemoryUserSyncConfig,
 }
 
 impl Default for MemoryConfig {
@@ -892,6 +953,7 @@ impl Default for MemoryConfig {
             profile: MemoryProfileConfig::default(),
             conversations: MemoryConversationConfig::default(),
             personal_preferences: MemoryPersonalPreferencesConfig::default(),
+            user_memory_sync: MemoryUserSyncConfig::default(),
         }
     }
 }
@@ -1019,6 +1081,28 @@ pub struct MemoryPersonalPreferencesConfig {
     pub raw_retention_days: u32,
     #[serde(default = "default_personal_preferences_derived_retention_days")]
     pub derived_retention_days: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryUserSyncConfig {
+    #[serde(default = "default_user_memory_sync_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub server_base_url: Option<String>,
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+    #[serde(default)]
+    pub encryption_key_env: Option<String>,
+    #[serde(default)]
+    pub device_id: Option<String>,
+    #[serde(default)]
+    pub enabled_lanes: Vec<String>,
+    #[serde(default = "default_user_memory_sync_raw_evidence_enabled")]
+    pub raw_evidence_enabled: bool,
+    #[serde(default = "default_user_memory_sync_pull_interval_seconds")]
+    pub pull_interval_seconds: u64,
+    #[serde(default = "default_user_memory_sync_max_upload_bytes_per_cycle")]
+    pub max_upload_bytes_per_cycle: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1150,6 +1234,22 @@ impl Default for MemoryPersonalPreferencesConfig {
             source_denylist: Vec::new(),
             raw_retention_days: default_personal_preferences_raw_retention_days(),
             derived_retention_days: default_personal_preferences_derived_retention_days(),
+        }
+    }
+}
+
+impl Default for MemoryUserSyncConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_user_memory_sync_enabled(),
+            server_base_url: None,
+            api_key_env: None,
+            encryption_key_env: None,
+            device_id: None,
+            enabled_lanes: Vec::new(),
+            raw_evidence_enabled: default_user_memory_sync_raw_evidence_enabled(),
+            pull_interval_seconds: default_user_memory_sync_pull_interval_seconds(),
+            max_upload_bytes_per_cycle: default_user_memory_sync_max_upload_bytes_per_cycle(),
         }
     }
 }

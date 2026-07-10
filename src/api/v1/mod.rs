@@ -22,5 +22,6 @@ pub(crate) mod shared;
 pub mod source_files;
 pub mod symbols;
 pub mod telemetry;
+pub mod user_memory_sync;
 pub mod wakeup;
 pub mod web;

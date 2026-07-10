@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.2.85
+- Add a packaged disabled-by-default encrypted user-memory sync preview with config/status/dry-run support, bundle generation, and server-store register, push, feed, apply, and ack endpoints.
+- Scope packaged hosted user-memory sync requests through external API-key introspection, including user-memory sync scope checks and a canonical hashed principal so multiple API keys for one user merge into one feed.
+- Add packaged AES-256-GCM payload envelopes, local decrypt/AAD/hash verification, profile-memory down-sync apply with embedding rebuild and last-write-wins import, and applied/skipped ledger tracking.
+- Document packaged production plan, progress, and threat model boundaries; non-profile lanes currently sync as encrypted inventory/policy events until safe importers are implemented.
+- Harden packaged release validation by widening daemon health waits under full-suite load and serializing MCP local-completion daemon tests that contend for local SQLite state.
+- Upgrade the packaged tar extraction dependency to `tar` 7.5.19 so production npm audit is clean before publish.
+- Bump packaged release metadata to 0.2.85.
+
 ## 0.2.84
 - Distinguish packaged daemon startup-in-progress locks from healthy already-running daemons so `docdexd daemon` tells clients to wait for `/healthz` and `/v1/mcp` readiness instead of advertising an unavailable MCP endpoint.
 - Harden packaged npm postinstall daemon readiness checks by requiring both `/healthz` and the streamable MCP `/v1/mcp` route before treating a started or reused daemon as ready.

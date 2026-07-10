@@ -66,7 +66,7 @@ fn pick_free_port() -> Option<u16> {
 fn wait_for_health(port: u16) -> Result<(), Box<dyn Error>> {
     let client = Client::builder().timeout(Duration::from_secs(1)).build()?;
     let url = format!("http://127.0.0.1:{port}/healthz");
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
         match client.get(&url).send() {
             Ok(resp) if resp.status().is_success() => return Ok(()),
@@ -138,7 +138,7 @@ fn post_initialize(
     root_uri: &str,
 ) -> Result<reqwest::blocking::Response, Box<dyn Error>> {
     let url = format!("http://127.0.0.1:{port}/v1/initialize");
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     let mut last_err: Option<reqwest::Error> = None;
     while Instant::now() < deadline {
         match client

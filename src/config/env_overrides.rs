@@ -79,6 +79,38 @@ pub(crate) fn apply_env_overrides(config: &mut AppConfig) {
             .personal_preferences
             .content_encryption_key_env = Some(value);
     }
+    if let Some(value) = env_bool("DOCDEX_USER_MEMORY_SYNC_ENABLED") {
+        config.memory.user_memory_sync.enabled = value;
+    }
+    if let Some(value) = env_trimmed("DOCDEX_USER_MEMORY_SYNC_SERVER_BASE_URL") {
+        config.memory.user_memory_sync.server_base_url = Some(value);
+    }
+    if let Some(value) = env_trimmed("DOCDEX_USER_MEMORY_SYNC_API_KEY_ENV") {
+        config.memory.user_memory_sync.api_key_env = Some(value);
+    }
+    if let Some(value) = env_trimmed("DOCDEX_USER_MEMORY_SYNC_ENCRYPTION_KEY_ENV") {
+        config.memory.user_memory_sync.encryption_key_env = Some(value);
+    }
+    if let Some(value) = env_trimmed("DOCDEX_USER_MEMORY_SYNC_DEVICE_ID") {
+        config.memory.user_memory_sync.device_id = Some(value);
+    }
+    if let Some(value) = env_trimmed("DOCDEX_USER_MEMORY_SYNC_LANES") {
+        config.memory.user_memory_sync.enabled_lanes = value
+            .split(',')
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(ToOwned::to_owned)
+            .collect();
+    }
+    if let Some(value) = env_bool("DOCDEX_USER_MEMORY_SYNC_RAW_EVIDENCE_ENABLED") {
+        config.memory.user_memory_sync.raw_evidence_enabled = value;
+    }
+    if let Some(value) = env_u64("DOCDEX_USER_MEMORY_SYNC_PULL_INTERVAL_SECONDS") {
+        config.memory.user_memory_sync.pull_interval_seconds = value;
+    }
+    if let Some(value) = env_usize("DOCDEX_USER_MEMORY_SYNC_MAX_UPLOAD_BYTES_PER_CYCLE") {
+        config.memory.user_memory_sync.max_upload_bytes_per_cycle = value;
+    }
     if let Some(value) = env_trimmed("DOCDEX_WEB_DISCOVERY_PROVIDER") {
         config.web.discovery_provider = value;
     }

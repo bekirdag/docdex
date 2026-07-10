@@ -30,6 +30,11 @@ const DEFAULT_EXTERNAL_TIMEOUT_MS: u64 = 3_000;
 const DEFAULT_EXTERNAL_REQUIRED_STATUS: &str = "active";
 const DEFAULT_SERVICE_TOKEN_ENV: &str = "DOCDEX_ADMIN_SERVICE_TOKEN";
 const API_KEY_HEADER: &str = "x-api-key";
+const USER_MEMORY_SYNC_REQUIRED_SCOPES: [&str; 3] = [
+    "docdex:user_memory:sync",
+    "docdex:user-memory:sync",
+    "docdex:memory:sync",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -775,8 +780,55 @@ impl AuthRuntime {
                 "credential did not match an enabled auth provider",
             ));
         }
-        let ctx = self.introspect_external(&material, repo_id).await?;
+        let ctx = self
+            .introspect_external_resource(
+                &material,
+                json!({
+                    "type": "docdex_repo",
+                    "id": repo_id,
+                }),
+            )
+            .await?;
         self.access_store.authorize(&ctx, repo_id, operation)?;
+        Ok(ctx)
+    }
+
+    pub async fn authenticate_user_memory_sync(
+        &self,
+        headers: &HeaderMap,
+    ) -> Result<AuthContext, AppError> {
+        let material = extract_credential(
+            headers,
+            &self.config.external_api_key_introspection.accepted_headers,
+            self.config.reject_ambiguous_credentials,
+        )?
+        .ok_or_else(|| AppError::new(ERR_MISSING_CREDENTIALS, "missing API credential"))?;
+
+        if !self.config.external_api_key_introspection.enabled
+            || matches!(self.config.mode, AuthMode::LocalOnly)
+        {
+            return Err(AppError::new(
+                ERR_INVALID_CREDENTIALS,
+                "external API-key introspection is required for hosted user-memory sync",
+            ));
+        }
+
+        let ctx = self
+            .introspect_external_resource(
+                &material,
+                json!({
+                    "type": "docdex_user_memory",
+                    "id": "self",
+                }),
+            )
+            .await?;
+        if !user_memory_sync_scopes_satisfied(&ctx.scopes) {
+            return Err(AppError::new(
+                ERR_SCOPE_DENIED,
+                "credential lacks required scope for user-memory sync",
+            )
+            .with_details(json!({ "required_scopes": USER_MEMORY_SYNC_REQUIRED_SCOPES })));
+        }
         Ok(ctx)
     }
 
@@ -854,12 +906,14 @@ impl AuthRuntime {
         }))
     }
 
-    async fn introspect_external(
+    async fn introspect_external_resource(
         &self,
         material: &CredentialMaterial,
-        repo_id: &str,
+        requested_resource: Value,
     ) -> Result<AuthContext, AppError> {
-        if let Some(cached) = self.cached_introspection(material.fingerprint()) {
+        let cache_key =
+            external_introspection_cache_key(material.fingerprint(), &requested_resource);
+        if let Some(cached) = self.cached_introspection(&cache_key) {
             return cached;
         }
         let external = &self.config.external_api_key_introspection;
@@ -875,10 +929,7 @@ impl AuthRuntime {
         ]);
         let mut request = self.client.post(external.url.trim()).json(&json!({
             "api_key": material.raw,
-            "requested_resource": {
-                "type": "docdex_repo",
-                "id": repo_id
-            }
+            "requested_resource": requested_resource,
         }));
         if let Some(token) = service_token.as_deref() {
             request = request.bearer_auth(token);
@@ -890,7 +941,7 @@ impl AuthRuntime {
                 format!("external API-key introspection unavailable: {err}"),
             )),
         };
-        self.store_cached_introspection(material.fingerprint(), result.clone());
+        self.store_cached_introspection(&cache_key, result.clone());
         result
     }
 
@@ -1235,6 +1286,12 @@ fn required_scopes_satisfied(required: &[String], actual: &[String]) -> bool {
         .all(|required| actual.iter().any(|scope| scope_satisfies(scope, required)))
 }
 
+fn user_memory_sync_scopes_satisfied(actual: &[String]) -> bool {
+    USER_MEMORY_SYNC_REQUIRED_SCOPES
+        .iter()
+        .any(|required| actual.iter().any(|scope| scope_satisfies(scope, required)))
+}
+
 fn scope_satisfies(actual: &str, required: &str) -> bool {
     actual == "*"
         || actual == required
@@ -1242,6 +1299,17 @@ fn scope_satisfies(actual: &str, required: &str) -> bool {
             .strip_suffix(":*")
             .map(|prefix| required.starts_with(&format!("{prefix}:")))
             .unwrap_or(false)
+}
+
+fn external_introspection_cache_key(fingerprint: &str, requested_resource: &Value) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"docdex.auth.external_introspection.cache.v2\0");
+    hasher.update(fingerprint.as_bytes());
+    hasher.update([0]);
+    if let Ok(bytes) = serde_json::to_vec(requested_resource) {
+        hasher.update(bytes);
+    }
+    hex::encode(hasher.finalize())
 }
 
 fn row_to_binding(row: &rusqlite::Row<'_>) -> rusqlite::Result<RepoAccessBinding> {
@@ -1519,5 +1587,20 @@ mod tests {
         )
         .expect_err("missing credential id should fail");
         assert_eq!(err.code, ERR_INVALID_CREDENTIALS);
+    }
+
+    #[test]
+    fn user_memory_sync_scope_allows_exact_and_wildcard_values() {
+        assert!(user_memory_sync_scopes_satisfied(&[
+            "docdex:user_memory:sync".to_string()
+        ]));
+        assert!(user_memory_sync_scopes_satisfied(&[
+            "docdex:user_memory:*".to_string()
+        ]));
+        assert!(user_memory_sync_scopes_satisfied(&["docdex:*".to_string()]));
+        assert!(user_memory_sync_scopes_satisfied(&["*".to_string()]));
+        assert!(!user_memory_sync_scopes_satisfied(&[
+            "docdex:repo:search".to_string()
+        ]));
     }
 }

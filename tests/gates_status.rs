@@ -108,7 +108,7 @@ fn gates_status_payload_has_expected_shape() -> Result<(), Box<dyn Error>> {
 }
 
 fn wait_for_health(host: &str, port: u16, child: &mut Child) -> Result<(), Box<dyn Error>> {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
         if let Some(status) = child.try_wait()? {
             let mut stderr = String::new();

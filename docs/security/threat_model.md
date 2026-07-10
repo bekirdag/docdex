@@ -42,6 +42,14 @@
 - Data corruption: SQLite export/merge for network shares, atomic state writes.
 - Advisory exceptions: `RUSTSEC-2025-0009` ignored because Docdex does not enable QUIC; tracked in `audit.toml`.
 
+## User Memory Sync Addendum
+- Assets: user-memory sync events, device registrations, feed cursors, profile-memory payloads, personal-preferences and mind-clone inventory summaries, payload encryption keys, and mswarm API-key identity descriptors.
+- Identity boundary: the configured mswarm API key is an identity credential only. Local diagnostics may expose a short namespaced fingerprint, but raw keys must not be stored in sync DBs, logs, memory records, payloads, errors, or docs. Hosted sync resolves request credentials through server-side introspection and scopes, then keys feeds by a hash of the canonical `issuer + principal_id`.
+- Payload boundary: cleartext sync payload envelopes are rejected. Decryptable local profile apply requires a dedicated `memory.user_memory_sync.encryption_key_env` key, authenticated event metadata, and payload-hash verification. The mswarm API key must never be reused as payload encryption material.
+- Down-sync safety: local apply excludes the current device by default to prevent echo loops, mutates only supported encrypted profile records, rebuilds embeddings locally instead of trusting remote vectors, and records unsupported lanes as skipped rather than importing them without lane-specific validation.
+- Isolation risks: per-user server feeds are scoped by the canonical introspected principal, not by caller-provided user ids, when request credentials are present. Device revocation, API-key revocation, and missing scopes must fail closed for push, feed, apply, ack, and clone-context reads.
+- Sensitive-lane risks: raw transcripts, repo source, terminal logs, secrets, connector payloads, local embeddings/indexes, and build artifacts remain excluded by default. Future personal-preferences, mind-clone, diary, KG, and generated-skill importers need redaction, tombstone, review-state, and provenance checks before they can mutate local stores.
+
 ## Assumptions
 - Daemon runs on trusted host with least privilege.
 - Users manage OS-level access to the repo and state directories.

@@ -721,6 +721,7 @@ impl AuthRuntime {
             "/search"
                 | "/v1/search/batch"
                 | "/v1/search/rerank"
+                | "/v1/index/delete"
                 | "/v1/chat/completions"
                 | "/v1/mcp"
                 | "/v1/mcp/message"

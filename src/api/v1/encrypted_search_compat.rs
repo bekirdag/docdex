@@ -15,10 +15,13 @@ use std::{
 use tracing::warn;
 use uuid::Uuid;
 
+use crate::auth::RepoOperation;
 use crate::error::{ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MEMORY_DISABLED};
 use crate::http_api::{json_error, repo_error_response, resolve_repo_context};
 use crate::index::Indexer;
-use crate::search::{AppState, RankingSurface, RepoIdQuery, RequestId};
+use crate::search::{
+    authorize_encrypted_repo_http, AppState, RankingSurface, RepoIdQuery, RequestId,
+};
 
 const FILES_DEFAULT_LIMIT: usize = 200;
 const FILES_MAX_LIMIT: usize = 1000;
@@ -347,6 +350,18 @@ pub(crate) async fn index_delete_compat_handler(
         Ok(repo) => repo,
         Err(err) => return repo_error_response(err),
     };
+    if let Err(response) = authorize_encrypted_repo_http(
+        &state,
+        &headers,
+        &repo,
+        RepoOperation::Index,
+        None,
+        "/v1/index/delete",
+    )
+    .await
+    {
+        return response;
+    }
     let paths = match normalize_index_paths(&payload.paths) {
         Ok(paths) => paths,
         Err(response) => return response,

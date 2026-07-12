@@ -3383,7 +3383,7 @@ async fn capabilities_handler(State(state): State<AppState>) -> impl IntoRespons
     ))
 }
 
-async fn authorize_encrypted_repo_http(
+pub(crate) async fn authorize_encrypted_repo_http(
     state: &AppState,
     headers: &HeaderMap,
     repo: &RepoContext,

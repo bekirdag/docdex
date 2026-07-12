@@ -1302,17 +1302,41 @@ impl MemoryPersonalPreferencesConfig {
 
     pub fn resolved_storage_root(&self, global_state_dir: Option<&Path>) -> Result<PathBuf> {
         let configured = self.storage_root.trim();
-        if !configured.is_empty() {
+        let is_default_location = configured == default_personal_preferences_storage_root();
+        if !configured.is_empty() && !(is_default_location && global_state_dir.is_some()) {
             return expand_config_path(configured, global_state_dir);
         }
         let state_dir = match global_state_dir {
             Some(path) => path.to_path_buf(),
             None => default_state_dir()?,
         };
-        Ok(crate::state_layout::personal_preferences_root_for_base(
-            &state_dir,
-        ))
+        let scoped_root = crate::state_layout::personal_preferences_root_for_base(&state_dir);
+        if is_default_location {
+            let legacy_root = expand_config_path(configured, None)?;
+            return Ok(prefer_legacy_personal_preferences_store(
+                scoped_root,
+                legacy_root,
+            ));
+        }
+        Ok(scoped_root)
     }
+}
+
+fn prefer_legacy_personal_preferences_store(scoped_root: PathBuf, legacy_root: PathBuf) -> PathBuf {
+    const DB_FILE: &str = "personal_preferences.db";
+    if scoped_root != legacy_root
+        && !scoped_root.join(DB_FILE).is_file()
+        && legacy_root.join(DB_FILE).is_file()
+    {
+        warn!(
+            target: "docdexd",
+            legacy_root = %legacy_root.display(),
+            scoped_root = %scoped_root.display(),
+            "using the existing legacy personal-preferences store; set memory.personal_preferences.storage_root explicitly to migrate or isolate it"
+        );
+        return legacy_root;
+    }
+    scoped_root
 }
 
 impl Default for MemoryConversationGraphConfig {
@@ -1724,6 +1748,68 @@ fn default_web_cache_ttl_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_personal_preferences_storage_follows_explicit_global_state_without_legacy_data() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let global_state = temp.path().join("docdex-test-global");
+        let scoped_root = crate::state_layout::personal_preferences_root_for_base(&global_state);
+        let legacy_root = temp.path().join("legacy-personal-preferences");
+
+        assert_eq!(
+            prefer_legacy_personal_preferences_store(scoped_root, legacy_root),
+            global_state.join("personal_preferences")
+        );
+    }
+
+    #[test]
+    fn existing_legacy_personal_preferences_store_wins_until_explicit_migration() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let scoped_root = temp.path().join("custom-state/personal_preferences");
+        let legacy_root = temp.path().join("legacy-personal-preferences");
+        std::fs::create_dir_all(&legacy_root).expect("create legacy root");
+        std::fs::write(
+            legacy_root.join("personal_preferences.db"),
+            b"existing store marker",
+        )
+        .expect("write legacy database marker");
+
+        assert_eq!(
+            prefer_legacy_personal_preferences_store(scoped_root, legacy_root.clone()),
+            legacy_root
+        );
+    }
+
+    #[test]
+    fn scoped_personal_preferences_store_wins_when_both_locations_exist() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let scoped_root = temp.path().join("custom-state/personal_preferences");
+        let legacy_root = temp.path().join("legacy-personal-preferences");
+        std::fs::create_dir_all(&scoped_root).expect("create scoped root");
+        std::fs::create_dir_all(&legacy_root).expect("create legacy root");
+        std::fs::write(scoped_root.join("personal_preferences.db"), b"scoped")
+            .expect("write scoped database marker");
+        std::fs::write(legacy_root.join("personal_preferences.db"), b"legacy")
+            .expect("write legacy database marker");
+
+        assert_eq!(
+            prefer_legacy_personal_preferences_store(scoped_root.clone(), legacy_root),
+            scoped_root
+        );
+    }
+
+    #[test]
+    fn custom_personal_preferences_storage_overrides_global_state() {
+        let mut config = MemoryPersonalPreferencesConfig::default();
+        config.storage_root = "/tmp/docdex-custom-preferences".to_string();
+
+        assert_eq!(
+            config
+                .resolved_storage_root(Some(Path::new("/tmp/docdex-test-global")))
+                .expect("resolve custom personal-preferences root"),
+            PathBuf::from("/tmp/docdex-custom-preferences")
+        );
+    }
 
     #[test]
     fn repo_encryption_config_defaults_are_disabled() {

@@ -15,6 +15,15 @@ DOCDEX_MOUNT="${DOCDEX_MOUNT:-/mnt/docdex}"
 DOCDEX_ENV_DIR="${DOCDEX_ENV_DIR:-/etc/docdex}"
 DOCDEX_ENV_FILE="${DOCDEX_ENV_FILE:-${DOCDEX_ENV_DIR}/docdex.env}"
 
+if [[ ! "${DOCDEX_USER}" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+  echo "DOCDEX_USER must be a valid local username" >&2
+  exit 2
+fi
+if [[ ! "${DEPLOY_USER}" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+  echo "DEPLOY_USER must be a valid local username" >&2
+  exit 2
+fi
+
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
@@ -46,7 +55,8 @@ install -d -m 0750 -o "${DOCDEX_USER}" -g "${DOCDEX_USER}" \
   "${DOCDEX_MOUNT}/logs"
 install -d -m 0750 -o root -g "${DOCDEX_USER}" "${DOCDEX_ENV_DIR}"
 install -d -m 0755 -o root -g root /var/www/html
-install -d -m 0700 -o "${DEPLOY_USER}" -g "${DEPLOY_USER}" "/home/${DEPLOY_USER}/docdex-releases"
+install -d -m 0755 -o root -g root /var/lib/docdex-deploy
+install -d -m 0700 -o "${DEPLOY_USER}" -g "${DEPLOY_USER}" /var/lib/docdex-deploy/incoming
 
 if [[ ! -f "${DOCDEX_ENV_FILE}" ]]; then
   token="$(openssl rand -base64 48 | tr -d '\n')"

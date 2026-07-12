@@ -14,6 +14,7 @@ const {
   warnCodexRestart,
   configUrlForPort,
   configStreamableUrlForPort,
+  resolveDaemonPort,
   runPostInstallSetup,
   resolveDaemonPortState,
   normalizeVersion,
@@ -34,6 +35,27 @@ const {
   waitForDaemonReady
 } = require("../lib/postinstall_setup");
 
+async function withTempHome(prefix, callback) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const keys = ["HOME", "USERPROFILE", "APPDATA"];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  process.env.HOME = dir;
+  process.env.USERPROFILE = dir;
+  process.env.APPDATA = path.join(dir, "AppData", "Roaming");
+  try {
+    return await callback(dir);
+  } finally {
+    for (const key of keys) {
+      if (previous[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = previous[key];
+      }
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 test("upsertServerConfig adds server section when missing", () => {
   const updated = upsertServerConfig("", "127.0.0.1:3000");
   assert.ok(updated.includes("[server]"));
@@ -49,6 +71,99 @@ test("parseServerBind reads existing http_bind_addr", () => {
 test("config helpers use loopback ip to match the default daemon bind", () => {
   assert.equal(configUrlForPort(3000), "http://127.0.0.1:3000/sse");
   assert.equal(configStreamableUrlForPort(3000), "http://127.0.0.1:3000/v1/mcp");
+});
+
+test("resolveDaemonPort preserves the default and accepts valid overrides", () => {
+  assert.equal(resolveDaemonPort({}), 28491);
+  assert.equal(resolveDaemonPort({ DOCDEX_DAEMON_PORT: "" }), 28491);
+  assert.equal(resolveDaemonPort({ DOCDEX_DAEMON_PORT: "  " }), 28491);
+  assert.equal(resolveDaemonPort({ DOCDEX_DAEMON_PORT: "1" }), 1);
+  assert.equal(resolveDaemonPort({ DOCDEX_DAEMON_PORT: " 45123 " }), 45123);
+  assert.equal(resolveDaemonPort({ DOCDEX_DAEMON_PORT: "65535" }), 65535);
+});
+
+test("resolveDaemonPort rejects malformed or out-of-range overrides", () => {
+  for (const value of ["0", "65536", "-1", "+1", "1.5", "1e3", "abc", "NaN"]) {
+    assert.throws(
+      () => resolveDaemonPort({ DOCDEX_DAEMON_PORT: value }),
+      /DOCDEX_DAEMON_PORT must be a base-10 integer between 1 and 65535/
+    );
+  }
+});
+
+test("runPostInstallSetup forwards a custom daemon port to lifecycle and generated configs", async () => {
+  await withTempHome("docdex-postinstall-port-", async (dir) => {
+    const calls = [];
+    const result = await runPostInstallSetup({
+      binaryPath: process.execPath,
+      logger: { warn: () => {} },
+      env: {
+        ...process.env,
+        DOCDEX_DAEMON_PORT: "45123",
+        DOCDEX_SETUP_SKIP: "1"
+      },
+      deps: {
+        cleanupExistingDaemon: async (options) => {
+          calls.push(["cleanup", options.port]);
+          return true;
+        },
+        resolveDaemonPortState: async (options) => {
+          calls.push(["resolve", options.port]);
+          return { available: true, reuseExisting: false };
+        },
+        startDaemonWithHealthCheck: async (options) => {
+          calls.push(["start", options.port]);
+          return { ok: true, reason: "ready" };
+        }
+      }
+    });
+
+    assert.deepEqual(calls, [
+      ["cleanup", 45123],
+      ["resolve", 45123],
+      ["start", 45123]
+    ]);
+    assert.equal(result.port, 45123);
+    assert.equal(result.url, "http://127.0.0.1:45123/sse");
+    assert.ok(
+      fs.readFileSync(path.join(dir, ".docdex", "config.toml"), "utf8")
+        .includes('http_bind_addr = "127.0.0.1:45123"')
+    );
+    const cursor = JSON.parse(fs.readFileSync(path.join(dir, ".cursor", "mcp.json"), "utf8"));
+    assert.equal(cursor.mcpServers.docdex.url, "http://127.0.0.1:45123/sse");
+  });
+});
+
+test("isolated daemon lifecycle bypasses global cleanup and service registration", async () => {
+  await withTempHome("docdex-postinstall-isolated-", async () => {
+    const calls = [];
+    const forbidden = (name) => async () => {
+      calls.push(name);
+      throw new Error(`${name} must not run`);
+    };
+    const result = await runPostInstallSetup({
+      binaryPath: process.execPath,
+      logger: { warn: () => {} },
+      env: {
+        ...process.env,
+        DOCDEX_DAEMON_PORT: "45124",
+        DOCDEX_SETUP_SKIP: "1"
+      },
+      isolatedDaemonLifecycle: true,
+      deps: {
+        isPortAvailable: async (port, host) => {
+          calls.push(["isPortAvailable", host, port]);
+          return true;
+        },
+        cleanupExistingDaemon: forbidden("cleanupExistingDaemon"),
+        resolveDaemonPortState: forbidden("resolveDaemonPortState"),
+        startDaemonWithHealthCheck: forbidden("startDaemonWithHealthCheck")
+      }
+    });
+
+    assert.deepEqual(calls, [["isPortAvailable", "127.0.0.1", 45124]]);
+    assert.equal(result.port, 45124);
+  });
 });
 
 test("upsertMcpServerJson sets docdex url", () => {

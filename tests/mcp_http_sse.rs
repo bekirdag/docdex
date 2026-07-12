@@ -16,6 +16,24 @@ struct Daemon {
     child: Child,
 }
 
+#[cfg(unix)]
+impl Daemon {
+    fn terminate_and_wait(&mut self, timeout: Duration) -> Result<bool, Box<dyn Error>> {
+        let rc = unsafe { nix::libc::kill(self.child.id() as i32, nix::libc::SIGTERM) };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if self.child.try_wait()?.is_some() {
+                return Ok(true);
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        Ok(false)
+    }
+}
+
 impl Drop for Daemon {
     fn drop(&mut self) {
         let _ = self.child.kill();
@@ -59,9 +77,36 @@ fn write_repo(repo_root: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[test]
+#[cfg(unix)]
+fn sigterm_forces_a_bounded_shutdown_with_an_open_sse_stream() -> Result<(), Box<dyn Error>> {
+    let repo = TempDir::new()?;
+    write_repo(repo.path())?;
+    let state_root = TempDir::new()?;
+    let Some((mut daemon, port)) = start_daemon_with_health(state_root.path(), repo.path())? else {
+        return Ok(());
+    };
+    let client = Client::builder().timeout(Duration::from_secs(3)).build()?;
+    let stream = client
+        .get(format!("http://127.0.0.1:{port}/v1/mcp/sse"))
+        .send()?;
+    assert!(stream.status().is_success());
+
+    assert!(
+        daemon.terminate_and_wait(Duration::from_secs(8))?,
+        "daemon did not exit within the bounded SSE drain window"
+    );
+    drop(stream);
+    Ok(())
+}
+
 fn start_daemon(state_root: &Path, repo_root: &Path, port: u16) -> Result<Daemon, Box<dyn Error>> {
     let lock_path = state_root.join("daemon.lock");
+    let isolated_home = state_root.join("home");
+    std::fs::create_dir_all(&isolated_home)?;
     let child = Command::new(docdex_bin())
+        .env("HOME", &isolated_home)
+        .env("USERPROFILE", &isolated_home)
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
@@ -333,33 +378,23 @@ fn mcp_http_sse_roundtrip() -> Result<(), Box<dyn Error>> {
         "method": "tools/call",
         "params": { "name": "docdex_stats", "arguments": { "project_root": repo.path() } }
     });
-    let stats_override_resp = send_tools_call_with_backoff(
-        &client,
-        &mut reader,
-        &session_id,
-        port,
-        &stats_override_payload,
-        MCP_HTTP_RESPONSE_TIMEOUT,
-    )?;
-    let stats_override_text = stats_override_resp
-        .get("result")
-        .and_then(|value| value.get("content"))
-        .and_then(|value| value.as_array())
-        .and_then(|value| value.first())
-        .and_then(|value| value.get("text"))
+    let stats_override_resp = client
+        .post(format!("http://127.0.0.1:{port}/v1/mcp/message"))
+        .header("x-docdex-mcp-session", session_id.clone())
+        .json(&stats_override_payload)
+        .send()?;
+    assert_eq!(
+        stats_override_resp.status(),
+        reqwest::StatusCode::BAD_REQUEST
+    );
+    let stats_override_body: serde_json::Value = stats_override_resp.json()?;
+    let stats_override_message = stats_override_body
+        .pointer("/error/message")
         .and_then(|value| value.as_str())
-        .ok_or_else(|| format!("stats override missing content: {stats_override_resp}"))?;
-    let stats_override_json: serde_json::Value = serde_json::from_str(stats_override_text)
-        .map_err(|err| format!("stats override invalid json ({err}): {stats_override_text}"))?;
-    let override_root = stats_override_json
-        .get("project_root")
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| format!("stats override missing project_root: {stats_override_json}"))?;
-    let expected_override_root = normalize_windows_path(&canonical_display(repo.path()));
-    let reported_override_root = normalize_windows_path(override_root);
+        .unwrap_or("");
     assert!(
-        reported_override_root.contains(&expected_override_root),
-        "stats override project_root mismatch: {override_root}"
+        stats_override_message.contains("different repository"),
+        "cross-repo session override was not rejected: {stats_override_body}"
     );
 
     let stats_followup_payload = json!({
@@ -392,7 +427,7 @@ fn mcp_http_sse_roundtrip() -> Result<(), Box<dyn Error>> {
         .ok_or_else(|| format!("stats followup missing project_root: {stats_followup_json}"))?;
     let reported_followup_root = normalize_windows_path(followup_root);
     assert!(
-        reported_followup_root.contains(&expected_override_root),
+        reported_followup_root.contains(&expected_root),
         "stats followup project_root mismatch: {followup_root}"
     );
 
@@ -400,7 +435,7 @@ fn mcp_http_sse_roundtrip() -> Result<(), Box<dyn Error>> {
         "jsonrpc": "2.0",
         "id": 6,
         "method": "docdex_stats",
-        "params": { "project_root": repo.path() }
+        "params": { "project_root": repo_other.path() }
     });
     let legacy_stats_resp = send_tools_call_with_backoff(
         &client,
@@ -426,7 +461,7 @@ fn mcp_http_sse_roundtrip() -> Result<(), Box<dyn Error>> {
         .ok_or_else(|| format!("legacy stats missing project_root: {legacy_stats_json}"))?;
     let reported_legacy_root = normalize_windows_path(legacy_root);
     assert!(
-        reported_legacy_root.contains(&expected_override_root),
+        reported_legacy_root.contains(&expected_root),
         "legacy stats project_root mismatch: {legacy_root}"
     );
 
@@ -434,7 +469,7 @@ fn mcp_http_sse_roundtrip() -> Result<(), Box<dyn Error>> {
         "jsonrpc": "2.0",
         "id": 7,
         "method": "docdex.stats",
-        "params": { "project_root": repo.path() }
+        "params": { "project_root": repo_other.path() }
     });
     let legacy_dot_resp = send_tools_call_with_backoff(
         &client,
@@ -460,7 +495,7 @@ fn mcp_http_sse_roundtrip() -> Result<(), Box<dyn Error>> {
         .ok_or_else(|| format!("legacy dot stats missing project_root: {legacy_dot_json}"))?;
     let reported_legacy_dot_root = normalize_windows_path(legacy_dot_root);
     assert!(
-        reported_legacy_dot_root.contains(&expected_override_root),
+        reported_legacy_dot_root.contains(&expected_root),
         "legacy dot stats project_root mismatch: {legacy_dot_root}"
     );
 

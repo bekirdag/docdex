@@ -76,7 +76,9 @@ async fn run_setup() -> Result<()> {
 async fn run_install() -> Result<()> {
     let mut config = config::AppConfig::load_default()?;
     let config_path = config::default_config_path()?.to_string_lossy().to_string();
-    let install_result = browser_install::install_if_missing(true)?;
+    let install_result = tokio::task::spawn_blocking(|| browser_install::install_if_missing(true))
+        .await
+        .context("join browser installation worker")??;
     if let Some(result) = install_result.as_ref() {
         config.web.scraper.chrome_binary_path = Some(result.path.clone());
         config.web.scraper.browser_kind = Some("chromium".to_string());

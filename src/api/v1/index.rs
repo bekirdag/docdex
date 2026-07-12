@@ -62,6 +62,9 @@ pub async fn index_rebuild_handler(
         Ok(repo) => repo,
         Err(err) => return repo_error_response(err),
     };
+    if let Err(response) = super::shared::ensure_repo_index_writable(&repo) {
+        return response;
+    }
 
     let options = match payload.libs_sources.as_deref().map(str::trim) {
         Some(value) if value.is_empty() => {
@@ -148,6 +151,9 @@ pub async fn index_ingest_handler(
         Ok(repo) => repo,
         Err(err) => return repo_error_response(err),
     };
+    if let Err(response) = super::shared::ensure_repo_index_writable(&repo) {
+        return response;
+    }
 
     let file = payload.file.trim();
     if file.is_empty() {

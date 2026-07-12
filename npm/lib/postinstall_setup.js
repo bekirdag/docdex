@@ -83,6 +83,20 @@ function configStreamableUrlForPort(port) {
   return `http://${DEFAULT_HOST}:${port}/v1/mcp`;
 }
 
+function resolveDaemonPort(env = process.env) {
+  const raw = env?.DOCDEX_DAEMON_PORT;
+  if (raw == null || String(raw).trim() === "") {
+    return DEFAULT_DAEMON_PORT;
+  }
+
+  const normalized = String(raw).trim();
+  const port = Number(normalized);
+  if (!/^[0-9]+$/.test(normalized) || !Number.isSafeInteger(port) || port < 1 || port > 65535) {
+    throw new Error("DOCDEX_DAEMON_PORT must be a base-10 integer between 1 and 65535");
+  }
+  return port;
+}
+
 function isPortAvailable(port, host) {
   return new Promise((resolve) => {
     const server = net.createServer();
@@ -2991,9 +3005,26 @@ function launchSetupWizard({
   return { ok: false, reason: "unsupported_platform" };
 }
 
-async function runPostInstallSetup({ binaryPath, logger, env, skipDaemon, distBaseDir } = {}) {
+async function runPostInstallSetup({
+  binaryPath,
+  logger,
+  env,
+  skipDaemon,
+  distBaseDir,
+  isolatedDaemonLifecycle = false,
+  deps
+} = {}) {
   const log = logger || console;
   const effectiveEnv = env || process.env;
+  const lifecycle = {
+    cleanupExistingDaemon,
+    resolveDaemonPortState,
+    isPortAvailable,
+    startDaemonWithHealthCheck
+  };
+  if (deps && typeof deps === "object") {
+    Object.assign(lifecycle, deps);
+  }
   const isNpm = isNpmLifecycle(effectiveEnv);
   const distCandidates = resolveDistBaseCandidates({ env: effectiveEnv });
   const resolvedDistBaseDir = distBaseDir || resolveDistBaseDir({ env: effectiveEnv, fsModule: fs });
@@ -3003,10 +3034,18 @@ async function runPostInstallSetup({ binaryPath, logger, env, skipDaemon, distBa
   if (fs.existsSync(configPath)) {
     existingConfig = fs.readFileSync(configPath, "utf8");
   }
-  const port = DEFAULT_DAEMON_PORT;
+  const port = resolveDaemonPort(effectiveEnv);
   let portState = { available: true, reuseExisting: false };
-  if (allowDaemon) {
-    const cleaned = await cleanupExistingDaemon({
+  if (allowDaemon && isolatedDaemonLifecycle) {
+    const available = await lifecycle.isPortAvailable(port, DEFAULT_HOST);
+    if (!available) {
+      throw new Error(
+        `[docdex] ${DEFAULT_HOST}:${port} is unavailable for the isolated daemon lifecycle`
+      );
+    }
+  }
+  if (allowDaemon && !isolatedDaemonLifecycle) {
+    const cleaned = await lifecycle.cleanupExistingDaemon({
       logger: log,
       env: effectiveEnv,
       distBaseDir: resolvedDistBaseDir,
@@ -3021,8 +3060,8 @@ async function runPostInstallSetup({ binaryPath, logger, env, skipDaemon, distBa
       allowDaemon = false;
     }
   }
-  if (allowDaemon) {
-    portState = await resolveDaemonPortState({
+  if (allowDaemon && !isolatedDaemonLifecycle) {
+    portState = await lifecycle.resolveDaemonPortState({
       host: DEFAULT_HOST,
       port,
       logger: log
@@ -3050,7 +3089,7 @@ async function runPostInstallSetup({ binaryPath, logger, env, skipDaemon, distBa
     distBaseDir: resolvedDistBaseDir
   });
   let reuseExisting = allowDaemon ? portState.reuseExisting : false;
-  if (reuseExisting && allowDaemon) {
+  if (reuseExisting && allowDaemon && !isolatedDaemonLifecycle) {
     const daemonInfo = await fetchDaemonInfo({ host: DEFAULT_HOST, port });
     const daemonVersion = normalizeVersion(daemonInfo?.version);
     const packageVersion = normalizeVersion(resolvePackageVersion());
@@ -3077,9 +3116,9 @@ async function runPostInstallSetup({ binaryPath, logger, env, skipDaemon, distBa
     }
   }
   let startupOk = false;
-  if (allowDaemon) {
+  if (allowDaemon && !isolatedDaemonLifecycle) {
     const allowStartNow = !(process.platform === "win32" && isNpm);
-    const result = await startDaemonWithHealthCheck({
+    const result = await lifecycle.startDaemonWithHealthCheck({
       binaryPath: startupBinaries.binaryPath,
       port,
       host: DEFAULT_HOST,
@@ -3168,6 +3207,7 @@ module.exports = {
   warnCodexRestart,
   configUrlForPort,
   configStreamableUrlForPort,
+  resolveDaemonPort,
   parseEnvBool,
   resolveOllamaInstallMode,
   resolveOllamaModelPromptMode,

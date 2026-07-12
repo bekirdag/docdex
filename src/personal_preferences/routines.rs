@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use super::*;
 
@@ -28,6 +28,13 @@ pub(super) struct SupportedOperatorRoutineStep {
     pub(super) template: OperatorRoutineStepTemplate,
     pub(super) claim_ids: Vec<String>,
     pub(super) confidence: f32,
+}
+
+struct PreparedOperatorClaim<'a> {
+    claim: &'a PersonalPreferenceClaim,
+    search_blob: String,
+    record_type: &'a str,
+    attribute: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -264,13 +271,17 @@ pub(super) fn rebuild_operator_routines_tx(
                 && !is_sensitive_level(&claim.sensitivity)
         })
         .collect::<Vec<_>>();
+    // Routine templates compare every step with every eligible claim. Prepare
+    // the normalized claim text once per rebuild instead of rebuilding and
+    // lowercasing the same multi-field blob for every template/step pair.
+    let prepared_source_claims = prepare_operator_claims(&source_claims);
 
     let mut created = 0usize;
     for template in operator_routine_templates() {
         if suppressed_routine_keys.contains(template.key) {
             continue;
         }
-        let supported_steps = supported_operator_routine_steps(&template, &source_claims);
+        let supported_steps = supported_operator_routine_steps(&template, &prepared_source_claims);
         let mut source_claim_ids = HashSet::new();
         for step in &supported_steps {
             for claim_id in &step.claim_ids {
@@ -1114,18 +1125,48 @@ pub(super) fn operator_routine_templates() -> Vec<OperatorRoutineTemplate> {
     ]
 }
 
-pub(super) fn supported_operator_routine_steps(
+fn prepare_operator_claims<'a>(
+    claims: &[&'a PersonalPreferenceClaim],
+) -> Vec<PreparedOperatorClaim<'a>> {
+    claims
+        .iter()
+        .map(|claim| PreparedOperatorClaim {
+            claim,
+            search_blob: operator_claim_search_blob(claim),
+            record_type: claim
+                .metadata
+                .get("record_type")
+                .and_then(Value::as_str)
+                .unwrap_or("preference"),
+            attribute: claim
+                .attribute
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase(),
+        })
+        .collect()
+}
+
+fn supported_operator_routine_steps(
     template: &OperatorRoutineTemplate,
-    claims: &[&PersonalPreferenceClaim],
+    claims: &[PreparedOperatorClaim<'_>],
 ) -> Vec<SupportedOperatorRoutineStep> {
     let mut supported = Vec::new();
     for step in &template.steps {
         let mut claim_ids = Vec::new();
+        let mut seen_claim_ids = HashSet::new();
         let mut confidence_total = 0.0f32;
+        let keywords = step
+            .keywords
+            .iter()
+            .map(|keyword| keyword.to_ascii_lowercase())
+            .collect::<Vec<_>>();
         for claim in claims {
-            if operator_claim_matches_step(claim, step) && !claim_ids.contains(&claim.id) {
-                claim_ids.push(claim.id.clone());
-                confidence_total += claim.confidence;
+            if operator_claim_matches_step(claim, step, &keywords)
+                && seen_claim_ids.insert(claim.claim.id.as_str())
+            {
+                claim_ids.push(claim.claim.id.clone());
+                confidence_total += claim.claim.confidence;
             }
         }
         if !claim_ids.is_empty() {
@@ -1140,34 +1181,22 @@ pub(super) fn supported_operator_routine_steps(
     supported
 }
 
-pub(super) fn operator_claim_matches_step(
-    claim: &PersonalPreferenceClaim,
+fn operator_claim_matches_step(
+    claim: &PreparedOperatorClaim<'_>,
     step: &OperatorRoutineStepTemplate,
+    keywords: &[String],
 ) -> bool {
-    let blob = operator_claim_search_blob(claim);
-    if step
-        .keywords
+    if keywords
         .iter()
-        .any(|keyword| blob.contains(&keyword.to_ascii_lowercase()))
+        .any(|keyword| claim.search_blob.contains(keyword))
     {
         return true;
     }
-    let record_type = claim
-        .metadata
-        .get("record_type")
-        .and_then(Value::as_str)
-        .unwrap_or("preference");
-    let attribute = claim
-        .attribute
-        .as_deref()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    step.category_hints.contains(&claim.category.as_str())
-        && step.record_type_hints.contains(&record_type)
-        && step
-            .keywords
+    step.category_hints.contains(&claim.claim.category.as_str())
+        && step.record_type_hints.contains(&claim.record_type)
+        && keywords
             .iter()
-            .any(|keyword| attribute.contains(&keyword.to_ascii_lowercase()))
+            .any(|keyword| claim.attribute.contains(keyword))
 }
 
 pub(super) fn operator_claim_search_blob(claim: &PersonalPreferenceClaim) -> String {

@@ -222,14 +222,11 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
             == config::default_personal_preferences_storage_root()
         && std::env::var_os("DOCDEX_PERSONAL_PREFERENCES_STORAGE_ROOT").is_none()
     {
-        if let Some(parent) = personal_preferences_state_base
-            .as_deref()
-            .and_then(|state_dir| state_dir.parent())
-        {
-            personal_preferences_config.storage_root = parent
-                .join("personal_preferences")
-                .to_string_lossy()
-                .into_owned();
+        if let Some(state_dir) = personal_preferences_state_base.as_deref() {
+            personal_preferences_config.storage_root =
+                crate::state_layout::personal_preferences_root_for_base(state_dir)
+                    .to_string_lossy()
+                    .into_owned();
         }
         info!(
             target: "docdexd",

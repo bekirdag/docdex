@@ -2,6 +2,8 @@
 
 use std::error::Error;
 use std::ffi::OsStr;
+use std::fs::{self, File};
+use std::io::{Read, Seek, SeekFrom};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -54,6 +56,14 @@ pub fn pick_free_port() -> Option<u16> {
 }
 
 pub fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
+    wait_for_health_inner(host, port, None)
+}
+
+fn wait_for_health_inner(
+    host: &str,
+    port: u16,
+    mut child: Option<&mut Child>,
+) -> Result<(), Box<dyn Error>> {
     let client = Client::builder().timeout(Duration::from_secs(1)).build()?;
     let url = format!("http://{host}:{port}/healthz");
     let timeout_secs = std::env::var("DOCDEX_TEST_HEALTH_TIMEOUT_SECS")
@@ -62,6 +72,11 @@ pub fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
         .unwrap_or(60);
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     while Instant::now() < deadline {
+        if let Some(child) = child.as_deref_mut() {
+            if let Some(status) = child.try_wait()? {
+                return Err(format!("docdexd exited before healthz was ready: {status}").into());
+            }
+        }
         match client.get(&url).send() {
             Ok(resp) if resp.status().is_success() => return Ok(()),
             _ => thread::sleep(Duration::from_millis(200)),
@@ -70,8 +85,24 @@ pub fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
     Err("docdexd healthz endpoint did not respond in time".into())
 }
 
+fn read_log_tail(path: &Path, max_bytes: u64) -> String {
+    let Ok(mut file) = File::open(path) else {
+        return String::new();
+    };
+    let len = file.metadata().map(|meta| meta.len()).unwrap_or_default();
+    let start = len.saturating_sub(max_bytes);
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return String::new();
+    }
+    let mut bytes = Vec::with_capacity((len - start).min(max_bytes) as usize);
+    if file.read_to_end(&mut bytes).is_err() {
+        return String::new();
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
 pub struct TestServerHarness {
-    child: Child,
+    child: Option<Child>,
 }
 
 impl TestServerHarness {
@@ -96,13 +127,28 @@ impl TestServerHarness {
         extra_env: &[(&str, &str)],
     ) -> Result<Self, Box<dyn Error>> {
         let repo_arg = repo_root.to_string_lossy().to_string();
+        fs::create_dir_all(state_root)?;
+        let xdg_config_home = home_dir.join(".config");
+        let app_data = home_dir.join("AppData").join("Roaming");
+        let local_app_data = home_dir.join("AppData").join("Local");
+        fs::create_dir_all(&xdg_config_home)?;
+        fs::create_dir_all(&app_data)?;
+        fs::create_dir_all(&local_app_data)?;
+        let stderr_path = state_root.join(format!("docdexd-test-{port}.stderr.log"));
+        let stderr_file = File::create(&stderr_path)?;
         let mut command = Command::new(docdex_bin());
         command
             .env("DOCDEX_WEB_ENABLED", "0")
             .env("DOCDEX_ENABLE_MEMORY", "0")
             .env("DOCDEX_ENABLE_MCP", if enable_mcp { "1" } else { "0" })
             .env("DOCDEX_STATE_DIR", state_root)
+            .env("DOCDEX_DAEMON_LOCK_PATH", state_root.join("daemon.lock"))
+            .env("DOCDEX_DISABLE_MCODA_CLI", "1")
             .env("HOME", home_dir)
+            .env("USERPROFILE", home_dir)
+            .env("XDG_CONFIG_HOME", &xdg_config_home)
+            .env("APPDATA", &app_data)
+            .env("LOCALAPPDATA", &local_app_data)
             .args([
                 "serve",
                 "--repo",
@@ -116,18 +162,36 @@ impl TestServerHarness {
                 "--secure-mode=false",
             ])
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stderr(Stdio::from(stderr_file));
         for (key, value) in extra_env {
             command.env(key, value);
         }
-        let child = command.spawn()?;
-        wait_for_health(host, port)?;
-        Ok(Self { child })
+        let mut child = command.spawn()?;
+        if let Err(err) = wait_for_health_inner(host, port, Some(&mut child)) {
+            let _ = child.kill();
+            let _ = child.wait();
+            let stderr = read_log_tail(&stderr_path, 16 * 1024);
+            let detail = if stderr.trim().is_empty() {
+                String::new()
+            } else {
+                format!("; stderr tail:\n{stderr}")
+            };
+            return Err(format!("{err}{detail}").into());
+        }
+        Ok(Self { child: Some(child) })
     }
 
     pub fn shutdown(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+impl Drop for TestServerHarness {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 
@@ -144,7 +208,12 @@ where
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_HTTP_BASE_URL", base_url)
+        .env("DOCDEX_DISABLE_MCODA_CLI", "1")
         .env("HOME", home_dir)
+        .env("USERPROFILE", home_dir)
+        .env("XDG_CONFIG_HOME", home_dir.join(".config"))
+        .env("APPDATA", home_dir.join("AppData").join("Roaming"))
+        .env("LOCALAPPDATA", home_dir.join("AppData").join("Local"))
         .args(args)
         .output()?;
     if !output.status.success() {

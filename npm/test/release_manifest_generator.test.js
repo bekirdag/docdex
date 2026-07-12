@@ -9,6 +9,7 @@ const crypto = require("node:crypto");
 
 const {
   generateReleaseManifest,
+  dateFromSourceEpoch,
   DEFAULT_TARGETS
 } = require("../../scripts/generate_release_manifest.cjs");
 
@@ -18,6 +19,19 @@ function sha256(buf) {
 
 function mkTmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "docdex-release-manifest-"));
+}
+
+function writeDeterministicFixtureAssets(dir) {
+  for (const entry of DEFAULT_TARGETS) {
+    const tarName = `${entry.archiveBase}.tar.gz`;
+    const payload = Buffer.from(`fixture:${tarName}\n`, "utf8");
+    fs.writeFileSync(path.join(dir, tarName), payload);
+    fs.writeFileSync(
+      path.join(dir, `${tarName}.sha256`),
+      `${sha256(payload)}  ${tarName}\n`,
+      "utf8"
+    );
+  }
 }
 
 test("generateReleaseManifest: emits targets mapping with sha256 and validates checksums", () => {
@@ -46,6 +60,7 @@ test("generateReleaseManifest: emits targets mapping with sha256 and validates c
     outPath,
     tag: "v0.0.0",
     repo: "owner/repo",
+    sourceCommit: "a".repeat(40),
     now
   });
 
@@ -65,6 +80,7 @@ test("generateReleaseManifest: emits targets mapping with sha256 and validates c
   assert.equal(manifest.repo, "owner/repo");
   assert.equal(manifest.tag, "v0.0.0");
   assert.equal(manifest.version, "0.0.0");
+  assert.equal(manifest.sourceCommit, "a".repeat(40));
   assert.equal(manifest.generatedAt, now.toISOString());
 
   const triples = Object.keys(manifest.targets).sort();
@@ -141,6 +157,54 @@ test("generateReleaseManifest: signs integrity metadata when private key is prov
   } finally {
     if (originalKey === undefined) delete process.env.DOCDEX_RELEASE_SIGNING_PRIVATE_KEY;
     else process.env.DOCDEX_RELEASE_SIGNING_PRIVATE_KEY = originalKey;
+  }
+});
+
+test("generateReleaseManifest: source epoch makes every integrity file byte reproducible", () => {
+  const firstDir = mkTmpDir();
+  const secondDir = mkTmpDir();
+  writeDeterministicFixtureAssets(firstDir);
+  writeDeterministicFixtureAssets(secondDir);
+  const firstOut = path.join(firstDir, "docdex-release-manifest.json");
+  const secondOut = path.join(secondDir, "docdex-release-manifest.json");
+
+  const options = {
+    tag: "v0.2.86",
+    repo: "owner/repo",
+    sourceDateEpoch: "1735689600"
+  };
+  const first = generateReleaseManifest({
+    ...options,
+    assetsDir: firstDir,
+    outPath: firstOut
+  });
+  const second = generateReleaseManifest({
+    ...options,
+    assetsDir: secondDir,
+    outPath: secondOut
+  });
+
+  for (const [firstPath, secondPath] of [
+    [firstOut, secondOut],
+    [`${firstOut}.sha256`, `${secondOut}.sha256`],
+    [first.checksumsPath, second.checksumsPath],
+    [first.checksumsTxtPath, second.checksumsTxtPath]
+  ]) {
+    assert.deepEqual(fs.readFileSync(firstPath), fs.readFileSync(secondPath));
+  }
+  assert.equal(
+    JSON.parse(fs.readFileSync(firstOut, "utf8")).generatedAt,
+    "2025-01-01T00:00:00.000Z"
+  );
+});
+
+test("dateFromSourceEpoch rejects ambiguous or out-of-range timestamps", () => {
+  assert.equal(dateFromSourceEpoch("1735689600").toISOString(), "2025-01-01T00:00:00.000Z");
+  for (const invalid of ["", "-1", "1.5", "not-a-time", "253402300800"]) {
+    assert.throws(() => dateFromSourceEpoch(invalid), (error) => {
+      assert.equal(error.exitCode, 2);
+      return true;
+    });
   }
 });
 

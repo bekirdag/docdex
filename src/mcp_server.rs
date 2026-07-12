@@ -49,6 +49,7 @@ use anyhow::{Context, Result};
 use reqwest::{Client, Method};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -56,6 +57,7 @@ use std::time::{Duration, Instant};
 use tantivy::directory::error::LockError;
 use tantivy::TantivyError;
 use thiserror::Error;
+use tokio::sync::{Mutex as AsyncMutex, RwLock as AsyncRwLock};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
@@ -564,16 +566,6 @@ fn classify_tool_error(err: &anyhow::Error) -> (&'static str, Option<serde_json:
     (ERR_INTERNAL_ERROR, None)
 }
 
-fn env_flag_enabled(name: &str) -> bool {
-    match std::env::var(name) {
-        Ok(value) => matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        ),
-        Err(_) => false,
-    }
-}
-
 #[derive(Deserialize)]
 struct RpcRequest {
     #[serde(default)]
@@ -664,16 +656,29 @@ struct PromptGetParams {
 }
 
 pub struct McpService {
-    server: McpServer,
+    server_template: McpServer,
+    sessions: AsyncRwLock<HashMap<String, Arc<AsyncMutex<McpServer>>>>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct McpRuntimeOptions {
+    pub(crate) memory_enabled: bool,
+    pub(crate) embedding_base_url: Option<String>,
+    pub(crate) embedding_model: Option<String>,
+    pub(crate) embedding_timeout_ms: Option<u64>,
+    pub(crate) docdex_http_base_url: Option<String>,
+    pub(crate) global_state_dir: Option<PathBuf>,
+    pub(crate) personal_preferences_config: Option<crate::config::MemoryPersonalPreferencesConfig>,
 }
 
 impl McpService {
-    pub fn new(
+    pub(crate) fn new(
         repo_root: PathBuf,
         index_config: IndexConfig,
         max_results: usize,
         rate_limit_per_min: u32,
         rate_limit_burst: u32,
+        runtime_options: McpRuntimeOptions,
         auth_token: Option<String>,
         delegation_metrics: Arc<DelegationMetrics>,
     ) -> Result<Self> {
@@ -681,6 +686,30 @@ impl McpService {
             .canonicalize()
             .context("resolve repo root for MCP server")?;
         let config = config::AppConfig::load_default().ok();
+        let runtime_embedding_base_url = runtime_options
+            .embedding_base_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let runtime_embedding_model = runtime_options
+            .embedding_model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let embedding_timeout_ms = runtime_options.embedding_timeout_ms.unwrap_or_else(|| {
+            std::env::var("DOCDEX_EMBEDDING_TIMEOUT_MS")
+                .ok()
+                .and_then(|value| value.trim().parse::<u64>().ok())
+                .unwrap_or(5000)
+        });
+        let docdex_http_base_url = runtime_options
+            .docdex_http_base_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
         let repo_encryption_from_config = config
             .as_ref()
             .map(|cfg| cfg.repo_encryption.clone())
@@ -694,28 +723,20 @@ impl McpService {
                 warn!(
                     "docdex mcp: index writer is busy; opening read-only (disable other docdexd to enable indexing)"
                 );
-                Indexer::with_config_read_only(repo_root.clone(), index_config)?
+                Indexer::with_config_read_only(repo_root.clone(), index_config)
+                    .context("open MCP repository index read-only")?
             }
-            Err(err) => return Err(err),
+            Err(err) => return Err(err).context("open MCP repository index"),
         };
         let indexer = Arc::new(indexer);
-        let global_state_dir = config
-            .as_ref()
-            .and_then(|cfg| cfg.core.global_state_dir.clone());
-        let local_model_library = load_local_library(global_state_dir.as_deref()).ok();
-        let memory_enabled = if std::env::var_os("DOCDEX_ENABLE_MEMORY").is_some() {
-            env_flag_enabled("DOCDEX_ENABLE_MEMORY")
-        } else {
+        let global_state_dir = runtime_options.global_state_dir.clone().or_else(|| {
             config
                 .as_ref()
-                .map(|cfg| cfg.memory.enabled)
-                .unwrap_or(false)
-        };
+                .and_then(|cfg| cfg.core.global_state_dir.clone())
+        });
+        let local_model_library = load_local_library(global_state_dir.as_deref()).ok();
+        let memory_enabled = runtime_options.memory_enabled;
         let memory = if memory_enabled {
-            let timeout_ms = std::env::var("DOCDEX_EMBEDDING_TIMEOUT_MS")
-                .ok()
-                .and_then(|v| v.trim().parse::<u64>().ok())
-                .unwrap_or(5000);
             let fallback_dim = config
                 .as_ref()
                 .map(|cfg| cfg.memory.profile.embedding_dim)
@@ -729,14 +750,20 @@ impl McpService {
                     &default_llm_config
                 }
             };
-            let model = embeddings::env_non_empty("DOCDEX_EMBEDDING_MODEL");
+            let model = runtime_embedding_model
+                .clone()
+                .or_else(|| embeddings::env_non_empty("DOCDEX_EMBEDDING_MODEL"));
+            let model_explicit = runtime_embedding_model.is_some()
+                || embeddings::env_present("DOCDEX_EMBEDDING_MODEL");
+            let embedding_base_url = runtime_embedding_base_url
+                .clone()
+                .or_else(|| embeddings::env_non_empty("DOCDEX_EMBEDDING_BASE_URL"));
+            let embedding_base_url_explicit = runtime_embedding_base_url.is_some()
+                || embeddings::env_present("DOCDEX_EMBEDDING_BASE_URL");
             let hints = EmbeddingTargetHints::repo()
                 .explicit_provider(embeddings::env_non_empty("DOCDEX_EMBEDDING_PROVIDER"))
-                .explicit_base_url(
-                    embeddings::env_non_empty("DOCDEX_EMBEDDING_BASE_URL"),
-                    embeddings::env_present("DOCDEX_EMBEDDING_BASE_URL"),
-                )
-                .explicit_model(model, embeddings::env_present("DOCDEX_EMBEDDING_MODEL"))
+                .explicit_base_url(embedding_base_url, embedding_base_url_explicit)
+                .explicit_model(model, model_explicit)
                 .legacy_ollama_base_url(embeddings::env_non_empty("DOCDEX_OLLAMA_BASE_URL"));
             let target = embeddings::resolve_embedding_target(
                 llm_config_ref,
@@ -745,7 +772,10 @@ impl McpService {
             )?;
             Some(McpMemoryState {
                 store: MemoryStore::new(indexer.state_dir()),
-                embedder: OllamaEmbedder::with_target(target, Duration::from_millis(timeout_ms))?,
+                embedder: OllamaEmbedder::with_target(
+                    target,
+                    Duration::from_millis(embedding_timeout_ms),
+                )?,
                 fallback_dim,
             })
         } else {
@@ -780,15 +810,26 @@ impl McpService {
             .as_ref()
             .map(|cfg| cfg.repo_encryption.clone())
             .unwrap_or(repo_encryption_from_config);
-        let personal_preferences_config = config
-            .as_ref()
-            .map(|cfg| cfg.memory.personal_preferences.clone())
+        let personal_preferences_config = runtime_options
+            .personal_preferences_config
+            .clone()
+            .or_else(|| {
+                config
+                    .as_ref()
+                    .map(|cfg| cfg.memory.personal_preferences.clone())
+            })
             .unwrap_or_default();
         let personal_preferences = if personal_preferences_config.enabled {
             let state_dir =
                 personal_preferences_config.resolved_storage_root(global_state_dir.as_deref())?;
             Some(search::PersonalPreferencesState {
-                store: crate::personal_preferences::PersonalPreferencesStore::new(&state_dir)?,
+                store: crate::personal_preferences::PersonalPreferencesStore::new(&state_dir)
+                    .with_context(|| {
+                        format!(
+                            "open MCP personal-preferences state at {}",
+                            state_dir.display()
+                        )
+                    })?,
                 config: personal_preferences_config.clone(),
             })
         } else {
@@ -809,23 +850,30 @@ impl McpService {
             .map(|cfg| cfg.memory.profile.embedding_dim)
             .unwrap_or(DEFAULT_FALLBACK_EMBED_DIM)
             .max(1);
-        let profile_embedding_timeout_ms = std::env::var("DOCDEX_EMBEDDING_TIMEOUT_MS")
-            .ok()
-            .and_then(|v| v.trim().parse::<u64>().ok())
-            .unwrap_or(5000);
+        let profile_embedding_timeout_ms = embedding_timeout_ms;
         let profile_state = {
-            let mut manager = global_state_dir
-                .as_ref()
-                .and_then(|state_dir| ProfileManager::new(state_dir, profile_embedding_dim).ok());
-            if manager.is_none() {
-                if let Ok(fallback_dir) = crate::state_paths::default_state_base_dir() {
-                    manager = ProfileManager::new(&fallback_dir, profile_embedding_dim).ok();
+            let manager = if let Some(state_dir) = global_state_dir.as_ref() {
+                Some(
+                    ProfileManager::new(state_dir, profile_embedding_dim).with_context(|| {
+                        format!(
+                            "open MCP profile state at configured global state directory {}",
+                            state_dir.display()
+                        )
+                    })?,
+                )
+            } else {
+                let mut manager =
+                    crate::state_paths::default_state_base_dir()
+                        .ok()
+                        .and_then(|fallback_dir| {
+                            ProfileManager::new(&fallback_dir, profile_embedding_dim).ok()
+                        });
+                if manager.is_none() {
+                    let temp_dir = std::env::temp_dir().join("docdex").join("state");
+                    manager = ProfileManager::new(&temp_dir, profile_embedding_dim).ok();
                 }
-            }
-            if manager.is_none() {
-                let temp_dir = std::env::temp_dir().join("docdex").join("state");
-                manager = ProfileManager::new(&temp_dir, profile_embedding_dim).ok();
-            }
+                manager
+            };
             manager.map(|manager| search::ProfileState {
                 manager,
                 embedder: {
@@ -844,8 +892,10 @@ impl McpService {
                         )
                         .explicit_base_url(
                             embeddings::env_non_empty("DOCDEX_PROFILE_EMBEDDING_BASE_URL")
+                                .or_else(|| runtime_embedding_base_url.clone())
                                 .or_else(|| embeddings::env_non_empty("DOCDEX_EMBEDDING_BASE_URL")),
                             embeddings::env_present("DOCDEX_PROFILE_EMBEDDING_BASE_URL")
+                                || runtime_embedding_base_url.is_some()
                                 || embeddings::env_present("DOCDEX_EMBEDDING_BASE_URL"),
                         )
                         .explicit_model(
@@ -918,15 +968,76 @@ impl McpService {
             llm_config,
             repo_encryption,
             global_state_dir,
+            docdex_http_base_url,
             tool_rate_limit,
             auth_token,
             authorized,
             delegation_metrics,
         };
-        Ok(Self { server })
+        Ok(Self {
+            server_template: server,
+            sessions: AsyncRwLock::new(HashMap::new()),
+        })
     }
 
-    pub async fn handle_json(&mut self, payload: Value) -> Result<Option<Value>> {
+    pub async fn handle_json(&self, payload: Value) -> Result<Option<Value>> {
+        let mut server = self.server_template.clone();
+        Self::handle_json_inner(&mut server, payload).await
+    }
+
+    pub(crate) async fn handle_json_for_session(
+        &self,
+        session_id: &str,
+        payload: Value,
+    ) -> Result<Option<Value>> {
+        let server = self.server_for_session(session_id).await;
+        let mut server = server.lock().await;
+        Self::handle_json_inner(&mut server, payload).await
+    }
+
+    async fn server_for_session(&self, session_id: &str) -> Arc<AsyncMutex<McpServer>> {
+        if let Some(server) = self.sessions.read().await.get(session_id).cloned() {
+            return server;
+        }
+        let mut sessions = self.sessions.write().await;
+        sessions
+            .entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(AsyncMutex::new(self.server_template.clone())))
+            .clone()
+    }
+
+    pub(crate) async fn remove_session(&self, session_id: &str) {
+        self.sessions.write().await.remove(session_id);
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn session_state_for_tests(
+        &self,
+        session_id: &str,
+    ) -> Option<(bool, Option<String>, Option<String>)> {
+        let server = self.sessions.read().await.get(session_id).cloned()?;
+        let server = server.lock().await;
+        Some((
+            server.authorized,
+            server.default_agent_id.clone(),
+            server.default_agent_model.clone(),
+        ))
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn block_session_for_tests(
+        &self,
+        session_id: &str,
+        started: tokio::sync::oneshot::Sender<()>,
+        release: tokio::sync::oneshot::Receiver<()>,
+    ) {
+        let server = self.server_for_session(session_id).await;
+        let _server = server.lock().await;
+        let _ = started.send(());
+        let _ = release.await;
+    }
+
+    async fn handle_json_inner(server: &mut McpServer, payload: Value) -> Result<Option<Value>> {
         let req = match serde_json::from_value::<RpcRequest>(payload) {
             Ok(req) => req,
             Err(err) => {
@@ -946,7 +1057,7 @@ impl McpService {
                 return Ok(Some(serde_json::to_value(resp)?));
             }
         };
-        let resp_opt = match self.server.handle(req).await {
+        let resp_opt = match server.handle(req).await {
             Ok(resp) => resp,
             Err(err) => Some(RpcResponse {
                 jsonrpc: JSONRPC_VERSION,
@@ -1031,6 +1142,7 @@ struct MemoryEmbedding {
     model: String,
 }
 
+#[derive(Clone)]
 struct McpServer {
     repo_id: String,
     repo_root: PathBuf,
@@ -1048,6 +1160,7 @@ struct McpServer {
     llm_config: config::LlmConfig,
     repo_encryption: crate::repo_encryption::RepoEncryptionConfig,
     global_state_dir: Option<PathBuf>,
+    docdex_http_base_url: Option<String>,
     tool_rate_limit: Option<RateLimiter<()>>,
     auth_token: Option<String>,
     authorized: bool,
@@ -1121,6 +1234,7 @@ impl McpServer {
                 let init_params: InitializeParams =
                     serde_json::from_value(req.params.clone().unwrap_or_default())
                         .unwrap_or_default();
+                let mut next_authorized = self.authorized;
                 if let Some(expected) = self.auth_token.as_ref() {
                     let provided = init_params
                         .auth_token
@@ -1144,9 +1258,9 @@ impl McpServer {
                             )),
                         }));
                     }
-                    self.authorized = true;
+                    next_authorized = true;
                 }
-                if let Some(client_root) = init_params
+                let next_project_root = if let Some(client_root) = init_params
                     .workspace_root
                     .or(init_params.project_root)
                     .as_ref()
@@ -1171,7 +1285,7 @@ impl McpServer {
                                     )),
                                 }));
                             }
-                            self.default_project_root = Some(canon);
+                            Some(canon)
                         }
                         Err(err) => {
                             return Ok(Some(RpcResponse {
@@ -1189,23 +1303,27 @@ impl McpServer {
                             }));
                         }
                     }
-                }
-                if let Some(agent_id) = init_params
+                } else {
+                    self.default_project_root.clone()
+                };
+                let next_agent_id = init_params
                     .agent_id
                     .as_deref()
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
-                {
-                    self.default_agent_id = Some(agent_id.to_string());
-                }
-                if let Some(agent_model) = init_params
+                    .map(str::to_string)
+                    .or_else(|| self.default_agent_id.clone());
+                let next_agent_model = init_params
                     .agent_model
                     .as_deref()
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
-                {
-                    self.default_agent_model = Some(agent_model.to_string());
-                }
+                    .map(str::to_string)
+                    .or_else(|| self.default_agent_model.clone());
+                self.authorized = next_authorized;
+                self.default_project_root = next_project_root;
+                self.default_agent_id = next_agent_id;
+                self.default_agent_model = next_agent_model;
                 let protocol_version = init_params
                     .protocol_version
                     .unwrap_or_else(|| "2025-11-25".to_string());
@@ -7521,7 +7639,13 @@ fn docdexd_http_client() -> Result<Client> {
     Ok(client)
 }
 
-fn resolve_docdexd_base_url() -> Result<String> {
+fn resolve_docdexd_base_url(preferred_base_url: Option<&str>) -> Result<String> {
+    if let Some(raw) = preferred_base_url
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(normalize_base_url(raw));
+    }
     if let Some(raw) = env_non_empty("DOCDEX_HTTP_BASE_URL") {
         return Ok(normalize_base_url(&raw));
     }

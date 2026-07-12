@@ -1469,6 +1469,10 @@ mod tests {
             .authorize(&ctx, "repo-1", RepoOperation::Search)
             .expect("authorized");
         assert_eq!(binding.id, "binding-1");
+        let err = store
+            .authorize(&ctx, "repo-1", RepoOperation::Admin)
+            .expect_err("search-only binding must reject administrative operations");
+        assert_eq!(err.code, ERR_SCOPE_DENIED);
     }
 
     #[test]

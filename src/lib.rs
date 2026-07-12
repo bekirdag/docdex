@@ -27,6 +27,7 @@ pub mod mcoda;
 pub mod mcp;
 pub mod mcp_proxy;
 pub mod mcp_server;
+pub(crate) mod mcp_tool_policy;
 pub mod memory;
 pub mod memory_layers;
 pub mod metrics;

@@ -10,9 +10,27 @@ const {
   ChecksumResolutionError,
   MissingArtifactError,
   describeFatalError,
+  getVersion,
+  parseRepoSlug,
   verifyDownloadedFileIntegrity
 } = require("../lib/install");
 const { ManifestResolutionError } = require("../lib/release_manifest");
+
+test("release verifier configuration helpers remain exported and usable", () => {
+  const previousRepo = process.env.DOCDEX_DOWNLOAD_REPO;
+  const previousVersion = process.env.DOCDEX_VERSION;
+  process.env.DOCDEX_DOWNLOAD_REPO = "owner/repo";
+  process.env.DOCDEX_VERSION = "v1.2.3";
+  try {
+    assert.equal(parseRepoSlug(), "owner/repo");
+    assert.equal(getVersion(), "1.2.3");
+  } finally {
+    if (previousRepo === undefined) delete process.env.DOCDEX_DOWNLOAD_REPO;
+    else process.env.DOCDEX_DOWNLOAD_REPO = previousRepo;
+    if (previousVersion === undefined) delete process.env.DOCDEX_VERSION;
+    else process.env.DOCDEX_VERSION = previousVersion;
+  }
+});
 
 test("postinstall banner describes provider-neutral local LLM setup", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "lib", "install.js"), "utf8");
@@ -25,16 +43,36 @@ test("release version metadata stays in sync across package and MCP files", () =
   const repoRoot = path.join(__dirname, "..", "..");
   const rootPackage = JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf8"));
   const npmPackage = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
+  const npmLock = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package-lock.json"), "utf8"));
+  const releaseManifest = JSON.parse(
+    fs.readFileSync(path.join(repoRoot, ".release-please-manifest.json"), "utf8")
+  );
   const serverManifest = JSON.parse(fs.readFileSync(path.join(repoRoot, "server.json"), "utf8"));
   const serverCard = JSON.parse(
     fs.readFileSync(path.join(repoRoot, ".well-known", "mcp", "server-card.json"), "utf8")
   );
+  const legacyServerCard = JSON.parse(
+    fs.readFileSync(path.join(repoRoot, ".well-known", "mcp.json"), "utf8")
+  );
+  const promptVersion = (filePath) => {
+    const firstLine = fs.readFileSync(filePath, "utf8").split(/\r?\n/, 1)[0];
+    return /^---- START OF DOCDEX INFO V([^ ]+) ----$/.exec(firstLine)?.[1] ?? null;
+  };
 
   assert.equal(npmPackage.version, rootPackage.version);
+  assert.equal(npmLock.version, rootPackage.version);
+  assert.equal(npmLock.packages[""].version, rootPackage.version);
+  assert.equal(releaseManifest["."], rootPackage.version);
+  assert.equal(releaseManifest.npm, rootPackage.version);
   assert.equal(serverManifest.version, rootPackage.version);
   assert.equal(serverManifest.packages[0].version, rootPackage.version);
   assert.equal(serverCard.version, rootPackage.version);
   assert.equal(serverCard.serverInfo.version, rootPackage.version);
+  assert.equal(legacyServerCard.version, rootPackage.version);
+  assert.equal(legacyServerCard.serverInfo.version, rootPackage.version);
+  assert.equal(promptVersion(path.join(repoRoot, "AGENTS.md")), rootPackage.version);
+  assert.equal(promptVersion(path.join(repoRoot, "AGENT_PROMPT.md")), rootPackage.version);
+  assert.equal(promptVersion(path.join(__dirname, "..", "assets", "agents.md")), rootPackage.version);
 });
 
 test("describeFatalError: unsupported platform includes detected OS/arch and no-download note", () => {

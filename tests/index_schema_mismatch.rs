@@ -67,12 +67,15 @@ fn create_incompatible_index(index_dir: &Path) -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn cli_query_auto_reindexes_schema_mismatch() -> Result<(), Box<dyn Error>> {
+fn cli_query_rejects_schema_mismatch_without_mutating_index() -> Result<(), Box<dyn Error>> {
     let repo = TempDir::new()?;
     write_repo(repo.path())?;
     let state_root = TempDir::new()?;
     let index_dir = resolve_index_dir(state_root.path(), repo.path())?;
     create_incompatible_index(&index_dir)?;
+    let sentinel_path = index_dir.join("read-only-sentinel");
+    fs::write(&sentinel_path, b"must survive read-only query")?;
+    let meta_before = fs::read(index_dir.join("meta.json"))?;
 
     let output = Command::new(docdex_bin())
         .env("DOCDEX_WEB_ENABLED", "0")
@@ -88,13 +91,18 @@ fn cli_query_auto_reindexes_schema_mismatch() -> Result<(), Box<dyn Error>> {
             "1",
         ])
         .output()?;
-    assert!(output.status.success(), "expected zero exit");
-    let payload: Value = serde_json::from_slice(&output.stdout)?;
-    let hits = payload
-        .get("hits")
-        .and_then(|value| value.as_array())
-        .ok_or("missing hits array")?;
-    assert!(!hits.is_empty(), "expected hits after auto reindex");
+    assert!(!output.status.success(), "stale read-only query must fail");
+    let stderr = String::from_utf8(output.stderr)?;
+    let error_line = stderr.lines().last().ok_or("missing CLI error payload")?;
+    let payload: Value = serde_json::from_str(error_line)?;
+    assert_eq!(payload["error"]["code"], "stale_index");
+    assert_eq!(payload["error"]["details"]["staleIndex"], true);
+    assert_eq!(
+        payload["error"]["details"]["stateDir"],
+        index_dir.display().to_string()
+    );
+    assert_eq!(fs::read(index_dir.join("meta.json"))?, meta_before);
+    assert_eq!(fs::read(&sentinel_path)?, b"must survive read-only query");
     Ok(())
 }
 
@@ -127,3 +135,46 @@ fn reindex_rebuilds_incompatible_schema() -> Result<(), Box<dyn Error>> {
     );
     Ok(())
 }
+
+#[test]
+fn writable_reindex_refuses_to_mutate_an_index_with_an_active_writer() -> Result<(), Box<dyn Error>>
+{
+    let repo = TempDir::new()?;
+    write_repo(repo.path())?;
+    let state_root = TempDir::new()?;
+    let config = IndexConfig::with_overrides(
+        repo.path(),
+        Some(state_root.path().to_path_buf()),
+        Vec::new(),
+        Vec::new(),
+        true,
+    )?;
+    fs::create_dir_all(config.state_dir())?;
+    let mut builder = Schema::builder();
+    let title = builder.add_text_field("legacy_title", TEXT | STORED);
+    let legacy = Index::create_in_dir(config.state_dir(), builder.build())?;
+    let mut active_writer = legacy.writer(15_000_000)?;
+    active_writer.add_document(doc!(title => "legacy"))?;
+    active_writer.commit()?;
+    let meta_before = fs::read(config.state_dir().join("meta.json"))?;
+
+    let error = match Indexer::with_config(repo.path().to_path_buf(), config.clone()) {
+        Ok(_) => return Err("active legacy writer unexpectedly allowed rebuild".into()),
+        Err(error) => error,
+    };
+    let message = error.to_string();
+    assert!(
+        message.contains("still owned by another writer")
+            || message.contains("index lifecycle is busy"),
+        "unexpected error: {error:#}"
+    );
+    assert_eq!(fs::read(config.state_dir().join("meta.json"))?, meta_before);
+    assert!(config.state_dir().exists());
+
+    drop(active_writer);
+    drop(legacy);
+    let rebuilt = Indexer::with_config(repo.path().to_path_buf(), config)?;
+    assert!(rebuilt.config().state_dir().join("meta.json").exists());
+    Ok(())
+}
+use docdexd::index::{IndexConfig, Indexer};

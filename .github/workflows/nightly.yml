@@ -8,12 +8,18 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions: {}
+
 jobs:
   validate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Free disk space (Linux)
         if: ${{ runner.os == 'Linux' }}
@@ -25,14 +31,14 @@ jobs:
           df -h
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         if: ${{ runner.os != 'Linux' }}
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
 
@@ -68,8 +74,8 @@ jobs:
           DOCDEX_CLI_LOCAL=1 ./target/release/docdexd index --repo .
           ./target/release/docdexd serve --repo . --secure-mode=false --enable-memory=false --access-log=false --log warn --preflight-check=false &
           pid=$!
-          trap "kill $pid" EXIT
-          for i in {1..20}; do
+          trap 'kill "$pid"' EXIT
+          for _ in {1..20}; do
             curl -fsS "${DOCDEX_HTTP_BASE_URL}/healthz" >/dev/null 2>&1 && break
             sleep 0.5
           done
@@ -79,9 +85,13 @@ jobs:
   artifacts:
     runs-on: ubuntu-latest
     needs: validate
+    permissions:
+      contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Free disk space (Linux)
         if: ${{ runner.os == 'Linux' }}
@@ -93,14 +103,14 @@ jobs:
           df -h
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         if: ${{ runner.os != 'Linux' }}
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
 
@@ -120,10 +130,11 @@ jobs:
             --out docdexd-nightly-manifest.json \
             --tag nightly \
             --repo "${GITHUB_REPOSITORY}" \
+            --source-commit "${GITHUB_SHA}" \
             --allow-partial
 
       - name: Upload nightly artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: docdexd-nightly-linux-x64-gnu
           path: |

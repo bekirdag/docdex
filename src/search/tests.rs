@@ -75,6 +75,7 @@ mod repo_context_tests {
                     legacy_repo_id,
                     repo_root: repo_root.clone(),
                     indexer,
+                    read_only: false,
                     libs_indexer: None,
                     memory: None,
                     conversations: None,
@@ -340,6 +341,7 @@ mod latency_perf_tests {
     #[ignore]
     async fn repo_only_search_p95_under_50ms_with_libs_index_present() -> anyhow::Result<()> {
         let repo = TempDir::new()?;
+        let state_root = TempDir::new()?;
         let repo_root = repo.path();
 
         fs::write(
@@ -358,8 +360,13 @@ mod latency_perf_tests {
             fs::write(docs_dir.join(format!("doc_{i}.md")), body)?;
         }
 
-        let index_config =
-            index::IndexConfig::with_overrides(repo_root, None, Vec::new(), Vec::new(), true)?;
+        let index_config = index::IndexConfig::with_overrides(
+            repo_root,
+            Some(state_root.path().to_path_buf()),
+            Vec::new(),
+            Vec::new(),
+            true,
+        )?;
         let indexer = index::Indexer::with_config(repo_root.to_path_buf(), index_config)?;
         indexer.reindex_all().await?;
 
@@ -447,6 +454,140 @@ mod latency_perf_tests {
             repo_p95
         );
 
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod search_result_correctness_tests {
+    use super::{
+        bounded_repo_candidate_limit, merge_hits, search_with_optional_libs, RankingSurface,
+    };
+    use crate::index::{DocType, DocumentKind, Hit, IndexConfig, Indexer, SearchSnippetOrigin};
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn make_hit(path: &str, score: f32) -> Hit {
+        Hit {
+            doc_id: format!("doc-{path}"),
+            rel_path: path.to_string(),
+            path: path.to_string(),
+            kind: DocumentKind::Code,
+            doc_type: Some(DocType::Code),
+            score,
+            summary: path.to_string(),
+            snippet: path.to_string(),
+            token_estimate: 1,
+            snippet_origin: Some(SearchSnippetOrigin::Summary),
+            snippet_truncated: Some(false),
+            line_start: None,
+            line_end: None,
+            score_breakdown: None,
+            provenance: None,
+            retrieval_explanation: None,
+        }
+    }
+
+    #[test]
+    fn merge_hits_allows_library_results_to_compete_for_the_limit() {
+        let repo_hits = vec![
+            make_hit("src/repo_top.rs", 10.0),
+            make_hit("src/repo_second.rs", 9.0),
+        ];
+        let libs_hits = vec![make_hit("libs:serde/guide.md", 100.0)];
+
+        let merged = merge_hits(repo_hits, libs_hits, 2);
+        let paths = merged
+            .iter()
+            .map(|hit| hit.rel_path.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(paths, vec!["src/repo_top.rs", "libs:serde/guide.md"]);
+    }
+
+    #[test]
+    fn merge_hits_uses_deterministic_ties_and_always_honors_the_limit() {
+        let repo_hits = vec![
+            make_hit("src/repo_top.rs", 20.0),
+            make_hit("src/repo_tied.rs", 19.0),
+            make_hit("src/repo_tail.rs", 1.0),
+        ];
+        let libs_hits = vec![make_hit("libs:serde/guide.md", 100.0)];
+
+        let merged = merge_hits(repo_hits.clone(), libs_hits, 3);
+        let paths = merged
+            .iter()
+            .map(|hit| hit.rel_path.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            vec!["src/repo_top.rs", "src/repo_tied.rs", "libs:serde/guide.md"]
+        );
+
+        let repo_only = merge_hits(repo_hits, Vec::new(), 1);
+        assert_eq!(repo_only.len(), 1);
+        assert_eq!(repo_only[0].rel_path, "src/repo_top.rs");
+    }
+
+    #[test]
+    fn bounded_repo_candidate_limit_caps_extra_work() {
+        assert_eq!(bounded_repo_candidate_limit(0), 0);
+        assert_eq!(bounded_repo_candidate_limit(1), 4);
+        assert_eq!(bounded_repo_candidate_limit(8), 32);
+        assert_eq!(bounded_repo_candidate_limit(64), 192);
+        assert_eq!(bounded_repo_candidate_limit(usize::MAX), usize::MAX);
+    }
+
+    #[tokio::test]
+    async fn bounded_refill_recovers_a_valid_hit_after_stale_top_docs() -> anyhow::Result<()> {
+        let repo = TempDir::new()?;
+        let state_root = TempDir::new()?;
+        let repo_root = repo.path();
+        let query = "refillneedle";
+        let stale_paths = (0..1)
+            .map(|idx| repo_root.join(format!("{query}_stale_{idx}.md")))
+            .collect::<Vec<_>>();
+        for path in &stale_paths {
+            fs::write(
+                path,
+                format!("# Stale\n\n{}\n", format!("{query} ").repeat(24)),
+            )?;
+        }
+        for idx in 0..3 {
+            fs::write(
+                repo_root.join(format!("live_{idx}.md")),
+                format!(
+                    "# Live {idx}\n\n{query}\n\n{}\n",
+                    "filler ".repeat(200 + idx)
+                ),
+            )?;
+        }
+
+        let config = IndexConfig::with_overrides(
+            repo_root,
+            Some(state_root.path().to_path_buf()),
+            Vec::new(),
+            Vec::new(),
+            true,
+        )?;
+        let indexer = Indexer::with_config(repo_root.to_path_buf(), config)?;
+        indexer.reindex_all().await?;
+
+        let (top_before_delete, _) = indexer.search_with_query_meta(query, 1)?;
+        assert_eq!(top_before_delete.len(), 1);
+        assert!(top_before_delete[0].rel_path.contains("_stale_"));
+        for path in stale_paths {
+            fs::remove_file(path)?;
+        }
+        assert!(
+            indexer.search_with_query_meta(query, 1)?.0.is_empty(),
+            "the regression setup requires the stale top document to consume the first page"
+        );
+
+        let (hits, _) =
+            search_with_optional_libs(&indexer, None, query, 1, RankingSurface::Search)?;
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].rel_path.starts_with("live_"));
         Ok(())
     }
 }

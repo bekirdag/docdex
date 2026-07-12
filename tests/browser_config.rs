@@ -51,18 +51,48 @@ fn touch_file(path: &Path) {
     }
 }
 
-fn write_chromium_manifest(root: &Path, chromium_path: &Path) {
+fn current_managed_platform() -> Option<&'static str> {
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        Some("mac-arm64")
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        Some("mac-x64")
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        Some("linux64")
+    } else {
+        None
+    }
+}
+
+fn managed_chromium_path(root: &Path, platform: &str) -> std::path::PathBuf {
+    let rel = match platform {
+        "mac-arm64" => "chrome-headless-shell-mac-arm64/chrome-headless-shell",
+        "mac-x64" => "chrome-headless-shell-mac-x64/chrome-headless-shell",
+        "linux64" => "chrome-headless-shell-linux64/chrome-headless-shell",
+        _ => panic!("unsupported test platform"),
+    };
+    root.join(".docdex")
+        .join("state")
+        .join("bin")
+        .join("chromium")
+        .join(rel)
+}
+
+fn write_chromium_manifest(root: &Path, chromium_path: &Path, platform: &str) {
     let manifest_dir = root
         .join(".docdex")
         .join("state")
         .join("bin")
         .join("chromium");
     std::fs::create_dir_all(&manifest_dir).expect("create manifest dir");
+    let version = "123.0.4567.8";
+    let checked_at = chrono::Utc::now().to_rfc3339();
     let payload = json!({
-        "installed_at": "2024-01-01T00:00:00Z",
-        "version": "12345",
-        "platform": "linux64",
-        "download_url": "https://example.com/chromium.zip",
+        "installed_at": checked_at.clone(),
+        "last_checked_at": checked_at,
+        "version": version,
+        "platform": platform,
+        "artifact": "chrome-headless-shell",
+        "download_url": format!("https://storage.googleapis.com/chrome-for-testing-public/{version}/{platform}/chrome-headless-shell-{platform}.zip"),
         "path": chromium_path,
     });
     std::fs::write(manifest_dir.join("manifest.json"), payload.to_string())
@@ -73,17 +103,21 @@ fn write_chromium_manifest(root: &Path, chromium_path: &Path) {
 #[cfg(not(target_os = "windows"))]
 fn config_persists_detected_browser_path() {
     let _lock = ENV_LOCK.lock().unwrap();
+    let Some(platform) = current_managed_platform() else {
+        return;
+    };
     let temp = TempDir::new().expect("tempdir");
     let bin_dir = temp.path().join("bin");
     std::fs::create_dir_all(&bin_dir).expect("create bin dir");
     let chrome_path = bin_dir.join("google-chrome");
     touch_file(&chrome_path);
 
-    let chromium_path = temp.path().join("docdex-chromium");
+    let chromium_path = managed_chromium_path(temp.path(), platform);
     touch_file(&chromium_path);
-    write_chromium_manifest(temp.path(), &chromium_path);
+    write_chromium_manifest(temp.path(), &chromium_path, platform);
 
     let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
+    let _state_dir = EnvGuard::unset("DOCDEX_STATE_DIR");
     let _path_guard = EnvGuard::set("PATH", bin_dir.to_string_lossy().as_ref());
     let _auto_install = EnvGuard::set("DOCDEX_BROWSER_AUTO_INSTALL", "0");
     let _env_browser = EnvGuard::unset("DOCDEX_WEB_BROWSER");
@@ -103,6 +137,74 @@ fn config_persists_detected_browser_path() {
         reload.web.scraper.chrome_binary_path.as_ref(),
         Some(&chromium_path)
     );
+}
+
+#[test]
+#[cfg(not(target_os = "windows"))]
+fn config_preserves_valid_explicit_browser_without_managed_manifest() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = TempDir::new().expect("tempdir");
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("create bin dir");
+    let configured_path = bin_dir.join("custom-chrome");
+    touch_file(&configured_path);
+
+    let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
+    let _state_dir = EnvGuard::unset("DOCDEX_STATE_DIR");
+    let _path_guard = EnvGuard::set("PATH", bin_dir.to_string_lossy().as_ref());
+    let _auto_install = EnvGuard::set("DOCDEX_BROWSER_AUTO_INSTALL", "0");
+    let _env_browser = EnvGuard::unset("DOCDEX_WEB_BROWSER");
+    let _chrome_path_env = EnvGuard::unset("DOCDEX_CHROME_PATH");
+    let _chrome_path_env_alias = EnvGuard::unset("CHROME_PATH");
+
+    let config_path = temp.path().join("docdex.toml");
+    let payload = format!(
+        "[web.scraper]\nchrome_binary_path = \"{}\"\nbrowser_kind = \"chrome\"\n",
+        configured_path.to_string_lossy()
+    );
+    std::fs::write(&config_path, payload).expect("write config");
+
+    let config = config::load_config_from_path(&config_path).expect("load config");
+    assert_eq!(
+        config.web.scraper.chrome_binary_path.as_ref(),
+        Some(&configured_path)
+    );
+    assert_eq!(config.web.scraper.browser_kind.as_deref(), Some("chrome"));
+}
+
+#[test]
+#[cfg(not(target_os = "windows"))]
+fn config_replaces_invalid_explicit_path_with_managed_browser() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let Some(platform) = current_managed_platform() else {
+        return;
+    };
+    let temp = TempDir::new().expect("tempdir");
+    let configured_path = temp.path().join("missing-chrome");
+    let managed_path = managed_chromium_path(temp.path(), platform);
+    touch_file(&managed_path);
+    write_chromium_manifest(temp.path(), &managed_path, platform);
+
+    let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
+    let _state_dir = EnvGuard::unset("DOCDEX_STATE_DIR");
+    let _auto_install = EnvGuard::set("DOCDEX_BROWSER_AUTO_INSTALL", "0");
+    let _env_browser = EnvGuard::unset("DOCDEX_WEB_BROWSER");
+    let _chrome_path_env = EnvGuard::unset("DOCDEX_CHROME_PATH");
+    let _chrome_path_env_alias = EnvGuard::unset("CHROME_PATH");
+
+    let config_path = temp.path().join("docdex.toml");
+    let payload = format!(
+        "[web.scraper]\nchrome_binary_path = \"{}\"\nbrowser_kind = \"chrome\"\n",
+        configured_path.to_string_lossy()
+    );
+    std::fs::write(&config_path, payload).expect("write config");
+
+    let config = config::load_config_from_path(&config_path).expect("load config");
+    assert_eq!(
+        config.web.scraper.chrome_binary_path.as_ref(),
+        Some(&managed_path)
+    );
+    assert_eq!(config.web.scraper.browser_kind.as_deref(), Some("chrome"));
 }
 
 #[test]

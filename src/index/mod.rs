@@ -15,6 +15,7 @@ use crate::symbols::{
     SymbolsParserStatus, SymbolsResponseV1, SymbolsStore,
 };
 use anyhow::{anyhow, Context, Result};
+use fs4::FileExt;
 use ignore_rules::{build_ignore_matcher, IgnoreMatcher};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
@@ -27,6 +28,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex as StdMutex, Once};
 use std::time::Duration;
 use tantivy::collector::TopDocs;
+use tantivy::directory::{Directory, MmapDirectory, INDEX_WRITER_LOCK};
 use tantivy::query::QueryParser;
 use tantivy::schema::{Schema, TextOptions, FAST, STORED, STRING, TEXT};
 use tantivy::DocAddress;
@@ -271,6 +273,7 @@ pub struct Indexer {
     writer: Option<Arc<Mutex<IndexWriter>>>,
     symbols_store: Option<SymbolsStore>,
     indexing_gate: Arc<IndexingGate>,
+    _lifecycle_lock: Arc<File>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -293,6 +296,34 @@ impl IndexingGate {
         Self {
             state: StdMutex::new(IndexingGateState { in_progress: false }),
             cvar: Condvar::new(),
+        }
+    }
+
+    fn acquire(self: &Arc<Self>) -> Result<IndexingGateGuard> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AppError::new(ERR_INTERNAL_ERROR, "indexing gate poisoned"))?;
+        while state.in_progress {
+            state = self
+                .cvar
+                .wait(state)
+                .map_err(|_| AppError::new(ERR_INTERNAL_ERROR, "indexing gate poisoned"))?;
+        }
+        state.in_progress = true;
+        Ok(IndexingGateGuard { gate: self.clone() })
+    }
+}
+
+struct IndexingGateGuard {
+    gate: Arc<IndexingGate>,
+}
+
+impl Drop for IndexingGateGuard {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.gate.state.lock() {
+            state.in_progress = false;
+            self.gate.cvar.notify_all();
         }
     }
 }
@@ -640,12 +671,14 @@ impl Indexer {
         config: IndexConfig,
         read_only: bool,
     ) -> Result<Self> {
-        match Self::open_indexer(repo_root.clone(), config.clone(), read_only) {
+        let lifecycle_lock = Arc::new(Self::acquire_lifecycle_lock(&config, false)?);
+        match Self::open_indexer(repo_root.clone(), config.clone(), read_only, lifecycle_lock) {
             Ok(indexer) => Ok(indexer),
             Err(err) => {
-                if is_stale_index_error(&err) {
+                if is_stale_index_error(&err) && !read_only {
                     Self::reindex_stale_index(&repo_root, &config)?;
-                    Self::open_indexer(repo_root, config, read_only)
+                    let lifecycle_lock = Arc::new(Self::acquire_lifecycle_lock(&config, false)?);
+                    Self::open_indexer(repo_root, config, read_only, lifecycle_lock)
                 } else {
                     Err(err)
                 }
@@ -653,7 +686,12 @@ impl Indexer {
         }
     }
 
-    fn open_indexer(repo_root: PathBuf, config: IndexConfig, read_only: bool) -> Result<Self> {
+    fn open_indexer(
+        repo_root: PathBuf,
+        config: IndexConfig,
+        read_only: bool,
+        lifecycle_lock: Arc<File>,
+    ) -> Result<Self> {
         if !repo_root.exists() {
             return Err(missing_repo_path_error(&repo_root).into());
         }
@@ -684,6 +722,8 @@ impl Indexer {
         let index = if config.state_dir().join("meta.json").exists() {
             Index::open_in_dir(config.state_dir())
                 .map_err(|_| stale_index_error(config.state_dir(), Some(&repo_root)))?
+        } else if read_only {
+            return Err(stale_index_error(config.state_dir(), Some(&repo_root)).into());
         } else {
             Index::create_in_dir(config.state_dir(), schema.clone())?
         };
@@ -787,18 +827,166 @@ impl Indexer {
             writer: writer.map(|writer| Arc::new(Mutex::new(writer))),
             symbols_store,
             indexing_gate: Arc::new(IndexingGate::new()),
+            _lifecycle_lock: lifecycle_lock,
         })
     }
 
     fn reindex_stale_index(repo_root: &Path, config: &IndexConfig) -> Result<()> {
         let state_dir = config.state_dir();
-        if state_dir.exists() {
-            Self::remove_dir_all_with_retries(state_dir)
-                .with_context(|| format!("remove stale index {}", state_dir.display()))?;
+        let lifecycle_lock = Arc::new(Self::acquire_lifecycle_lock(config, true)?);
+        if !state_dir.exists() {
+            let indexer = Self::open_indexer(
+                repo_root.to_path_buf(),
+                config.clone(),
+                false,
+                Arc::clone(&lifecycle_lock),
+            )?;
+            indexer.reindex_all_blocking()?;
+            return Ok(());
         }
-        let indexer = Self::open_indexer(repo_root.to_path_buf(), config.clone(), false)?;
-        indexer.reindex_all_blocking()?;
+
+        // Do not parse the stale index merely to acquire Tantivy's writer lock.
+        // Corrupt or truncated metadata is precisely one of the states this path
+        // must be able to quarantine and rebuild.
+        let stale_directory = MmapDirectory::open(state_dir).map_err(|err| {
+            AppError::new(
+                ERR_STALE_INDEX,
+                format!(
+                    "cannot safely open stale index directory {} to verify its writer lock: {err}",
+                    state_dir.display()
+                ),
+            )
+        })?;
+        let writer_lock = stale_directory
+            .acquire_lock(&INDEX_WRITER_LOCK)
+            .map_err(|err| {
+                AppError::new(
+                    ERR_BACKOFF_REQUIRED,
+                    format!(
+                        "stale index {} is still owned by another writer; retry after that process exits: {err}",
+                        state_dir.display()
+                    ),
+                )
+            })?;
+
+        let quarantine = Self::stale_quarantine_path(state_dir);
+        fs::rename(state_dir, &quarantine).with_context(|| {
+            format!(
+                "move stale index {} to quarantine {}",
+                state_dir.display(),
+                quarantine.display()
+            )
+        })?;
+        drop(writer_lock);
+        drop(stale_directory);
+
+        let rebuild = (|| -> Result<()> {
+            let indexer = Self::open_indexer(
+                repo_root.to_path_buf(),
+                config.clone(),
+                false,
+                Arc::clone(&lifecycle_lock),
+            )?;
+            indexer.reindex_all_blocking()?;
+            Ok(())
+        })();
+
+        if let Err(err) = rebuild {
+            if state_dir.exists() {
+                let _ = Self::remove_dir_all_with_retries(state_dir);
+            }
+            if let Err(restore_err) = fs::rename(&quarantine, state_dir) {
+                return Err(err).with_context(|| {
+                    format!(
+                        "stale index rebuild failed and rollback from {} also failed: {restore_err}",
+                        quarantine.display()
+                    )
+                });
+            }
+            return Err(err).context("rebuild stale index");
+        }
+
+        if let Err(err) = Self::remove_dir_all_with_retries(&quarantine) {
+            warn!(
+                target: "docdexd",
+                path = %quarantine.display(),
+                error = ?err,
+                "rebuilt stale index but could not remove quarantine directory"
+            );
+        }
         Ok(())
+    }
+
+    fn acquire_lifecycle_lock(config: &IndexConfig, exclusive: bool) -> Result<File> {
+        let state_dir = config.state_dir();
+        let parent = state_dir.parent().ok_or_else(|| {
+            AppError::new(
+                ERR_INTERNAL_ERROR,
+                format!(
+                    "index state directory has no parent: {}",
+                    state_dir.display()
+                ),
+            )
+        })?;
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "create index lifecycle lock parent without changing its permissions: {}",
+                parent.display()
+            )
+        })?;
+        let lock_path = state_dir.with_extension("lifecycle.lock");
+        let mut options = OpenOptions::new();
+        options.create(true).read(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let lock_file = options
+            .open(&lock_path)
+            .with_context(|| format!("open index lifecycle lock {}", lock_path.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let metadata = lock_file
+                .metadata()
+                .with_context(|| format!("inspect index lifecycle lock {}", lock_path.display()))?;
+            if metadata.permissions().mode() & 0o777 != 0o600 {
+                let mut permissions = metadata.permissions();
+                permissions.set_mode(0o600);
+                lock_file.set_permissions(permissions).with_context(|| {
+                    format!("secure index lifecycle lock {}", lock_path.display())
+                })?;
+            }
+        }
+        let lock_result = if exclusive {
+            FileExt::try_lock_exclusive(&lock_file)
+        } else {
+            FileExt::try_lock_shared(&lock_file)
+        };
+        lock_result.map_err(|err| {
+            AppError::new(
+                ERR_BACKOFF_REQUIRED,
+                format!(
+                    "index lifecycle is busy for {}; retry after the active open or migration completes: {err}",
+                    state_dir.display()
+                ),
+            )
+        })?;
+        Ok(lock_file)
+    }
+
+    fn stale_quarantine_path(state_dir: &Path) -> PathBuf {
+        let parent = state_dir.parent().unwrap_or_else(|| Path::new("."));
+        let name = state_dir
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("index");
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        parent.join(format!(".{name}.stale-{}-{timestamp}", std::process::id()))
     }
 
     fn remove_dir_all_with_retries(path: &Path) -> io::Result<()> {
@@ -829,47 +1017,33 @@ impl Indexer {
         if self.seed_index_ready_marker()? {
             return Ok(false);
         }
-        let mut state = self
-            .indexing_gate
-            .state
-            .lock()
-            .map_err(|_| AppError::new(ERR_INTERNAL_ERROR, "indexing gate poisoned"))?;
-        while state.in_progress {
-            state = self
-                .indexing_gate
-                .cvar
-                .wait(state)
-                .map_err(|_| AppError::new(ERR_INTERNAL_ERROR, "indexing gate poisoned"))?;
-        }
+        let _gate = self.indexing_gate.acquire()?;
         if self.index_ready_marker_exists() {
             return Ok(false);
         }
         if self.seed_index_ready_marker()? {
             return Ok(false);
         }
-        state.in_progress = true;
-        drop(state);
-
-        let result = self.reindex_all_blocking();
-
-        let mut state = self
-            .indexing_gate
-            .state
-            .lock()
-            .map_err(|_| AppError::new(ERR_INTERNAL_ERROR, "indexing gate poisoned"))?;
-        state.in_progress = false;
-        self.indexing_gate.cvar.notify_all();
-        drop(state);
-
-        result?;
+        self.reindex_all_uncoordinated()?;
         Ok(true)
     }
 
     pub async fn reindex_all(&self) -> Result<()> {
-        self.reindex_all_blocking()
+        if tokio::runtime::Handle::try_current().is_err() {
+            return self.reindex_all_blocking();
+        }
+        let indexer = self.clone();
+        tokio::task::spawn_blocking(move || indexer.reindex_all_blocking())
+            .await
+            .map_err(|err| anyhow!("indexing task aborted: {err}"))?
     }
 
-    fn reindex_all_blocking(&self) -> Result<()> {
+    pub(crate) fn reindex_all_blocking(&self) -> Result<()> {
+        let _gate = self.indexing_gate.acquire()?;
+        self.reindex_all_uncoordinated()
+    }
+
+    fn reindex_all_uncoordinated(&self) -> Result<()> {
         self.clear_index_ready_marker();
         let writer_arc = self.writer()?;
         let mut writer = writer_arc.lock();
@@ -1022,6 +1196,17 @@ impl Indexer {
     }
 
     pub async fn ingest_file(&self, file: PathBuf) -> Result<FileDecision> {
+        if tokio::runtime::Handle::try_current().is_err() {
+            return self.ingest_file_blocking(file);
+        }
+        let indexer = self.clone();
+        tokio::task::spawn_blocking(move || indexer.ingest_file_blocking(file))
+            .await
+            .map_err(|err| anyhow!("file ingestion task aborted: {err}"))?
+    }
+
+    pub(crate) fn ingest_file_blocking(&self, file: PathBuf) -> Result<FileDecision> {
+        let _gate = self.indexing_gate.acquire()?;
         let path = file.canonicalize().context("resolve file")?;
         let decision = decide_file(&path, &self.repo_root, &self.config);
         if !decision.should_index() {
@@ -1047,6 +1232,17 @@ impl Indexer {
     }
 
     pub async fn delete_file(&self, file: PathBuf) -> Result<()> {
+        if tokio::runtime::Handle::try_current().is_err() {
+            return self.delete_file_blocking(file);
+        }
+        let indexer = self.clone();
+        tokio::task::spawn_blocking(move || indexer.delete_file_blocking(file))
+            .await
+            .map_err(|err| anyhow!("file deletion task aborted: {err}"))?
+    }
+
+    pub(crate) fn delete_file_blocking(&self, file: PathBuf) -> Result<()> {
+        let _gate = self.indexing_gate.acquire()?;
         let rel = match self.rel_path(&file) {
             Ok(rel) => rel,
             Err(_) => return Ok(()),
@@ -1689,14 +1885,22 @@ impl Indexer {
         let searcher = self.reader.searcher();
         let mut snapshots = Vec::new();
         let mut skipped = 0usize;
-        let mut total_live: u64 = 0;
+        // Count against the same immutable searcher snapshot used for pagination. This keeps the
+        // total independent of where the requested page ends without materializing every stored
+        // document (which can include large bodies).
+        let total_live = searcher
+            .segment_readers()
+            .iter()
+            .fold(0u64, |total, segment_reader| {
+                let live_docs = segment_reader
+                    .alive_bitset()
+                    .map(|bits| bits.num_alive_docs() as u64)
+                    .unwrap_or_else(|| segment_reader.max_doc() as u64);
+                total.saturating_add(live_docs)
+            });
         'outer: for (segment_ord, segment_reader) in searcher.segment_readers().iter().enumerate() {
             let alive = segment_reader.alive_bitset();
             let max_doc = segment_reader.max_doc();
-            let live_in_segment = alive
-                .map(|bits| bits.num_alive_docs() as u64)
-                .unwrap_or_else(|| max_doc as u64);
-            total_live = total_live.saturating_add(live_in_segment);
             let doc_iter: Box<dyn Iterator<Item = u32>> = if let Some(bits) = alive {
                 Box::new(bits.iter_alive())
             } else {
@@ -3441,8 +3645,13 @@ fn sort_hits_deterministically(hits: &mut [Hit]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{sort_hits_deterministically, DocumentKind, Hit, IndexConfig, Indexer};
+    use super::{
+        sort_hits_deterministically, DocSnapshot, DocumentKind, Hit, IndexConfig, Indexer,
+        IndexingGate,
+    };
     use anyhow::Result;
+    use std::sync::{mpsc, Arc, Barrier};
+    use std::time::Duration;
     use tempfile::TempDir;
 
     fn hit(doc_id: &str, rel_path: &str, score: f32) -> Hit {
@@ -3491,6 +3700,102 @@ mod tests {
     }
 
     #[test]
+    fn indexing_gate_serializes_waiters_and_releases_after_panic() -> Result<()> {
+        let gate = Arc::new(IndexingGate::new());
+        let release_first = Arc::new(Barrier::new(2));
+        let (entered_tx, entered_rx) = mpsc::channel();
+
+        let first_gate = gate.clone();
+        let first_release = release_first.clone();
+        let first_tx = entered_tx.clone();
+        let first = std::thread::spawn(move || {
+            let _guard = first_gate.acquire().expect("first gate acquisition");
+            first_tx.send("first").expect("signal first acquisition");
+            first_release.wait();
+        });
+        assert_eq!(entered_rx.recv_timeout(Duration::from_secs(1))?, "first");
+
+        let second_gate = gate.clone();
+        let second = std::thread::spawn(move || {
+            let _guard = second_gate.acquire().expect("second gate acquisition");
+            entered_tx
+                .send("second")
+                .expect("signal second acquisition");
+        });
+        assert!(
+            entered_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            "second waiter entered while the first guard was held"
+        );
+        release_first.wait();
+        assert_eq!(entered_rx.recv_timeout(Duration::from_secs(1))?, "second");
+        first.join().expect("first indexing thread");
+        second.join().expect("second indexing thread");
+
+        let panic_gate = gate.clone();
+        let panic_result = std::panic::catch_unwind(move || {
+            let _guard = panic_gate.acquire().expect("panic gate acquisition");
+            panic!("simulated indexing panic");
+        });
+        assert!(panic_result.is_err());
+        let _guard = gate.acquire()?;
+        Ok(())
+    }
+
+    #[test]
+    fn incremental_mutations_share_the_rebuild_gate() -> Result<()> {
+        let repo = TempDir::new()?;
+        let state = TempDir::new()?;
+        let path = repo.path().join("gate.md");
+        std::fs::write(&path, "# INCREMENTAL_GATE_NEEDLE\n")?;
+        let config = IndexConfig::with_overrides(
+            repo.path(),
+            Some(state.path().to_path_buf()),
+            Vec::new(),
+            Vec::new(),
+            true,
+        )?;
+        let indexer = Indexer::with_config(repo.path().to_path_buf(), config)?;
+
+        let ingest_gate = indexer.indexing_gate.acquire()?;
+        let ingest_indexer = indexer.clone();
+        let ingest_path = path.clone();
+        let (ingest_tx, ingest_rx) = mpsc::channel();
+        let ingest_thread = std::thread::spawn(move || {
+            ingest_tx
+                .send(ingest_indexer.ingest_file_blocking(ingest_path))
+                .expect("send ingest result");
+        });
+        assert!(
+            ingest_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            "incremental ingest bypassed the rebuild gate"
+        );
+        drop(ingest_gate);
+        ingest_rx.recv_timeout(Duration::from_secs(2))??;
+        ingest_thread.join().expect("join ingest thread");
+        assert_eq!(indexer.search("INCREMENTAL_GATE_NEEDLE", 5)?.len(), 1);
+
+        std::fs::remove_file(&path)?;
+        let delete_gate = indexer.indexing_gate.acquire()?;
+        let delete_indexer = indexer.clone();
+        let delete_path = path.clone();
+        let (delete_tx, delete_rx) = mpsc::channel();
+        let delete_thread = std::thread::spawn(move || {
+            delete_tx
+                .send(delete_indexer.delete_file_blocking(delete_path))
+                .expect("send delete result");
+        });
+        assert!(
+            delete_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            "incremental delete bypassed the rebuild gate"
+        );
+        drop(delete_gate);
+        delete_rx.recv_timeout(Duration::from_secs(2))??;
+        delete_thread.join().expect("join delete thread");
+        assert!(indexer.search("INCREMENTAL_GATE_NEEDLE", 5)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn search_filters_missing_repo_docs() -> Result<()> {
         let repo = TempDir::new()?;
         let state = TempDir::new()?;
@@ -3513,6 +3818,70 @@ mod tests {
         std::fs::remove_file(&doomed)?;
 
         assert!(indexer.search("STALE_SEARCH_NEEDLE", 5)?.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn list_docs_has_stable_pages_and_page_invariant_total_across_segments() -> Result<()> {
+        let repo = TempDir::new()?;
+        let state = TempDir::new()?;
+        let first = repo.path().join("z.md");
+        std::fs::write(&first, "# Zed\n")?;
+        let config = IndexConfig::with_overrides(
+            repo.path(),
+            Some(state.path().to_path_buf()),
+            Vec::new(),
+            Vec::new(),
+            true,
+        )?;
+        let reopen_config = config.clone();
+        let indexer = Indexer::with_config(repo.path().to_path_buf(), config)?;
+        indexer.reindex_all_blocking()?;
+
+        for (name, body) in [("a.md", "# Alpha\n"), ("m.md", "# Middle\n")] {
+            let path = repo.path().join(name);
+            std::fs::write(&path, body)?;
+            indexer.ingest_file(path).await?;
+        }
+        assert!(
+            indexer.stats()?.segments >= 2,
+            "fixture must exercise pagination across multiple index segments"
+        );
+
+        let doc_ids = |docs: &[DocSnapshot]| {
+            docs.iter()
+                .map(|doc| doc.doc_id.clone())
+                .collect::<Vec<_>>()
+        };
+        let (all, total) = indexer.list_docs(0, usize::MAX)?;
+        assert_eq!(total, 3);
+        assert_eq!(all.len(), 3);
+
+        let mut paged_ids = Vec::new();
+        for offset in 0..all.len() {
+            let (page, page_total) = indexer.list_docs(offset, 1)?;
+            assert_eq!(page_total, total, "total changed at offset {offset}");
+            assert_eq!(page.len(), 1);
+            paged_ids.extend(doc_ids(&page));
+        }
+        assert_eq!(paged_ids, doc_ids(&all));
+
+        let (repeated, repeated_total) = indexer.list_docs(0, usize::MAX)?;
+        assert_eq!(repeated_total, total);
+        assert_eq!(doc_ids(&repeated), doc_ids(&all));
+
+        let (empty_page, past_end_total) = indexer.list_docs(99, 1)?;
+        assert!(empty_page.is_empty());
+        assert_eq!(past_end_total, total);
+        let (zero_limit_page, zero_limit_total) = indexer.list_docs(0, 0)?;
+        assert!(zero_limit_page.is_empty());
+        assert_eq!(zero_limit_total, total);
+
+        drop(indexer);
+        let reopened = Indexer::with_config_read_only(repo.path().to_path_buf(), reopen_config)?;
+        let (after_reopen, after_reopen_total) = reopened.list_docs(0, usize::MAX)?;
+        assert_eq!(after_reopen_total, total);
+        assert_eq!(doc_ids(&after_reopen), doc_ids(&all));
         Ok(())
     }
 }
@@ -3550,7 +3919,8 @@ mod snippet_integrity_tests {
 #[cfg(test)]
 mod reindex_tests {
     use super::{IndexConfig, Indexer};
-    use anyhow::Result;
+    use crate::error::{AppError, ERR_STALE_INDEX};
+    use anyhow::{Context, Result};
     use std::fs;
     use tantivy::schema::{Schema, STORED, TEXT};
     use tantivy::{doc, Index};
@@ -3574,6 +3944,56 @@ mod reindex_tests {
         Ok(())
     }
 
+    fn assert_stale_index_error(err: &anyhow::Error, index_dir: &std::path::Path) {
+        let app = err
+            .downcast_ref::<AppError>()
+            .expect("stale index errors must retain their AppError type");
+        assert_eq!(app.code, ERR_STALE_INDEX);
+        let details = app
+            .details
+            .as_ref()
+            .expect("stale index error must include remediation context");
+        assert_eq!(details["staleIndex"], true);
+        assert_eq!(details["stateDir"], index_dir.display().to_string());
+        assert!(details["reindexHint"]
+            .as_str()
+            .is_some_and(|hint| hint.contains("docdexd index --repo")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn in_repo_state_lifecycle_lock_preserves_repo_root_permissions() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let repo = TempDir::new()?;
+        write_repo(repo.path())?;
+        fs::set_permissions(repo.path(), fs::Permissions::from_mode(0o755))?;
+        let state_dir = repo.path().join(".docdex-state");
+        let config = IndexConfig::with_overrides(
+            repo.path(),
+            Some(state_dir.clone()),
+            Vec::new(),
+            Vec::new(),
+            true,
+        )?;
+        let lock_path = config.state_dir().with_extension("lifecycle.lock");
+
+        let _indexer = Indexer::with_config(repo.path().to_path_buf(), config)?;
+        assert_eq!(
+            fs::metadata(repo.path())?.permissions().mode() & 0o777,
+            0o755,
+            "opening an in-repo index must not chmod the repository root"
+        );
+        let lock_metadata = fs::metadata(&lock_path)
+            .with_context(|| format!("expected lifecycle lock at {}", lock_path.display()))?;
+        assert_eq!(
+            lock_metadata.permissions().mode() & 0o777,
+            0o600,
+            "the lifecycle lock itself should remain private"
+        );
+        Ok(())
+    }
+
     #[test]
     fn with_config_auto_reindexes_stale_index() -> Result<()> {
         let repo = TempDir::new()?;
@@ -3592,6 +4012,92 @@ mod reindex_tests {
         let indexer = Indexer::with_config(repo.path().to_path_buf(), config)?;
         let hits = indexer.search("SCHEMA_TOKEN", 1)?;
         assert!(!hits.is_empty(), "expected hits after auto reindex");
+        Ok(())
+    }
+
+    #[test]
+    fn with_config_auto_reindexes_index_with_malformed_metadata() -> Result<()> {
+        let repo = TempDir::new()?;
+        write_repo(repo.path())?;
+        let state_root = TempDir::new()?;
+        let config = IndexConfig::with_overrides(
+            repo.path(),
+            Some(state_root.path().to_path_buf()),
+            Vec::new(),
+            Vec::new(),
+            true,
+        )?;
+        let index_dir = config.state_dir().to_path_buf();
+        create_incompatible_index(&index_dir)?;
+        fs::write(index_dir.join("meta.json"), b"{truncated")?;
+
+        let indexer = Indexer::with_config(repo.path().to_path_buf(), config)?;
+        let hits = indexer.search("SCHEMA_TOKEN", 1)?;
+        assert!(
+            !hits.is_empty(),
+            "malformed metadata must not prevent quarantine and rebuild"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn with_config_read_only_rejects_stale_index_without_mutating_it() -> Result<()> {
+        let repo = TempDir::new()?;
+        write_repo(repo.path())?;
+        let state_root = TempDir::new()?;
+        let config = IndexConfig::with_overrides(
+            repo.path(),
+            Some(state_root.path().to_path_buf()),
+            Vec::new(),
+            Vec::new(),
+            true,
+        )?;
+        let index_dir = config.state_dir().to_path_buf();
+        create_incompatible_index(&index_dir)?;
+        let sentinel_path = index_dir.join("read-only-sentinel");
+        fs::write(&sentinel_path, b"must survive stale read-only open")?;
+        let meta_before = fs::read(index_dir.join("meta.json"))?;
+
+        let err = match Indexer::with_config_read_only(repo.path().to_path_buf(), config) {
+            Ok(_) => panic!("read-only open must not rebuild a stale index"),
+            Err(err) => err,
+        };
+
+        assert_stale_index_error(&err, &index_dir);
+        assert_eq!(fs::read(index_dir.join("meta.json"))?, meta_before);
+        assert_eq!(
+            fs::read(&sentinel_path)?,
+            b"must survive stale read-only open"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn with_config_read_only_does_not_create_index_in_incomplete_state_dir() -> Result<()> {
+        let repo = TempDir::new()?;
+        write_repo(repo.path())?;
+        let state_root = TempDir::new()?;
+        let config = IndexConfig::with_overrides(
+            repo.path(),
+            Some(state_root.path().to_path_buf()),
+            Vec::new(),
+            Vec::new(),
+            true,
+        )?;
+        let index_dir = config.state_dir().to_path_buf();
+        fs::create_dir_all(&index_dir)?;
+        let sentinel_path = index_dir.join("incomplete-state-sentinel");
+        fs::write(&sentinel_path, b"read only")?;
+        assert!(!index_dir.join("meta.json").exists());
+
+        let err = match Indexer::with_config_read_only(repo.path().to_path_buf(), config) {
+            Ok(_) => panic!("read-only open must not create an index in stale state"),
+            Err(err) => err,
+        };
+
+        assert_stale_index_error(&err, &index_dir);
+        assert!(!index_dir.join("meta.json").exists());
+        assert_eq!(fs::read(&sentinel_path)?, b"read only");
         Ok(())
     }
 }

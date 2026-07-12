@@ -1,6 +1,6 @@
 use crate::index::{FileDecision, IndexConfig, Indexer};
 use crate::libs;
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -42,8 +42,21 @@ pub async fn reindex_repo(
     index_config: IndexConfig,
     options: IndexingOptions,
 ) -> Result<IndexingReport> {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return reindex_repo_blocking(repo_root, index_config, options);
+    }
+    tokio::task::spawn_blocking(move || reindex_repo_blocking(repo_root, index_config, options))
+        .await
+        .map_err(|err| anyhow!("repo indexing task aborted: {err}"))?
+}
+
+fn reindex_repo_blocking(
+    repo_root: PathBuf,
+    index_config: IndexConfig,
+    options: IndexingOptions,
+) -> Result<IndexingReport> {
     let indexer = Indexer::with_config(repo_root, index_config)?;
-    indexer.reindex_all().await?;
+    indexer.reindex_all_blocking()?;
 
     let docs_indexed = indexer.stats().ok().map(|stats| stats.num_docs);
     let libs_report = match options.libs_sources {
@@ -68,6 +81,14 @@ pub async fn ingest_file(
     index_config: IndexConfig,
     file: PathBuf,
 ) -> Result<FileDecision> {
-    let indexer = Indexer::with_config(repo_root, index_config)?;
-    indexer.ingest_file(file).await
+    if tokio::runtime::Handle::try_current().is_err() {
+        let indexer = Indexer::with_config(repo_root, index_config)?;
+        return indexer.ingest_file_blocking(file);
+    }
+    tokio::task::spawn_blocking(move || {
+        let indexer = Indexer::with_config(repo_root, index_config)?;
+        indexer.ingest_file_blocking(file)
+    })
+    .await
+    .map_err(|err| anyhow!("file ingestion task aborted: {err}"))?
 }

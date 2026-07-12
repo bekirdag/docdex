@@ -1,2 +1,7 @@
 [advisories]
+# RUSTSEC-2025-0009 is a ring 0.17.9 denial-of-service when overflow checks are
+# explicitly enabled. Docdex release builds leave overflow checks disabled and
+# TLS record sizing is not affected. Upgrading ring currently conflicts with
+# tree-sitter-javascript 0.21.4's narrow `cc ~1.0.90` build dependency; remove
+# this exception when the Tree-sitter grammar stack is migrated together.
 ignore = ["RUSTSEC-2025-0009"]

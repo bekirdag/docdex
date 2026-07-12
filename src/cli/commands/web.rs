@@ -15,17 +15,20 @@ use crate::orchestrator::{
 use crate::tier2::Tier2Config;
 use crate::util;
 use crate::web;
+use crate::web::policy::{parse_and_validate_outbound_url, OutboundUrlError};
 use crate::web::readability::extract_readable_text;
 use crate::web::scraper::ScraperEngine;
 use crate::web::status::fetch_status;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use reqwest::Method;
 use serde_json::json;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use url::Url;
+use tracing::warn;
 use uuid::Uuid;
+
+const URL_POLICY_ERROR_MESSAGE: &str = "url is not allowed by outbound request policy";
 
 pub async fn run_search(query: String, limit: usize) -> Result<()> {
     if !crate::cli::cli_local_mode() {
@@ -66,8 +69,9 @@ pub async fn run_fetch(url: String) -> Result<()> {
     }
     util::init_logging("warn")?;
     let config = web::WebConfig::from_env();
-    let url = Url::parse(url.trim())
-        .map_err(|err| AppError::new(ERR_INVALID_ARGUMENT, format!("invalid url: {err}")))?;
+    let url = parse_and_validate_outbound_url(url.trim())
+        .await
+        .map_err(|_| AppError::new(ERR_INVALID_ARGUMENT, URL_POLICY_ERROR_MESSAGE))?;
     let layout = web::cache::cache_layout_from_config();
     if let Some(layout) = layout.as_ref() {
         if let Ok(Some(payload)) =
@@ -83,13 +87,27 @@ pub async fn run_fetch(url: String) -> Result<()> {
             }
         }
     }
-    let scraper = ScraperEngine::from_web_config(&config).map_err(|err| {
-        let message = err.to_string();
-        AppError::new(ERR_MISSING_DEPENDENCY, message)
-    })?;
+    let scraper = ScraperEngine::from_web_config(&config)
+        .await
+        .map_err(|err| {
+            let message = err.to_string();
+            AppError::new(ERR_MISSING_DEPENDENCY, message)
+        })?;
     web::fetch::enforce_domain_delay(&url, config.fetch_delay).await;
     let status_probe = fetch_status(&url, &config.user_agent, config.request_timeout).await;
-    let fetch_result = scraper.fetch_dom(&url).await?;
+    let fetch_outcome = scraper.fetch_dom(&url).await;
+    let shutdown_outcome = web::chrome::shutdown_global().await;
+    if let Err(err) = shutdown_outcome.as_ref() {
+        warn!(target: "docdexd", error = ?err, "failed to shut down Chromium after CLI web fetch");
+    }
+    let fetch_result = match fetch_outcome {
+        Ok(result) => result,
+        Err(err) if err.chain().any(|cause| cause.is::<OutboundUrlError>()) => {
+            return Err(AppError::new(ERR_INVALID_ARGUMENT, URL_POLICY_ERROR_MESSAGE).into());
+        }
+        Err(err) => return Err(err),
+    };
+    shutdown_outcome.context("shut down Chromium after CLI web fetch")?;
     let status = fetch_result.status.or(status_probe);
     let body = extract_readable_text(&fetch_result.html, &url).unwrap_or_else(|| {
         let cleaned = ammonia::Builder::default()
@@ -273,7 +291,13 @@ pub async fn run_rag(
         ranking_surface: crate::search::RankingSurface::Search,
         async_web: false,
     };
-    let waterfall = run_waterfall(request).await?;
+    let waterfall_outcome = run_waterfall(request).await;
+    let shutdown_outcome = web::chrome::shutdown_global().await;
+    if let Err(err) = shutdown_outcome.as_ref() {
+        warn!(target: "docdexd", error = ?err, "failed to shut down Chromium after CLI web RAG");
+    }
+    let waterfall = waterfall_outcome?;
+    shutdown_outcome.context("shut down Chromium after CLI web RAG")?;
     let _ = dag_logging::log_node(
         &repo_state_root,
         &request_id,

@@ -2,6 +2,14 @@ use super::*;
 
 pub(super) fn init_db(path: &Path) -> Result<()> {
     let conn = open_db(path)?;
+    let stored_schema_version = load_existing_schema_version(&conn)?;
+    if let Some(version) = stored_schema_version {
+        if version > SCHEMA_VERSION {
+            return Err(anyhow!(
+                "personal preferences schema version {version} is newer than supported version {SCHEMA_VERSION}"
+            ));
+        }
+    }
     conn.execute_batch(
         "PRAGMA journal_mode=WAL;
          PRAGMA foreign_keys=ON;
@@ -970,20 +978,56 @@ pub(super) fn init_db(path: &Path) -> Result<()> {
          CREATE INDEX IF NOT EXISTS idx_pp_generated_skill_events_skill
              ON pp_generated_skill_events(skill_id, created_at_ms);",
     )?;
-    seed_default_category_policies(&conn)?;
-    seed_default_sensitivity_levels(&conn)?;
-    seed_default_context_policies(&conn)?;
-    seed_default_retention_policies(&conn)?;
-    backfill_rich_capture_lineage(&conn)?;
-    backfill_rich_derived_materialization(&conn)?;
-    backfill_claims_from_records(&conn, None)?;
-    let claims = load_all_claims(&conn)?;
-    rebuild_operator_routines_tx(&conn, None, &claims, now_ms())?;
-    conn.execute(
-        "INSERT OR REPLACE INTO personal_preferences_meta(key, value) VALUES (?1, ?2)",
-        params!["schema_version", SCHEMA_VERSION.to_string()],
-    )?;
+    let requires_data_migration = stored_schema_version != Some(SCHEMA_VERSION);
+
+    if requires_data_migration {
+        // Backfills touch many related rows. Keep the migration atomic and
+        // avoid an fsync-sized autocommit for every reconstructed claim.
+        let tx = conn.unchecked_transaction()?;
+        seed_default_category_policies(&tx)?;
+        seed_default_sensitivity_levels(&tx)?;
+        seed_default_context_policies(&tx)?;
+        seed_default_retention_policies(&tx)?;
+        backfill_rich_capture_lineage(&tx)?;
+        backfill_rich_derived_materialization(&tx)?;
+        backfill_claims_from_records(&tx, None)?;
+        let claims = load_all_claims(&tx)?;
+        rebuild_operator_routines_tx(&tx, None, &claims, now_ms())?;
+        tx.execute(
+            "INSERT OR REPLACE INTO personal_preferences_meta(key, value) VALUES (?1, ?2)",
+            params!["schema_version", SCHEMA_VERSION.to_string()],
+        )?;
+        tx.commit()?;
+    }
     Ok(())
+}
+
+fn load_existing_schema_version(conn: &Connection) -> Result<Option<u32>> {
+    let meta_table_exists = conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1
+             FROM sqlite_master
+             WHERE type = 'table' AND name = 'personal_preferences_meta'
+         )",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !meta_table_exists {
+        return Ok(None);
+    }
+
+    conn.query_row(
+        "SELECT value FROM personal_preferences_meta WHERE key = 'schema_version'",
+        [],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()?
+    .map(|value| {
+        value
+            .parse::<u32>()
+            .with_context(|| format!("parse personal preferences schema version {value:?}"))
+    })
+    .transpose()
 }
 
 pub(super) fn ensure_column(

@@ -5,11 +5,50 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="${ROOT_DIR}/target/test_logs"
 DOCDEX_HTTP_BASE_URL="${DOCDEX_HTTP_BASE_URL:-http://127.0.0.1:28491}"
 USE_EXISTING_SERVER="${DOCDEX_USE_EXISTING_SERVER:-0}"
+ALLOW_EXISTING_SERVER_MUTATION="${DOCDEX_ALLOW_EXISTING_SERVER_MUTATION:-0}"
 API_BASE_URL=""
 API_SERVER_PID=""
+API_SERVER_WORK_DIR=""
 API_SERVER_STATE_DIR=""
+API_SERVER_HOME_DIR=""
+API_SERVER_GLOBAL_STATE_DIR=""
 API_SERVER_LOCK_PATH=""
+MEMORY_DAG_WORKDIR=""
 export DOCDEX_TEST_ALLOW_MULTI_DAEMON="${DOCDEX_TEST_ALLOW_MULTI_DAEMON:-1}"
+
+log() {
+  printf "[run-all] %s\n" "$*" >&2
+}
+
+usage() {
+  cat <<'USAGE'
+Usage: scripts/test_run_all.sh [--help]
+
+Runs the default unit, integration, and isolated API suites.
+
+Environment-controlled extended semantics are unchanged:
+  DOCDEX_RUN_EXTENDED_TESTS=1  Run the existing extended suite.
+  DOCDEX_RUN_MEMORY_DAG=1      Include memory-DAG when prerequisites are set.
+  DOCDEX_RUN_RELEASE_GATE=1    Use the fail-closed external release gate.
+
+Options:
+  -h, --help                   Show this help without running tests.
+USAGE
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      log "unknown argument: $1"
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
 
 if [[ -z "${DOCDEX_BIN:-}" && -x "${ROOT_DIR}/target/debug/docdexd" ]]; then
   DOCDEX_BIN="${ROOT_DIR}/target/debug/docdexd"
@@ -19,9 +58,10 @@ fi
 
 mkdir -p "${LOG_DIR}"
 
-log() {
-  printf "[run-all] %s\n" "$*" >&2
-}
+if [[ "$USE_EXISTING_SERVER" == "1" && "$ALLOW_EXISTING_SERVER_MUTATION" != "1" ]]; then
+  log "refusing stateful tests against an existing daemon; also set DOCDEX_ALLOW_EXISTING_SERVER_MUTATION=1 to acknowledge profile/hook/MCP writes"
+  exit 2
+fi
 
 run_step() {
   local name="$1"
@@ -68,6 +108,20 @@ wait_for_health() {
   return 1
 }
 
+terminate_pid() {
+  local pid="$1"
+  local attempts=0
+  kill "$pid" >/dev/null 2>&1 || true
+  while kill -0 "$pid" >/dev/null 2>&1 && (( attempts < 20 )); do
+    sleep 0.1
+    attempts=$((attempts + 1))
+  done
+  if kill -0 "$pid" >/dev/null 2>&1; then
+    kill -KILL "$pid" >/dev/null 2>&1 || true
+  fi
+  wait "$pid" >/dev/null 2>&1 || true
+}
+
 start_api_server() {
   if [[ "${USE_EXISTING_SERVER}" == "1" ]]; then
     API_BASE_URL="${DOCDEX_HTTP_BASE_URL}"
@@ -81,10 +135,20 @@ start_api_server() {
   local port
   port="$(pick_free_port)"
   API_BASE_URL="http://127.0.0.1:${port}"
-  API_SERVER_STATE_DIR="$(mktemp -d "${LOG_DIR}/run_all_state.XXXX")"
-  API_SERVER_LOCK_PATH="$(mktemp "${LOG_DIR}/run_all_lock.XXXX")"
-  rm -f "${API_SERVER_LOCK_PATH}"
-  DOCDEX_STATE_DIR="${API_SERVER_STATE_DIR}" \
+  API_SERVER_WORK_DIR="$(mktemp -d "${LOG_DIR}/run_all_server.XXXX")"
+  API_SERVER_STATE_DIR="${API_SERVER_WORK_DIR}/state"
+  API_SERVER_HOME_DIR="${API_SERVER_WORK_DIR}/home"
+  API_SERVER_GLOBAL_STATE_DIR="${API_SERVER_WORK_DIR}/global"
+  API_SERVER_LOCK_PATH="${API_SERVER_WORK_DIR}/daemon.lock"
+  mkdir -p "${API_SERVER_STATE_DIR}" "${API_SERVER_HOME_DIR}/.docdex" \
+    "${API_SERVER_GLOBAL_STATE_DIR}"
+  cat >"${API_SERVER_HOME_DIR}/.docdex/config.toml" <<EOF
+[core]
+global_state_dir = "${API_SERVER_GLOBAL_STATE_DIR}"
+EOF
+  HOME="${API_SERVER_HOME_DIR}" \
+    DOCDEX_STATE_DIR="${API_SERVER_STATE_DIR}" \
+    DOCDEX_GLOBAL_STATE_DIR="${API_SERVER_GLOBAL_STATE_DIR}" \
     DOCDEX_DAEMON_LOCK_PATH="${API_SERVER_LOCK_PATH}" \
     DOCDEX_ENABLE_MCP=1 \
     "${DOCDEX_BIN}" daemon \
@@ -104,15 +168,72 @@ start_api_server() {
 
 stop_api_server() {
   if [[ -n "${API_SERVER_PID}" ]]; then
-    kill "${API_SERVER_PID}" >/dev/null 2>&1 || true
-    wait "${API_SERVER_PID}" >/dev/null 2>&1 || true
+    terminate_pid "${API_SERVER_PID}"
   fi
-  if [[ -n "${API_SERVER_LOCK_PATH}" && -f "${API_SERVER_LOCK_PATH}" ]]; then
-    rm -f "${API_SERVER_LOCK_PATH}"
+  if [[ -n "${API_SERVER_WORK_DIR}" && -d "${API_SERVER_WORK_DIR}" ]]; then
+    rm -rf "${API_SERVER_WORK_DIR}"
   fi
-  if [[ -n "${API_SERVER_STATE_DIR}" && -d "${API_SERVER_STATE_DIR}" ]]; then
-    rm -rf "${API_SERVER_STATE_DIR}"
+  if [[ -n "${MEMORY_DAG_WORKDIR}" && -d "${MEMORY_DAG_WORKDIR}" ]]; then
+    rm -rf "${MEMORY_DAG_WORKDIR}"
   fi
+  API_SERVER_PID=""
+  API_SERVER_WORK_DIR=""
+  API_SERVER_LOCK_PATH=""
+  API_SERVER_STATE_DIR=""
+  API_SERVER_HOME_DIR=""
+  API_SERVER_GLOBAL_STATE_DIR=""
+  MEMORY_DAG_WORKDIR=""
+}
+
+run_memory_dag() {
+  if [[ -z "${OLLAMA_BASE_URL:-}" ]]; then
+    log "memory DAG requires OLLAMA_BASE_URL"
+    return 1
+  fi
+  if [[ -z "${EMBEDDING_MODEL:-}" ]]; then
+    log "memory DAG requires EMBEDDING_MODEL"
+    return 1
+  fi
+  if (( BASH_VERSINFO[0] < 4 )); then
+    log "memory DAG START_SERVER mode requires Bash 4+"
+    return 1
+  fi
+
+  local port status home_dir state_dir global_state_dir repo_a repo_b log_file
+  port="$(pick_free_port)"
+  MEMORY_DAG_WORKDIR="$(mktemp -d "${LOG_DIR}/memory_dag.XXXX")"
+  home_dir="${MEMORY_DAG_WORKDIR}/home"
+  state_dir="${MEMORY_DAG_WORKDIR}/state"
+  global_state_dir="${MEMORY_DAG_WORKDIR}/global"
+  repo_a="${MEMORY_DAG_WORKDIR}/repo-a"
+  repo_b="${MEMORY_DAG_WORKDIR}/repo-b"
+  log_file="${MEMORY_DAG_WORKDIR}/daemon.log"
+  mkdir -p "$home_dir/.docdex" "$state_dir" "$global_state_dir" \
+    "$repo_a/.git" "$repo_b/.git"
+  printf '# Memory DAG repo A\n' >"${repo_a}/README.md"
+  printf '# Memory DAG repo B\n' >"${repo_b}/README.md"
+  cat >"${home_dir}/.docdex/config.toml" <<EOF
+[core]
+global_state_dir = "${global_state_dir}"
+EOF
+  status=0
+  env \
+    HOME="${home_dir}" \
+    DOCDEX_STATE_DIR="${state_dir}" \
+    DOCDEX_GLOBAL_STATE_DIR="${global_state_dir}" \
+    DOCDEX_DAEMON_LOCK_PATH="${MEMORY_DAG_WORKDIR}/daemon.lock" \
+    DOCDEXD_BIN="${DOCDEX_BIN}" \
+    REPO_ROOT="${repo_a}" \
+    REPO_B="${repo_b}" \
+    START_SERVER=1 \
+    SERVER_URL="http://127.0.0.1:${port}" \
+    LOG_FILE="${log_file}" \
+    OLLAMA_BASE_URL="${OLLAMA_BASE_URL}" \
+    EMBEDDING_MODEL="${EMBEDDING_MODEL}" \
+    "${ROOT_DIR}/scripts/test_memory_dag.sh" || status=$?
+  rm -rf "$MEMORY_DAG_WORKDIR"
+  MEMORY_DAG_WORKDIR=""
+  return "$status"
 }
 
 trap stop_api_server EXIT
@@ -120,46 +241,12 @@ trap stop_api_server EXIT
 FAILURES=0
 RESULTS=()
 
-run_step "unit_component" cargo test --lib
-if [[ -x "${ROOT_DIR}/scripts/test_fd_hardening.sh" ]]; then
-  run_step "unit_fd_hardening" "${ROOT_DIR}/scripts/test_fd_hardening.sh"
-fi
-if command -v node >/dev/null 2>&1 && [[ -f "${ROOT_DIR}/npm/test/postinstall_setup.test.js" ]]; then
-  run_step "unit_node_postinstall" node --test "${ROOT_DIR}/npm/test/postinstall_setup.test.js"
-fi
-if command -v node >/dev/null 2>&1 && [[ -f "${ROOT_DIR}/npm/test/installer_local_fallback.test.js" ]]; then
-  run_step "unit_node_installer_local" node --test "${ROOT_DIR}/npm/test/installer_local_fallback.test.js"
-fi
-if command -v node >/dev/null 2>&1 && [[ -f "${ROOT_DIR}/npm/test/uninstall.test.js" ]]; then
-run_step "unit_node_uninstall" node --test "${ROOT_DIR}/npm/test/uninstall.test.js"
-fi
-if command -v node >/dev/null 2>&1 && [[ -f "${ROOT_DIR}/npm/test/mcp_stdio_bridge.test.js" ]]; then
-  run_step "unit_node_mcp_stdio_bridge" node --test "${ROOT_DIR}/npm/test/mcp_stdio_bridge.test.js"
-fi
-run_step "unit_daemon_lock_path" cargo test --lib default_lock_path_
-run_step "unit_auto_reindex" cargo test --lib with_config_auto_reindexes_stale_index
-run_step "unit_open_by_path" cargo test --lib open_by_path_resolves_yaml
-run_step "unit_doc_type" cargo test --lib doc_type_classifies_paths
-run_step "unit_snippet_integrity" cargo test --lib line_safe_snippet_
-run_step "unit_ignore_rules" cargo test --lib file_decision_tests
-run_step "unit_repo_manager_lru" cargo test --lib repo_manager_
-# integration suite includes delegate_http and mcp_local_completion
-run_step "integration_all" cargo test -j1 --tests -- --test-threads=1
-run_step "integration_daemon_ollama_optional" cargo test --test daemon_ollama_optional
-run_step "integration_http_auto_reindex" cargo test --test http_search_auto_reindex
-run_step "integration_snippet_open_by_path" cargo test --test http_snippet_open_by_path
-run_step "integration_http_doc_type" cargo test --test http_search_doc_type
-run_step "integration_http_ignore_default_patterns" cargo test --test http_ignore_default_patterns
-run_step "integration_mcp_stdio_bridge" cargo test --test mcp_stdio_bridge
-OS_NAME="$(uname -s)"
-case "${OS_NAME}" in
-  Darwin|Linux)
-    run_step "integration_mcp_ipc_unix" cargo test --test mcp_ipc_unix
-    ;;
-  MINGW*|MSYS*|CYGWIN*)
-    run_step "integration_mcp_ipc_windows" cargo test --test mcp_ipc_windows
-    ;;
-esac
+cd "$ROOT_DIR" || exit 1
+
+run_step "unit_component" cargo test --locked --lib
+# The complete integration suite already includes the formerly repeated targeted
+# HTTP, daemon, stdio, and platform IPC test binaries.
+run_step "integration_all" cargo test --locked -j1 --test '*' -- --test-threads=1
 
 if start_api_server; then
   run_step "api_http" env DOCDEX_HTTP_BASE_URL="${API_BASE_URL}" "${ROOT_DIR}/scripts/test_api_http.sh"
@@ -175,9 +262,11 @@ else
   FAILURES=$((FAILURES + 4))
 fi
 
+stop_api_server
+
 if [[ "${DOCDEX_RUN_EXTENDED_TESTS:-0}" == "1" ]]; then
   if [[ -x "${ROOT_DIR}/scripts/test_v2_1.sh" ]]; then
-    run_step "extended_v2_1" env DOCDEX_BIN="${DOCDEX_BIN}" "${ROOT_DIR}/scripts/test_v2_1.sh"
+    run_step "extended_v2_1" env DOCDEX_BIN="${DOCDEX_BIN}" FAST=1 "${ROOT_DIR}/scripts/test_v2_1.sh"
   fi
   if [[ -x "${ROOT_DIR}/scripts/test_e2e.sh" ]]; then
     run_step "extended_e2e" env DOCDEXD_BIN="${DOCDEX_BIN}" "${ROOT_DIR}/scripts/test_e2e.sh"
@@ -186,10 +275,30 @@ if [[ "${DOCDEX_RUN_EXTENDED_TESTS:-0}" == "1" ]]; then
     run_step "extended_ast" env DOCDEX_BIN="${DOCDEX_BIN}" "${ROOT_DIR}/scripts/test_ast.sh"
   fi
   if [[ "${DOCDEX_RUN_MEMORY_DAG:-0}" == "1" && -x "${ROOT_DIR}/scripts/test_memory_dag.sh" ]]; then
-    run_step "extended_memory_dag" env DOCDEXD_BIN="${DOCDEX_BIN}" "${ROOT_DIR}/scripts/test_memory_dag.sh"
+    run_step "extended_memory_dag" run_memory_dag
+  else
+    RESULTS+=("extended_memory_dag|skip|set DOCDEX_RUN_MEMORY_DAG=1 with OLLAMA_BASE_URL and EMBEDDING_MODEL")
+  fi
+  if [[ -x "${ROOT_DIR}/scripts/test_single_daemon.sh" ]]; then
+    run_step "extended_single_daemon" env DOCDEX_BIN="${DOCDEX_BIN}" "${ROOT_DIR}/scripts/test_single_daemon.sh" --repo "${ROOT_DIR}"
+  fi
+  if command -v npm >/dev/null 2>&1 && [[ -x "${ROOT_DIR}/scripts/test_npm_install_matrix.sh" ]]; then
+    run_step "extended_npm_install_matrix" env DOCDEX_NPM_MATRIX_DIR="${LOG_DIR}/npm_install_matrix" "${ROOT_DIR}/scripts/test_npm_install_matrix.sh"
+  fi
+  if [[ -x "${ROOT_DIR}/scripts/test_release_feature_matrix.sh" ]]; then
+    matrix_gate="--strict-external"
+    if [[ "${DOCDEX_RUN_RELEASE_GATE:-0}" == "1" ]]; then
+      matrix_gate="--release-gate"
+    fi
+    run_step "extended_release_feature_matrix" env DOCDEX_BIN="${DOCDEX_BIN}" "${ROOT_DIR}/scripts/test_release_feature_matrix.sh" "${matrix_gate}"
+  fi
+  if [[ "${DOCDEX_RUN_REAL_WEB:-0}" == "1" && -x "${ROOT_DIR}/scripts/test_mcp_web_search.sh" ]]; then
+    run_step "extended_real_web" env DOCDEXD_BIN="${DOCDEX_BIN}" "${ROOT_DIR}/scripts/test_mcp_web_search.sh" "${ROOT_DIR}"
+  else
+    RESULTS+=("extended_real_web|skip|set DOCDEX_RUN_REAL_WEB=1 to allow real network discovery")
   fi
   if command -v npm >/dev/null 2>&1 && [[ -f "${ROOT_DIR}/npm/package.json" ]]; then
-    run_step "extended_node" bash -c "cd \"${ROOT_DIR}/npm\" && npm test"
+    run_step "extended_node" npm --prefix "${ROOT_DIR}/npm" test
   fi
 fi
 

@@ -6,30 +6,254 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
-if [[ $# -lt 1 || $# -gt 2 ]]; then
-  echo "usage: docdex-apply-release /path/to/docdexd [revision]" >&2
+if [[ $# -ne 3 ]]; then
+  echo "usage: docdex-apply-release /path/to/docdexd revision expected-sha256" >&2
   exit 2
 fi
 
 SOURCE_BIN="$1"
-REVISION="${2:-manual}"
-SAFE_REVISION="$(printf '%s' "${REVISION}" | tr -c 'A-Za-z0-9._-' '_')"
-RELEASE_BIN="/opt/docdex/releases/docdexd-${SAFE_REVISION}"
+REVISION="${2:-}"
+EXPECTED_SHA256="${3:-}"
+SERVICE_USER="docdex"
+DEPLOY_USER="${SUDO_USER:-deploy}"
+STAGING_PARENT="/var/lib/docdex-deploy"
+STAGING_ROOT="${STAGING_PARENT}/incoming"
+if [[ ! "${DEPLOY_USER}" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || ! id -u "${DEPLOY_USER}" >/dev/null 2>&1; then
+  echo "unable to resolve the invoking deploy user" >&2
+  exit 2
+fi
+if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
+  echo "Docdex service user does not exist: ${SERVICE_USER}" >&2
+  exit 2
+fi
+if [[ ! "${EXPECTED_SHA256}" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "expected-sha256 must be a lowercase 64-character SHA-256 digest" >&2
+  exit 2
+fi
+
+SOURCE_KIND=""
+if [[ "${REVISION}" =~ ^[0-9a-f]{40}$ ]]; then
+  SOURCE_KIND="candidate"
+  EXPECTED_SOURCE="${STAGING_ROOT}/${REVISION}/docdexd"
+  if [[ "${SOURCE_BIN}" != "${EXPECTED_SOURCE}" ]] \
+    || [[ "$(readlink -f -- "${SOURCE_BIN}" 2>/dev/null || true)" != "${EXPECTED_SOURCE}" ]]; then
+    echo "candidate source must be the non-symlink staging path ${EXPECTED_SOURCE}" >&2
+    exit 2
+  fi
+elif [[ "${REVISION}" =~ ^rollback-[0-9a-f]{40}$ ]]; then
+  SOURCE_KIND="rollback"
+  if [[ ! "${SOURCE_BIN}" =~ ^/opt/docdex/releases/docdexd-[A-Za-z0-9._-]+$ ]] \
+    || [[ "$(readlink -f -- "${SOURCE_BIN}" 2>/dev/null || true)" != "${SOURCE_BIN}" ]]; then
+    echo "rollback source must be an existing immutable Docdex release" >&2
+    exit 2
+  fi
+else
+  echo "revision must be a 40-character commit SHA or rollback-<commit SHA>" >&2
+  exit 2
+fi
+
+if [[ "${SOURCE_KIND}" == "rollback" ]]; then
+  RELEASE_BIN="${SOURCE_BIN}"
+else
+  RELEASE_BIN="/opt/docdex/releases/docdexd-${REVISION}"
+fi
+ACTIVE_BIN="/opt/docdex/bin/docdexd"
+HEALTH_PORT="${DOCDEX_HEALTH_PORT:-28492}"
+if [[ ! "${HEALTH_PORT}" =~ ^[0-9]+$ ]] || (( HEALTH_PORT < 1 || HEALTH_PORT > 65535 )); then
+  echo "DOCDEX_HEALTH_PORT must be a valid TCP port" >&2
+  exit 2
+fi
+LOCAL_BASE_URL="http://127.0.0.1:${HEALTH_PORT}"
+
+service_runs_binary() {
+  local expected_bin="$1"
+  local main_pid=""
+  local running_bin=""
+  main_pid="$(systemctl show --property MainPID --value docdex.service 2>/dev/null || true)"
+  if [[ ! "${main_pid}" =~ ^[1-9][0-9]*$ ]]; then
+    return 1
+  fi
+  running_bin="$(readlink -f "/proc/${main_pid}/exe" 2>/dev/null || true)"
+  [[ "${running_bin}" == "${expected_bin}" ]]
+}
+
+# Invoked indirectly by the EXIT trap below.
+# shellcheck disable=SC2329
+stop_and_disable_service() {
+  local failed=0
+  rm -f "${ACTIVE_BIN}" || failed=1
+  systemctl stop docdex.service || failed=1
+  systemctl disable docdex.service >/dev/null || failed=1
+  [[ ! -e "${ACTIVE_BIN}" ]] || failed=1
+  ! systemctl is-active --quiet docdex.service || failed=1
+  ! systemctl is-enabled --quiet docdex.service || failed=1
+  return "${failed}"
+}
+
+PREVIOUS_BIN=""
+if [[ -e "${ACTIVE_BIN}" && ! -L "${ACTIVE_BIN}" ]]; then
+  echo "active Docdex binary must be an immutable release symlink" >&2
+  exit 1
+fi
+if [[ -L "${ACTIVE_BIN}" ]]; then
+  PREVIOUS_BIN="$(readlink -f "${ACTIVE_BIN}" || true)"
+  if [[ ! "${PREVIOUS_BIN}" =~ ^/opt/docdex/releases/docdexd-[A-Za-z0-9._-]+$ ]] \
+    || [[ ! -x "${PREVIOUS_BIN}" ]]; then
+    echo "active Docdex binary is not a valid immutable release" >&2
+    exit 1
+  fi
+fi
+if [[ "${SOURCE_KIND}" == "rollback" ]]; then
+  # A failed explicit rollback must never reactivate the release it was asked
+  # to replace. The EXIT trap will stop the service instead.
+  PREVIOUS_BIN=""
+fi
+ACTIVATED=0
+TEMP_BIN=""
+
+# Invoked indirectly by the EXIT trap below.
+# shellcheck disable=SC2329
+rollback_on_exit() {
+  local status=$?
+  local rollback_ok=0
+  trap - EXIT
+  set +e
+  if [[ -n "${TEMP_BIN}" ]]; then
+    rm -f -- "${TEMP_BIN}"
+  fi
+  if (( status == 0 )); then
+    exit 0
+  fi
+
+  if [[ "${SOURCE_KIND}" == "rollback" ]]; then
+    if ! stop_and_disable_service; then
+      echo "explicit rollback failed and the rejected release could not be stopped safely" >&2
+    else
+      echo "explicit rollback failed; removed the active symlink and disabled the service" >&2
+    fi
+    exit 70
+  fi
+
+  if (( ACTIVATED == 0 )); then
+    if [[ -n "${PREVIOUS_BIN}" ]] \
+      && curl -fsS "${LOCAL_BASE_URL}/healthz" >/dev/null 2>&1 \
+      && service_runs_binary "${PREVIOUS_BIN}"; then
+      echo "activation was rejected before switching; verified ${PREVIOUS_BIN} is still running" >&2
+      exit 69
+    fi
+    echo "activation was rejected before switching, but the previous running release could not be verified" >&2
+    exit 70
+  fi
+
+  if [[ -n "${PREVIOUS_BIN}" ]]; then
+    if ! ln -sfn "${PREVIOUS_BIN}" "${ACTIVE_BIN}"; then
+      echo "activation failed and rollback could not restore the active symlink" >&2
+    elif [[ "$(readlink -f "${ACTIVE_BIN}" 2>/dev/null || true)" != "${PREVIOUS_BIN}" ]]; then
+      echo "activation failed and rollback symlink verification failed" >&2
+    elif ! systemctl restart docdex.service; then
+      echo "activation failed and rollback could not restart docdex.service" >&2
+    else
+      for _ in {1..30}; do
+        if curl -fsS "${LOCAL_BASE_URL}/healthz" >/dev/null 2>&1 \
+          && service_runs_binary "${PREVIOUS_BIN}"; then
+          rollback_ok=1
+          break
+        fi
+        sleep 1
+      done
+    fi
+    if (( rollback_ok == 1 )); then
+      echo "activation failed; restored and verified ${PREVIOUS_BIN}" >&2
+      exit 69
+    fi
+    echo "activation failed and rollback did not restore the previous running binary" >&2
+    exit 70
+  fi
+
+  if ! stop_and_disable_service; then
+    echo "initial activation failed and cleanup could not be verified" >&2
+  else
+    echo "initial activation failed; removed the active symlink and disabled the service" >&2
+  fi
+  exit 70
+}
+trap rollback_on_exit EXIT
 
 if [[ ! -f "${SOURCE_BIN}" ]]; then
   echo "source binary not found: ${SOURCE_BIN}" >&2
   exit 1
 fi
 
+DEPLOY_UID="$(id -u "${DEPLOY_USER}")"
+SOURCE_UID="$(stat -c '%u' -- "${SOURCE_BIN}")"
+if [[ "${SOURCE_KIND}" == "candidate" ]]; then
+  if [[ "$(readlink -f -- "${STAGING_PARENT}" 2>/dev/null || true)" != "${STAGING_PARENT}" ]] \
+    || [[ "$(stat -c '%u' -- "${STAGING_PARENT}" 2>/dev/null || true)" != "0" ]] \
+    || [[ "$(readlink -f -- "${STAGING_ROOT}" 2>/dev/null || true)" != "${STAGING_ROOT}" ]] \
+    || [[ "$(stat -c '%u' -- "${STAGING_ROOT}" 2>/dev/null || true)" != "${DEPLOY_UID}" ]]; then
+    echo "release staging directories have unsafe ownership or symlink state" >&2
+    exit 1
+  fi
+  if [[ "${SOURCE_UID}" != "${DEPLOY_UID}" ]]; then
+    echo "candidate source must be owned by ${DEPLOY_USER}" >&2
+    exit 1
+  fi
+elif [[ "${SOURCE_UID}" != "0" ]]; then
+  echo "rollback source must be owned by root" >&2
+  exit 1
+fi
+
 install -d -m 0755 -o root -g root /opt/docdex /opt/docdex/bin /opt/docdex/releases
 install -d -m 0750 -o docdex -g docdex /mnt/docdex/.docdex /mnt/docdex/personal_preferences /mnt/docdex/state /mnt/docdex/repos /mnt/docdex/logs
-install -m 0755 -o root -g root "${SOURCE_BIN}" "${RELEASE_BIN}"
-ln -sfn "${RELEASE_BIN}" /opt/docdex/bin/docdexd
+if [[ "${SOURCE_KIND}" == "candidate" ]]; then
+  TEMP_BIN="$(mktemp /opt/docdex/releases/.docdexd-staging.XXXXXX)"
+  chmod 0600 "${TEMP_BIN}"
+  # The deploy-side reader receives only a pipe. A root-side writer alone opens
+  # the immutable destination, so the deploy UID can never retain its write FD.
+  if ! runuser -u "${DEPLOY_USER}" -- /bin/cat -- "${SOURCE_BIN}" \
+    | /bin/cat >"${TEMP_BIN}"; then
+    echo "unable to copy candidate as the unprivileged deploy user" >&2
+    exit 1
+  fi
+  if [[ ! -s "${TEMP_BIN}" ]]; then
+    echo "candidate copy is empty" >&2
+    exit 1
+  fi
+  TEMP_SHA256="$(sha256sum -- "${TEMP_BIN}" | awk '{print $1}')"
+  if [[ "${TEMP_SHA256}" != "${EXPECTED_SHA256}" ]]; then
+    echo "candidate SHA-256 mismatch before installation" >&2
+    exit 1
+  fi
+  chmod 0755 "${TEMP_BIN}"
 
-if ! /opt/docdex/bin/docdexd --version >/dev/null 2>&1; then
+  if [[ -e "${RELEASE_BIN}" ]]; then
+    if ! cmp -s -- "${TEMP_BIN}" "${RELEASE_BIN}"; then
+      echo "immutable release already exists with different content: ${RELEASE_BIN}" >&2
+      exit 1
+    fi
+    rm -f -- "${TEMP_BIN}"
+    TEMP_BIN=""
+  else
+    mv -- "${TEMP_BIN}" "${RELEASE_BIN}"
+    TEMP_BIN=""
+  fi
+fi
+
+RELEASE_SHA256="$(sha256sum -- "${RELEASE_BIN}" | awk '{print $1}')"
+if [[ "${RELEASE_SHA256}" != "${EXPECTED_SHA256}" ]]; then
+  echo "immutable release SHA-256 mismatch before execution" >&2
+  exit 1
+fi
+
+if ! runuser -u "${SERVICE_USER}" -- env -i \
+  HOME=/mnt/docdex \
+  PATH=/usr/bin:/bin \
+  "${RELEASE_BIN}" --version >/dev/null 2>&1; then
   echo "installed binary failed --version smoke check" >&2
   exit 1
 fi
+ln -sfn "${RELEASE_BIN}" "${ACTIVE_BIN}"
+ACTIVATED=1
 
 ensure_env_default() {
   local key="$1"
@@ -81,25 +305,38 @@ systemctl enable docdex.service
 systemctl restart docdex.service
 systemctl --no-pager --full status docdex.service
 for _ in {1..30}; do
-  if curl -fsS http://127.0.0.1:28491/healthz >/dev/null 2>&1; then
+  if curl -fsS "${LOCAL_BASE_URL}/healthz" >/dev/null 2>&1; then
     break
   fi
   sleep 1
 done
 
-if ! curl -fsS http://127.0.0.1:28491/healthz >/dev/null 2>&1; then
+if ! curl -fsS "${LOCAL_BASE_URL}/healthz" >/dev/null 2>&1; then
   journalctl -u docdex.service -n 80 --no-pager >&2 || true
   echo "docdex.service did not become healthy within 30 seconds" >&2
   exit 1
 fi
-
-auth_header=()
-if [[ -n "${DOCDEX_AUTH_TOKEN:-}" ]]; then
-  auth_header=(-H "authorization: Bearer ${DOCDEX_AUTH_TOKEN}")
+if ! service_runs_binary "${RELEASE_BIN}"; then
+  journalctl -u docdex.service -n 80 --no-pager >&2 || true
+  echo "docdex.service is healthy but is not running the activated release binary" >&2
+  exit 1
 fi
 
+curl_with_optional_auth() {
+  local url="$1"
+  if [[ -z "${DOCDEX_AUTH_TOKEN:-}" ]]; then
+    curl -fsS "${url}"
+    return
+  fi
+  if [[ "${DOCDEX_AUTH_TOKEN}" == *$'\n'* || "${DOCDEX_AUTH_TOKEN}" == *$'\r'* ]]; then
+    echo "DOCDEX_AUTH_TOKEN contains an invalid line break" >&2
+    return 2
+  fi
+  printf 'authorization: Bearer %s\n' "${DOCDEX_AUTH_TOKEN}" | curl -fsS --header @- "${url}"
+}
+
 status_payload="$(mktemp)"
-if ! curl -fsS "${auth_header[@]}" http://127.0.0.1:28491/v1/personal-preferences/status > "${status_payload}"; then
+if ! curl_with_optional_auth "${LOCAL_BASE_URL}/v1/personal-preferences/status" > "${status_payload}"; then
   rm -f "${status_payload}"
   journalctl -u docdex.service -n 80 --no-pager >&2 || true
   echo "personal preferences status smoke check failed" >&2
@@ -113,5 +350,6 @@ if ! grep -q '"storage_root"' "${status_payload}"; then
 fi
 rm -f "${status_payload}"
 
-echo "Docdex release ${SAFE_REVISION} is active with personal preferences enabled."
+trap - EXIT
+echo "Docdex release ${REVISION} is active with personal preferences enabled."
 exit 0

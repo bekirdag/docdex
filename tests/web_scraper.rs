@@ -78,8 +78,8 @@ fn base_config(chrome_binary_path: Option<PathBuf>, headless: bool) -> WebConfig
     }
 }
 
-#[test]
-fn chromium_engine_uses_configured_binary() {
+#[tokio::test]
+async fn chromium_engine_uses_configured_binary() {
     let _lock = ENV_LOCK.lock().unwrap();
     let temp = TempDir::new().expect("tempdir");
     let chromium_path = temp.path().join("docdex-chromium");
@@ -91,15 +91,17 @@ fn chromium_engine_uses_configured_binary() {
 
     let config = base_config(Some(chromium_path.clone()), false);
 
-    let scraper = ScraperEngine::from_web_config(&config).expect("scraper");
+    let scraper = ScraperEngine::from_web_config(&config)
+        .await
+        .expect("scraper");
     let ScraperEngine::Chrome { config } = scraper;
     assert_eq!(config.chrome_binary, chromium_path);
     assert!(!config.headless);
     assert_eq!(config.user_agent, "docdex-test-agent");
 }
 
-#[test]
-fn scraper_engine_defaults_to_chromium() {
+#[tokio::test]
+async fn scraper_engine_defaults_to_chromium() {
     let _lock = ENV_LOCK.lock().unwrap();
     let temp = TempDir::new().expect("tempdir");
     let chromium_path = temp.path().join("docdex-chromium");
@@ -112,7 +114,9 @@ fn scraper_engine_defaults_to_chromium() {
     let mut config = base_config(Some(chromium_path), true);
     config.scraper_engine = "unknown".to_string();
 
-    let scraper = ScraperEngine::from_web_config(&config).expect("scraper");
+    let scraper = ScraperEngine::from_web_config(&config)
+        .await
+        .expect("scraper");
     match scraper {
         ScraperEngine::Chrome { .. } => {}
     }

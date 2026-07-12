@@ -24,6 +24,7 @@ pub struct RepoRuntime {
     pub legacy_repo_id: String,
     pub repo_root: PathBuf,
     pub indexer: Arc<Indexer>,
+    pub read_only: bool,
     pub libs_indexer: Option<Arc<libs::LibsIndexer>>,
     pub memory: Option<MemoryState>,
     pub conversations: Option<ConversationState>,
@@ -55,12 +56,20 @@ struct RepoEntry {
     watcher: Option<watcher::WatcherHandle>,
     last_access: Instant,
     last_conversation_sweep: Instant,
+    activity_generation: u64,
+}
+
+struct IdleCandidate {
+    repo_id: String,
+    entry: Arc<Mutex<RepoEntry>>,
+    activity_generation: u64,
 }
 
 pub struct RepoManager {
     repos: RwLock<HashMap<String, Arc<Mutex<RepoEntry>>>>,
     legacy_repos: RwLock<HashMap<String, Arc<Mutex<RepoEntry>>>>,
     delegation_metrics: RwLock<HashMap<String, Arc<DelegationMetrics>>>,
+    mount_lock: Mutex<()>,
     memory_embedder: Option<OllamaEmbedder>,
     conversations_enabled: bool,
     conversation_config: crate::config::MemoryConversationConfig,
@@ -110,6 +119,7 @@ impl RepoManager {
             repos: RwLock::new(HashMap::new()),
             legacy_repos: RwLock::new(HashMap::new()),
             delegation_metrics: RwLock::new(HashMap::new()),
+            mount_lock: Mutex::new(()),
             memory_embedder,
             conversations_enabled,
             conversation_config,
@@ -136,6 +146,7 @@ impl RepoManager {
             repos: RwLock::new(HashMap::new()),
             legacy_repos: RwLock::new(HashMap::new()),
             delegation_metrics: RwLock::new(HashMap::new()),
+            mount_lock: Mutex::new(()),
             memory_embedder,
             conversations_enabled,
             conversation_config,
@@ -158,13 +169,17 @@ impl RepoManager {
             watcher,
             last_access: Instant::now(),
             last_conversation_sweep: Instant::now(),
+            activity_generation: 0,
         }));
-        self.repos
-            .write()
-            .insert(repo.repo_id.clone(), entry.clone());
-        self.legacy_repos
-            .write()
-            .insert(repo.legacy_repo_id.clone(), entry);
+        {
+            // Always acquire repository maps in canonical-then-legacy order.
+            // Lifecycle removal uses the same order before locking the entry,
+            // so lookup/touch and removal have one linearization boundary.
+            let mut repos = self.repos.write();
+            let mut legacy_repos = self.legacy_repos.write();
+            repos.insert(repo.repo_id.clone(), entry.clone());
+            legacy_repos.insert(repo.legacy_repo_id.clone(), entry);
+        }
         self.delegation_metrics
             .write()
             .entry(repo.repo_id.clone())
@@ -214,17 +229,11 @@ impl RepoManager {
         snapshots
     }
 
-    fn get_entry(&self, repo_id: &str) -> Option<Arc<Mutex<RepoEntry>>> {
-        if let Some(entry) = self.repos.read().get(repo_id) {
-            return Some(entry.clone());
-        }
-        self.legacy_repos.read().get(repo_id).cloned()
-    }
-
-    fn touch_entry(&self, entry: &Arc<Mutex<RepoEntry>>) {
+    fn touch_entry(&self, entry: &Arc<Mutex<RepoEntry>>) -> Arc<RepoRuntime> {
         let mut entry = entry.lock();
         entry.last_access = Instant::now();
-        if entry.watcher.is_none() {
+        entry.activity_generation = entry.activity_generation.wrapping_add(1);
+        if entry.watcher.is_none() && !entry.runtime.read_only {
             match watcher::spawn(entry.runtime.indexer.clone()) {
                 Ok(handle) => {
                     entry.watcher = Some(handle);
@@ -239,25 +248,50 @@ impl RepoManager {
                 }
             }
         }
+        entry.runtime.clone()
+    }
+
+    fn get_and_touch_entry(&self, repo_id: &str) -> Option<Arc<RepoRuntime>> {
+        {
+            let repos = self.repos.read();
+            if let Some(entry) = repos.get(repo_id) {
+                // Keep the map read guard while touching. A hibernation must
+                // take the map write guard first, so it cannot remove an entry
+                // between lookup and the activity update.
+                return Some(self.touch_entry(entry));
+            }
+        }
+        {
+            let legacy_repos = self.legacy_repos.read();
+            if let Some(entry) = legacy_repos.get(repo_id) {
+                return Some(self.touch_entry(entry));
+            }
+        }
+        None
     }
 
     pub fn get_by_id(&self, repo_id: &str) -> Option<Arc<RepoRuntime>> {
-        let entry = self.get_entry(repo_id)?;
-        self.touch_entry(&entry);
-        let runtime = entry.lock().runtime.clone();
-        Some(runtime)
+        self.get_and_touch_entry(repo_id)
     }
 
     pub fn remove_repo_by_id(&self, repo_id: &str) -> Option<Arc<RepoRuntime>> {
-        let entry = self.get_entry(repo_id)?;
+        let mut repos = self.repos.write();
+        let mut legacy_repos = self.legacy_repos.write();
+        let entry = repos
+            .get(repo_id)
+            .or_else(|| legacy_repos.get(repo_id))
+            .cloned()?;
         let mut entry_guard = entry.lock();
-        if let Some(mut watcher) = entry_guard.watcher.take() {
+        let watcher = entry_guard.watcher.take();
+        let runtime = entry_guard.runtime.clone();
+        repos.remove(&runtime.repo_id);
+        legacy_repos.remove(&runtime.legacy_repo_id);
+        drop(entry_guard);
+        drop(legacy_repos);
+        drop(repos);
+        if let Some(mut watcher) = watcher {
             watcher.stop();
         }
-        let runtime = entry_guard.runtime.clone();
-        drop(entry_guard);
-        self.repos.write().remove(&runtime.repo_id);
-        self.legacy_repos.write().remove(&runtime.legacy_repo_id);
         crate::metrics::global()
             .set_conversation_archive_size_bytes(self.conversation_archive_size_bytes_total());
         Some(runtime)
@@ -299,8 +333,73 @@ impl RepoManager {
     }
 
     pub(crate) fn sweep_idle(&self, now: Instant) {
-        let mut idle_entries: Vec<Arc<Mutex<RepoEntry>>> = Vec::new();
-        let mut hibernate_ids: Vec<String> = Vec::new();
+        self.sweep_idle_with_hook(now, || {});
+    }
+
+    fn stop_watcher_if_still_idle(&self, candidate: IdleCandidate, now: Instant) {
+        let repos = self.repos.read();
+        let Some(current) = repos.get(&candidate.repo_id) else {
+            return;
+        };
+        if !Arc::ptr_eq(current, &candidate.entry) {
+            return;
+        }
+        let mut entry = current.lock();
+        if entry.activity_generation != candidate.activity_generation
+            || now.saturating_duration_since(entry.last_access) < self.idle_timeout
+        {
+            return;
+        }
+        if let Some(mut watcher) = entry.watcher.take() {
+            watcher.stop();
+        }
+    }
+
+    fn hibernate_if_still_idle(&self, candidate: IdleCandidate, now: Instant) {
+        // Keep the pin guard through removal so pinning and hibernation have a
+        // well-defined order. Repository maps are always locked canonical
+        // first, legacy second, and only then is the entry locked.
+        let pinned_repo_id = self.pinned_repo_id.read();
+        if pinned_repo_id.as_deref() == Some(candidate.repo_id.as_str()) {
+            return;
+        }
+        let mut repos = self.repos.write();
+        let mut legacy_repos = self.legacy_repos.write();
+        let Some(current) = repos.get(&candidate.repo_id).cloned() else {
+            return;
+        };
+        if !Arc::ptr_eq(&current, &candidate.entry) {
+            return;
+        }
+        let mut entry = current.lock();
+        if entry.activity_generation != candidate.activity_generation
+            || now.saturating_duration_since(entry.last_access) < self.hibernate_timeout
+        {
+            return;
+        }
+
+        let legacy_id = entry.runtime.legacy_repo_id.clone();
+        let watcher = entry.watcher.take();
+        repos.remove(&candidate.repo_id);
+        legacy_repos.remove(&legacy_id);
+        drop(entry);
+        drop(legacy_repos);
+        drop(repos);
+        drop(pinned_repo_id);
+
+        // The entry is no longer discoverable, so watcher shutdown need not
+        // hold repository-map locks or block unrelated repository accesses.
+        if let Some(mut watcher) = watcher {
+            watcher.stop();
+        }
+    }
+
+    fn sweep_idle_with_hook<F>(&self, now: Instant, before_idle_actions: F)
+    where
+        F: FnOnce(),
+    {
+        let mut idle_entries: Vec<IdleCandidate> = Vec::new();
+        let mut hibernate_entries: Vec<IdleCandidate> = Vec::new();
         let mut conversation_sweeps: Vec<(String, PathBuf, crate::search::ConversationState)> =
             Vec::new();
         let pinned_repo_id = self.pinned_repo_id.read().clone();
@@ -311,10 +410,11 @@ impl RepoManager {
             for (repo_id, entry) in repos.iter() {
                 let mut entry_guard = entry.lock();
                 let last_access = entry_guard.last_access;
-                let idle_for = now.duration_since(last_access);
+                let idle_for = now.saturating_duration_since(last_access);
                 if let Some(conversations) = entry_guard.runtime.conversations.as_ref() {
-                    let due_for_sweep =
-                        now.duration_since(entry_guard.last_conversation_sweep) >= sweep_interval;
+                    let due_for_sweep = now
+                        .saturating_duration_since(entry_guard.last_conversation_sweep)
+                        >= sweep_interval;
                     if due_for_sweep {
                         conversation_sweeps.push((
                             repo_id.clone(),
@@ -329,13 +429,22 @@ impl RepoManager {
                         .as_ref()
                         .map(|pinned| pinned == repo_id)
                         .unwrap_or(false);
+                    let candidate = IdleCandidate {
+                        repo_id: repo_id.clone(),
+                        entry: entry.clone(),
+                        activity_generation: entry_guard.activity_generation,
+                    };
                     if !is_pinned {
-                        hibernate_ids.push(repo_id.clone());
+                        hibernate_entries.push(candidate);
                     } else {
-                        idle_entries.push(entry.clone());
+                        idle_entries.push(candidate);
                     }
                 } else if idle_for >= self.idle_timeout {
-                    idle_entries.push(entry.clone());
+                    idle_entries.push(IdleCandidate {
+                        repo_id: repo_id.clone(),
+                        entry: entry.clone(),
+                        activity_generation: entry_guard.activity_generation,
+                    });
                 }
             }
         }
@@ -439,26 +548,17 @@ impl RepoManager {
             }
         }
 
-        for entry in idle_entries {
-            let mut entry = entry.lock();
-            if let Some(mut watcher) = entry.watcher.take() {
-                watcher.stop();
-            }
+        // Conversation retention can be slow. Tests use this hook to exercise
+        // the exact interleaving where a request arrives after candidates are
+        // discovered but before their lifecycle actions are applied.
+        before_idle_actions();
+
+        for candidate in idle_entries {
+            self.stop_watcher_if_still_idle(candidate, now);
         }
 
-        if !hibernate_ids.is_empty() {
-            let mut repos = self.repos.write();
-            let mut legacy = self.legacy_repos.write();
-            for repo_id in hibernate_ids {
-                if let Some(entry) = repos.remove(&repo_id) {
-                    let mut entry = entry.lock();
-                    if let Some(mut watcher) = entry.watcher.take() {
-                        watcher.stop();
-                    }
-                    let legacy_id = entry.runtime.legacy_repo_id.clone();
-                    legacy.remove(&legacy_id);
-                }
-            }
+        for candidate in hibernate_entries {
+            self.hibernate_if_still_idle(candidate, now);
         }
         crate::metrics::global()
             .set_conversation_archive_size_bytes(self.conversation_archive_size_bytes_total());
@@ -469,18 +569,30 @@ impl RepoManager {
             .canonicalize()
             .unwrap_or_else(|_| repo_root.to_path_buf());
         let repo_id = repo_manager::repo_fingerprint_sha256(&repo_root)?;
-        if let Some(existing) = self.get_entry(&repo_id) {
-            self.touch_entry(&existing);
+        if let Some(existing) = self.get_by_id(&repo_id) {
             return Ok(RepoMount {
-                repo: existing.lock().runtime.clone(),
+                repo: existing,
                 status: RepoMountStatus::Ready,
             });
         }
         let legacy_repo_id = repo_manager::fingerprint::legacy_repo_id_for_root(&repo_root);
-        if let Some(existing) = self.get_entry(&legacy_repo_id) {
-            self.touch_entry(&existing);
+        if let Some(existing) = self.get_by_id(&legacy_repo_id) {
             return Ok(RepoMount {
-                repo: existing.lock().runtime.clone(),
+                repo: existing,
+                status: RepoMountStatus::Ready,
+            });
+        }
+
+        // Index opening plus runtime installation must be single-flight. A
+        // concurrent first mount can otherwise race a writer against the
+        // read-only fallback and let the last insertion replace the winner.
+        let _mount_guard = self.mount_lock.lock();
+        if let Some(existing) = self
+            .get_by_id(&repo_id)
+            .or_else(|| self.get_by_id(&legacy_repo_id))
+        {
+            return Ok(RepoMount {
+                repo: existing,
                 status: RepoMountStatus::Ready,
             });
         }
@@ -548,6 +660,7 @@ impl RepoManager {
             legacy_repo_id,
             repo_root: repo_root.clone(),
             indexer: indexer.clone(),
+            read_only,
             libs_indexer,
             memory,
             conversations,
@@ -615,6 +728,84 @@ mod tests {
     use rusqlite::Connection;
     use tempfile::TempDir;
 
+    async fn prepare_indexed_repo(repo: &Path, state_dir: &Path) -> Arc<Indexer> {
+        std::fs::write(repo.join("README.md"), "# test\n").expect("write repo file");
+        let config = IndexConfig::with_overrides(
+            repo,
+            Some(state_dir.to_path_buf()),
+            Vec::new(),
+            Vec::new(),
+            true,
+        )
+        .expect("index config");
+        let indexer = Arc::new(Indexer::with_config(repo.to_path_buf(), config).expect("indexer"));
+        indexer.reindex_all().await.expect("index repo");
+        indexer
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_first_mounts_share_one_writable_runtime() {
+        let repo = TempDir::new().expect("repo dir");
+        let state_dir = TempDir::new().expect("state dir");
+        let prepared = prepare_indexed_repo(repo.path(), state_dir.path()).await;
+        drop(prepared);
+
+        let manager = Arc::new(RepoManager::new(
+            None,
+            Some(state_dir.path().to_path_buf()),
+            false,
+            crate::config::MemoryConversationConfig::default(),
+            crate::repo_encryption::RepoEncryptionConfig::default(),
+        ));
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let manager = manager.clone();
+            let barrier = barrier.clone();
+            let repo_root = repo.path().to_path_buf();
+            handles.push(tokio::spawn(async move {
+                barrier.wait().await;
+                manager.mount_repo(&repo_root).expect("mount repo").repo
+            }));
+        }
+        barrier.wait().await;
+        let first = handles.remove(0).await.expect("first mount task");
+        let second = handles.remove(0).await.expect("second mount task");
+
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(!first.read_only);
+        assert_eq!(manager.repo_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn read_only_mount_never_starts_a_watcher() {
+        let repo = TempDir::new().expect("repo dir");
+        let state_dir = TempDir::new().expect("state dir");
+        let writer = prepare_indexed_repo(repo.path(), state_dir.path()).await;
+        let manager = RepoManager::new(
+            None,
+            Some(state_dir.path().to_path_buf()),
+            false,
+            crate::config::MemoryConversationConfig::default(),
+            crate::repo_encryption::RepoEncryptionConfig::default(),
+        );
+
+        let mount = manager.mount_repo(repo.path()).expect("read-only mount");
+        assert!(mount.repo.read_only);
+        let entry = manager
+            .repos
+            .read()
+            .get(&mount.repo.repo_id)
+            .expect("repo entry")
+            .clone();
+        assert!(entry.lock().watcher.is_none());
+        let _ = manager
+            .get_by_id(&mount.repo.repo_id)
+            .expect("mounted repo");
+        assert!(entry.lock().watcher.is_none());
+        drop(writer);
+    }
+
     #[tokio::test]
     async fn repo_manager_stops_watcher_after_idle() {
         let repo = TempDir::new().expect("repo dir");
@@ -644,6 +835,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn repo_manager_preserves_watcher_touched_after_idle_candidate_discovery() {
+        let repo = TempDir::new().expect("repo dir");
+        std::fs::write(repo.path().join("README.md"), "# test\n").expect("write file");
+        let state_dir = TempDir::new().expect("state dir");
+        let manager = RepoManager::new_with_timeouts(
+            None,
+            Some(state_dir.path().to_path_buf()),
+            false,
+            crate::config::MemoryConversationConfig::default(),
+            Duration::from_secs(1),
+            Duration::from_secs(10),
+            Duration::from_secs(1),
+        );
+        let mount = manager.mount_repo(repo.path()).expect("mount repo");
+        let repo_id = mount.repo.repo_id.clone();
+        let entry = manager.repos.read().get(&repo_id).expect("entry").clone();
+        let now = Instant::now();
+        entry.lock().last_access = now - Duration::from_secs(2);
+        let initial_generation = entry.lock().activity_generation;
+
+        manager.sweep_idle_with_hook(now, || {
+            let active = manager
+                .get_by_id(&repo_id)
+                .expect("touch candidate during sweep");
+            assert!(Arc::ptr_eq(&active, &mount.repo));
+        });
+
+        let entry = entry.lock();
+        assert!(entry.activity_generation > initial_generation);
+        assert!(entry.watcher.is_some());
+        drop(entry);
+        assert_eq!(manager.repo_count(), 1);
+    }
+
+    #[tokio::test]
     async fn repo_manager_hibernates_idle_repo() {
         let repo = TempDir::new().expect("repo dir");
         std::fs::write(repo.path().join("README.md"), "# test\n").expect("write file");
@@ -668,6 +894,43 @@ mod tests {
         entry.lock().last_access = now - Duration::from_secs(4);
         manager.sweep_idle(now);
         assert!(manager.repos.read().is_empty());
+    }
+
+    #[tokio::test]
+    async fn repo_manager_preserves_repo_touched_after_hibernate_candidate_discovery() {
+        let repo = TempDir::new().expect("repo dir");
+        std::fs::write(repo.path().join("README.md"), "# test\n").expect("write file");
+        let state_dir = TempDir::new().expect("state dir");
+        let manager = RepoManager::new_with_timeouts(
+            None,
+            Some(state_dir.path().to_path_buf()),
+            false,
+            crate::config::MemoryConversationConfig::default(),
+            Duration::from_secs(1),
+            Duration::from_secs(3),
+            Duration::from_secs(1),
+        );
+        let mount = manager.mount_repo(repo.path()).expect("mount repo");
+        let repo_id = mount.repo.repo_id.clone();
+        let legacy_repo_id = mount.repo.legacy_repo_id.clone();
+        let entry = manager.repos.read().get(&repo_id).expect("entry").clone();
+        let now = Instant::now();
+        entry.lock().last_access = now - Duration::from_secs(4);
+        let initial_generation = entry.lock().activity_generation;
+
+        manager.sweep_idle_with_hook(now, || {
+            manager
+                .get_by_id(&repo_id)
+                .expect("touch candidate during sweep");
+        });
+
+        let entry_guard = entry.lock();
+        assert!(entry_guard.activity_generation > initial_generation);
+        assert!(entry_guard.watcher.is_some());
+        drop(entry_guard);
+        assert!(manager.repos.read().contains_key(&repo_id));
+        assert!(manager.legacy_repos.read().contains_key(&legacy_repo_id));
+        assert_eq!(manager.repo_count(), 1);
     }
 
     #[tokio::test]

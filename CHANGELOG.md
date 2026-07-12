@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.2.86
+- Enforce a shared fail-closed outbound web policy across HTTP, CLI, discovery, and Chromium paths, keep browser sandboxing enabled by default, cap responses, restore bounded transient discovery retries, and shut down owned browser processes deterministically.
+- Pin all Chromium TCP egress through a bounded host/IP allowlisting proxy, secure DevTools with an owned ephemeral endpoint and recursive target interception, deny service-worker/cache/download bypasses, and make managed-browser refresh, rollback, locking, and Windows process identity fail safe.
+- Make stale/read-only index handling non-destructive, report accurate paginated document totals, move public indexing work off async executors, and serialize rebuilds with a panic-safe gate.
+- Isolate MCP runtime options and per-session authentication/agent state, remove cross-session head-of-line blocking, bound in-flight work, and fail closed for ambiguous multi-repo initialization.
+- Single-flight concurrent repository mounts, preserve read-only watcher invariants, and bound/coalesce watcher queues with full reconciliation after overflow or directory-level events.
+- Merge repository and library search results deterministically and refill pages after stale-file filtering with a bounded second lookup.
+- Update vulnerable compatible dependencies and document the temporary `ring` advisory exception pending a coordinated Tree-sitter grammar migration.
+- Harden release publication around one tested npm tarball, synchronized version checks, integrity/SBOM evidence, resumable registry verification, and manual-only production deployment with pinned SSH host trust.
+- Replace false-positive-prone aggregate smoke coverage with isolated, locked, evidence-producing feature gates and explicit external-provider blockers.
+- Make release reruns immutable and resumable with SHA-256 asset comparison, fully pinned Actions, split least-privilege npm/MCP/GitHub publication jobs, strict feature-ledger/version/audit validation, and ephemeral pinned-host SSH credentials.
+- Bump release metadata to 0.2.86.
+
 ## 0.2.85
 - Add a disabled-by-default encrypted user-memory sync preview with config/status/dry-run support, bundle generation, and server-store register, push, feed, apply, and ack endpoints.
 - Scope hosted user-memory sync requests through external API-key introspection, including user-memory sync scope checks and a canonical hashed principal so multiple API keys for one user merge into one feed.

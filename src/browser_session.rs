@@ -8,8 +8,7 @@ use std::path::PathBuf;
 use std::process::Output;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::thread;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 use fs4::FileExt;
 use parking_lot::Mutex;
@@ -18,6 +17,23 @@ use thiserror::Error;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::sync::Notify;
+
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+#[cfg(windows)]
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+};
+#[cfg(windows)]
+use windows_sys::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+    SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+};
+#[cfg(windows)]
+use windows_sys::Win32::System::Threading::{
+    OpenThread, ResumeThread, CREATE_SUSPENDED, THREAD_SUSPEND_RESUME,
+};
 
 use crate::metrics;
 use crate::state_layout::{self, StateLayout};
@@ -75,8 +91,13 @@ pub enum BrowserSessionError {
 
 #[derive(Debug)]
 struct LockFile {
-    path: PathBuf,
     _file: File,
+}
+
+impl Drop for LockFile {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self._file);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,10 +106,127 @@ struct BrowserLockMetadata {
     created_at_epoch_ms: u64,
 }
 
-const LOCK_STARTUP_GRACE: Duration = Duration::from_secs(30);
-const LOCK_STALE_AGE: Duration = Duration::from_secs(300);
-const LOCK_FORCE_KILL_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
-const LOCK_FORCE_KILL_GRACE: Duration = Duration::from_secs(2);
+#[cfg(windows)]
+#[derive(Debug)]
+struct WindowsJob {
+    handle: HANDLE,
+}
+
+#[cfg(windows)]
+impl WindowsJob {
+    fn new() -> io::Result<Self> {
+        let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if handle == 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let configured = unsafe {
+            SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        };
+        if configured == 0 {
+            let err = io::Error::last_os_error();
+            unsafe {
+                CloseHandle(handle);
+            }
+            return Err(err);
+        }
+
+        Ok(Self { handle })
+    }
+
+    fn assign(&self, child: &tokio::process::Child) -> io::Result<()> {
+        let process = child.raw_handle().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                "spawned process did not expose a Windows process handle",
+            )
+        })? as HANDLE;
+        let assigned = unsafe { AssignProcessToJobObject(self.handle, process) };
+        if assigned == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    fn terminate(&self) -> io::Result<()> {
+        let terminated = unsafe { TerminateJobObject(self.handle, 1) };
+        if terminated == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsJob {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.handle);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn resume_suspended_process(pid: u32) -> io::Result<()> {
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+
+    let result = (|| {
+        let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
+        entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+        if unsafe { Thread32First(snapshot, &mut entry) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        loop {
+            if entry.th32OwnerProcessID == pid {
+                let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+                if thread == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                let previous_suspend_count = unsafe { ResumeThread(thread) };
+                let resume_error = if previous_suspend_count == u32::MAX {
+                    Some(io::Error::last_os_error())
+                } else if previous_suspend_count == 0 {
+                    Some(io::Error::new(
+                        io::ErrorKind::Other,
+                        "spawned process primary thread was not suspended",
+                    ))
+                } else {
+                    None
+                };
+                unsafe {
+                    CloseHandle(thread);
+                }
+                return match resume_error {
+                    Some(err) => Err(err),
+                    None => Ok(()),
+                };
+            }
+
+            if unsafe { Thread32Next(snapshot, &mut entry) } == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("no primary thread found for suspended process {pid}"),
+                ));
+            }
+        }
+    })();
+
+    unsafe {
+        CloseHandle(snapshot);
+    }
+    result
+}
 
 impl LockFile {
     fn write_metadata(&mut self, pid: Option<u32>) -> Result<(), BrowserSessionError> {
@@ -120,6 +258,8 @@ struct Inner {
     pid: u32,
     #[cfg(unix)]
     pgid: i32,
+    #[cfg(windows)]
+    windows_job: WindowsJob,
     lock: Mutex<Option<LockFile>>,
     graceful_shutdown_timeout: Duration,
     kill_timeout: Duration,
@@ -138,6 +278,20 @@ impl BrowserSession {
         mut command: Command,
         opts: BrowserSessionOptions,
     ) -> Result<Self, BrowserSessionError> {
+        #[cfg(windows)]
+        let windows_job = WindowsJob::new().map_err(|err| {
+            metrics::global().inc_browser_session_launch_failure();
+            tracing::warn!(
+                target: "docdexd_browser_guard",
+                event = "browser_session_job_create_failed",
+                error = %err,
+                "browser session Windows job creation failed"
+            );
+            BrowserSessionError::LaunchFailed(format!(
+                "failed to create Windows process job: {err}"
+            ))
+        })?;
+
         let lock_path = opts.lock_file.clone();
         let mut lock = match opts.lock_file {
             Some(path) => Some(create_lock_file(&path).map_err(|err| {
@@ -168,7 +322,10 @@ impl BrowserSession {
             }
         }
 
-        let child = match command.spawn() {
+        #[cfg(windows)]
+        command.creation_flags(CREATE_SUSPENDED);
+
+        let mut child = match command.spawn() {
             Ok(child) => child,
             Err(err) => {
                 if let Some(lock) = lock.take() {
@@ -188,10 +345,50 @@ impl BrowserSession {
                 return Err(BrowserSessionError::LaunchFailed(err.to_string()));
             }
         };
-        let pid = child.id().ok_or_else(|| {
+        let pid = match child.id() {
+            Some(pid) => pid,
+            None => {
+                let _ = child.start_kill();
+                let _ = wait_with_timeout(&mut child, opts.kill_timeout).await;
+                if let Some(held_lock) = lock.take() {
+                    drop(held_lock);
+                    if let Some(path) = lock_path.as_ref() {
+                        let _ = fs::remove_file(path);
+                    }
+                }
+                metrics::global().inc_browser_session_launch_failure();
+                return Err(BrowserSessionError::LaunchFailed(
+                    "spawned process did not expose a PID".to_string(),
+                ));
+            }
+        };
+
+        #[cfg(windows)]
+        if let Err(err) = windows_job
+            .assign(&child)
+            .and_then(|()| resume_suspended_process(pid))
+        {
+            let _ = windows_job.terminate();
+            let _ = child.start_kill();
+            let _ = wait_with_timeout(&mut child, opts.kill_timeout).await;
+            if let Some(held_lock) = lock.take() {
+                drop(held_lock);
+                if let Some(path) = lock_path.as_ref() {
+                    let _ = fs::remove_file(path);
+                }
+            }
             metrics::global().inc_browser_session_launch_failure();
-            BrowserSessionError::LaunchFailed("spawned process did not expose a PID".to_string())
-        })?;
+            tracing::warn!(
+                target: "docdexd_browser_guard",
+                event = "browser_session_job_assign_failed",
+                pid,
+                error = %err,
+                "browser session Windows job assignment failed"
+            );
+            return Err(BrowserSessionError::LaunchFailed(format!(
+                "failed to contain and resume Windows process {pid}: {err}"
+            )));
+        }
 
         if let Some(lock) = lock.as_mut() {
             if let Err(err) = lock.write_metadata(Some(pid)) {
@@ -232,6 +429,8 @@ impl BrowserSession {
                 pid,
                 #[cfg(unix)]
                 pgid: pid as i32,
+                #[cfg(windows)]
+                windows_job,
                 lock: Mutex::new(lock),
                 graceful_shutdown_timeout: opts.graceful_shutdown_timeout,
                 kill_timeout: opts.kill_timeout,
@@ -263,6 +462,13 @@ impl BrowserSession {
         self.cleanup(true).await
     }
 
+    /// Immediately signal the owned process tree without waiting for reaping.
+    /// Callers that need cancellation-safe teardown should follow this with
+    /// `abort()` when their async context can continue running.
+    pub(crate) fn terminate_tree_now(&self) {
+        signal_abort_inner(&self.inner);
+    }
+
     pub async fn wait_for_output(self, timeout: Duration) -> Result<Output, BrowserSessionError> {
         let _ = self.inner.cleanup_started.swap(true, Ordering::AcqRel);
         let mut child =
@@ -284,7 +490,12 @@ impl BrowserSession {
             Err(_) => {
                 #[cfg(unix)]
                 signal_process_group(self.inner.pgid, nix::libc::SIGKILL);
-                #[cfg(not(unix))]
+                #[cfg(windows)]
+                {
+                    let _ = self.inner.windows_job.terminate();
+                    let _ = child.start_kill();
+                }
+                #[cfg(all(not(unix), not(windows)))]
                 {
                     let _ = child.start_kill();
                 }
@@ -353,10 +564,13 @@ impl BrowserSession {
         }
 
         loop {
+            let notified = self.inner.cleanup_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             if let Some(result) = self.inner.cleanup_result.lock().clone() {
                 return result;
             }
-            self.inner.cleanup_notify.notified().await;
+            notified.await;
         }
     }
 }
@@ -384,6 +598,9 @@ impl Drop for BrowserSession {
             return;
         }
 
+        // Signal synchronously before handing reaping to the runtime. A runtime
+        // may be shutting down and never poll the spawned cleanup task.
+        signal_abort_inner(&self.inner);
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let inner = Arc::clone(&self.inner);
             handle.spawn(async move {
@@ -409,41 +626,24 @@ fn create_lock_file(path: &PathBuf) -> Result<LockFile, BrowserSessionError> {
         state_layout::ensure_state_dir_secure(parent)
             .map_err(|err| BrowserSessionError::LaunchFailed(err.to_string()))?;
     }
-    for _ in 0..2 {
-        let file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .open(path)
-            .map_err(|err| BrowserSessionError::LaunchFailed(err.to_string()))?;
-        match file.try_lock_exclusive() {
-            Ok(()) => {
-                let mut lock = LockFile {
-                    path: path.clone(),
-                    _file: file,
-                };
-                lock.write_metadata(None)?;
-                return Ok(lock);
-            }
-            Err(err) if is_lock_contended(&err) => {
-                drop(file);
-                if try_remove_stale_lock(path)? {
-                    continue;
-                }
-                return Err(BrowserSessionError::LaunchFailed(format!(
-                    "lock already held: {}",
-                    path.display()
-                )));
-            }
-            Err(err) => {
-                return Err(BrowserSessionError::LaunchFailed(err.to_string()));
-            }
-        };
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|err| BrowserSessionError::LaunchFailed(err.to_string()))?;
+    match file.try_lock_exclusive() {
+        Ok(()) => {
+            let mut lock = LockFile { _file: file };
+            lock.write_metadata(None)?;
+            Ok(lock)
+        }
+        Err(err) if is_lock_contended(&err) => Err(BrowserSessionError::LaunchFailed(format!(
+            "lock already held: {}",
+            path.display()
+        ))),
+        Err(err) => Err(BrowserSessionError::LaunchFailed(err.to_string())),
     }
-    Err(BrowserSessionError::LaunchFailed(format!(
-        "lock already held: {}",
-        path.display()
-    )))
 }
 
 fn is_lock_contended(err: &io::Error) -> bool {
@@ -451,123 +651,6 @@ fn is_lock_contended(err: &io::Error) -> bool {
         err.kind(),
         io::ErrorKind::WouldBlock | io::ErrorKind::AlreadyExists
     )
-}
-
-fn try_remove_stale_lock(path: &PathBuf) -> Result<bool, BrowserSessionError> {
-    let metadata = read_lock_metadata(path);
-    let age = metadata
-        .as_ref()
-        .and_then(|meta| age_from_epoch_ms(meta.created_at_epoch_ms))
-        .or_else(|| lock_age(path));
-    match metadata {
-        Some(meta) => match meta.pid {
-            Some(pid) => {
-                if !pid_is_alive(pid) {
-                    return remove_lock_file(path, "pid_not_alive");
-                }
-                if age.map(|age| age > LOCK_FORCE_KILL_AGE).unwrap_or(false) {
-                    if try_kill_stale_pid(pid) {
-                        return remove_lock_file(path, "pid_force_killed");
-                    }
-                }
-                Ok(false)
-            }
-            None => {
-                if age.map(|age| age > LOCK_STARTUP_GRACE).unwrap_or(false) {
-                    return remove_lock_file(path, "no_pid_startup_timeout");
-                }
-                Ok(false)
-            }
-        },
-        None => {
-            if age.map(|age| age > LOCK_STALE_AGE).unwrap_or(false) {
-                return remove_lock_file(path, "missing_metadata");
-            }
-            Ok(false)
-        }
-    }
-}
-
-fn remove_lock_file(path: &PathBuf, reason: &str) -> Result<bool, BrowserSessionError> {
-    match fs::remove_file(path) {
-        Ok(()) => {}
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-        Err(err) => {
-            return Err(BrowserSessionError::LaunchFailed(format!(
-                "failed to remove stale lock {}: {}",
-                path.display(),
-                err
-            )));
-        }
-    }
-    tracing::warn!(
-        target: "docdexd_browser_guard",
-        event = "browser_session_lock_stale_removed",
-        lock_file = %path.display(),
-        reason,
-        "stale browser session lock removed"
-    );
-    Ok(true)
-}
-
-fn try_kill_stale_pid(pid: u32) -> bool {
-    if !pid_is_alive(pid) {
-        return true;
-    }
-    #[cfg(unix)]
-    {
-        signal_process_group(pid as i32, nix::libc::SIGTERM);
-        signal_process(pid as i32, nix::libc::SIGTERM);
-        wait_for_pid_exit(pid, LOCK_FORCE_KILL_GRACE);
-        if pid_is_alive(pid) {
-            signal_process_group(pid as i32, nix::libc::SIGKILL);
-            signal_process(pid as i32, nix::libc::SIGKILL);
-            wait_for_pid_exit(pid, LOCK_FORCE_KILL_GRACE);
-        }
-    }
-    !pid_is_alive(pid)
-}
-
-fn wait_for_pid_exit(pid: u32, timeout: Duration) {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if !pid_is_alive(pid) {
-            break;
-        }
-        thread::sleep(Duration::from_millis(50));
-    }
-}
-
-fn read_lock_metadata(path: &PathBuf) -> Option<BrowserLockMetadata> {
-    let bytes = fs::read(path).ok()?;
-    if bytes.is_empty() {
-        return None;
-    }
-    match serde_json::from_slice::<BrowserLockMetadata>(&bytes) {
-        Ok(metadata) => Some(metadata),
-        Err(err) => {
-            tracing::warn!(
-                target: "docdexd_browser_guard",
-                event = "browser_session_lock_metadata_invalid",
-                lock_file = %path.display(),
-                error = %err,
-                "browser session lock metadata invalid"
-            );
-            None
-        }
-    }
-}
-
-fn lock_age(path: &PathBuf) -> Option<Duration> {
-    let metadata = fs::metadata(path).ok()?;
-    let modified = metadata.modified().ok()?;
-    let now = SystemTime::now();
-    now.duration_since(modified).ok()
-}
-
-fn age_from_epoch_ms(epoch_ms: u64) -> Option<Duration> {
-    let now = now_epoch_ms();
-    now.checked_sub(epoch_ms).map(Duration::from_millis)
 }
 
 fn now_epoch_ms() -> u64 {
@@ -640,7 +723,12 @@ async fn cleanup_inner(inner: &Inner, force_kill: bool) -> Result<(), BrowserSes
         if force_kill {
             #[cfg(unix)]
             signal_process_group(inner.pgid, nix::libc::SIGKILL);
-            #[cfg(not(unix))]
+            #[cfg(windows)]
+            {
+                let _ = inner.windows_job.terminate();
+                let _ = child.start_kill();
+            }
+            #[cfg(all(not(unix), not(windows)))]
             {
                 let _ = child.start_kill();
             }
@@ -649,7 +737,12 @@ async fn cleanup_inner(inner: &Inner, force_kill: bool) -> Result<(), BrowserSes
 
         #[cfg(unix)]
         signal_process_group(inner.pgid, nix::libc::SIGTERM);
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let _ = inner.windows_job.terminate();
+            let _ = child.start_kill();
+        }
+        #[cfg(all(not(unix), not(windows)))]
         {
             let _ = child.start_kill();
         }
@@ -676,7 +769,12 @@ async fn cleanup_inner(inner: &Inner, force_kill: bool) -> Result<(), BrowserSes
                 );
                 #[cfg(unix)]
                 signal_process_group(inner.pgid, nix::libc::SIGKILL);
-                #[cfg(not(unix))]
+                #[cfg(windows)]
+                {
+                    let _ = inner.windows_job.terminate();
+                    let _ = child.start_kill();
+                }
+                #[cfg(all(not(unix), not(windows)))]
                 {
                     let _ = child.start_kill();
                 }
@@ -755,17 +853,11 @@ async fn wait_with_timeout(
 fn cleanup_lock(inner: &Inner) {
     let lock = inner.lock.lock().take();
     let Some(lock) = lock else { return };
-    let path = lock.path.clone();
+    // Keep the advisory-lock inode in place. Removing it after unlock creates a
+    // race where a successor can acquire the old inode immediately before it is
+    // unlinked, allowing a second process to lock a newly-created inode at the
+    // same path.
     drop(lock);
-    if let Err(err) = fs::remove_file(&path) {
-        tracing::debug!(
-            target: "docdexd_browser_guard",
-            event = "browser_session_lock_cleanup_failed",
-            lock_file = %path.display(),
-            error = %err,
-            "browser session lock cleanup failed"
-        );
-    }
 }
 
 #[cfg(unix)]
@@ -793,15 +885,26 @@ fn signal_process(pid: i32, signal: i32) {
 
 fn best_effort_abort_sync(inner: &Inner) {
     metrics::global().dec_browser_session_active();
+    signal_abort_inner(inner);
+    cleanup_lock(inner);
+}
+
+fn signal_abort_inner(inner: &Inner) {
     #[cfg(unix)]
     signal_process_group(inner.pgid, nix::libc::SIGKILL);
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        if let Some(mut child) = inner.child.lock().take() {
+        let _ = inner.windows_job.terminate();
+        if let Some(child) = inner.child.lock().as_mut() {
             let _ = child.start_kill();
         }
     }
-    cleanup_lock(inner);
+    #[cfg(all(not(unix), not(windows)))]
+    {
+        if let Some(child) = inner.child.lock().as_mut() {
+            let _ = child.start_kill();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -812,9 +915,9 @@ mod tests {
         Tier2UnavailableReason,
     };
     use anyhow::anyhow;
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     use std::time::Instant;
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     use tempfile::TempDir;
 
     #[cfg(unix)]
@@ -867,6 +970,59 @@ mod tests {
         }
     }
 
+    #[test]
+    #[cfg(unix)]
+    fn contended_lock_is_never_unlinked_from_under_owner() {
+        use std::os::unix::fs::MetadataExt;
+
+        let temp = TempDir::new().expect("temp dir");
+        let lock_path = temp.path().join("locks").join("browser.lock");
+        let mut owner = create_lock_file(&lock_path).expect("acquire owner lock");
+
+        let old_startup = serde_json::to_vec(&BrowserLockMetadata {
+            pid: None,
+            created_at_epoch_ms: 0,
+        })
+        .expect("serialize old lock metadata");
+        owner._file.set_len(0).expect("truncate lock metadata");
+        owner
+            ._file
+            .seek(SeekFrom::Start(0))
+            .expect("rewind lock metadata");
+        owner
+            ._file
+            .write_all(&old_startup)
+            .expect("write old lock metadata");
+        owner._file.flush().expect("flush old lock metadata");
+
+        let inode_before = fs::metadata(&lock_path).expect("lock metadata").ino();
+        let error = create_lock_file(&lock_path).expect_err("contended lock must fail closed");
+        assert!(error.to_string().contains("lock already held"));
+        assert_eq!(
+            fs::metadata(&lock_path)
+                .expect("lock remains present")
+                .ino(),
+            inode_before,
+            "contention must not replace the locked inode"
+        );
+        assert_eq!(
+            fs::read(&lock_path).expect("read owner metadata"),
+            old_startup,
+            "contention must not rewrite the current owner's metadata"
+        );
+
+        drop(owner);
+        let successor = create_lock_file(&lock_path).expect("released lock is reusable");
+        drop(successor);
+        assert_eq!(
+            fs::metadata(&lock_path)
+                .expect("persistent lock inode remains")
+                .ino(),
+            inode_before,
+            "lock cleanup must not replace or unlink the advisory-lock inode"
+        );
+    }
+
     #[tokio::test]
     #[cfg(unix)]
     async fn close_is_idempotent_and_kills_process_group() {
@@ -896,15 +1052,99 @@ mod tests {
         let pgid = session.process_group_id();
         assert!(process_group_alive(pgid));
 
-        let (r1, r2) = tokio::join!(session.close(), session.close());
-        assert!(r1.is_ok(), "first close: {r1:?}");
-        assert!(r2.is_ok(), "second close: {r2:?}");
+        let callers = 32usize;
+        let barrier = Arc::new(tokio::sync::Barrier::new(callers + 1));
+        let mut close_tasks = tokio::task::JoinSet::new();
+        for index in 0..callers {
+            let session = session.clone();
+            let barrier = Arc::clone(&barrier);
+            close_tasks.spawn(async move {
+                barrier.wait().await;
+                tokio::time::timeout(Duration::from_secs(2), async {
+                    if index % 2 == 0 {
+                        session.close().await
+                    } else {
+                        session.abort().await
+                    }
+                })
+                .await
+            });
+        }
+        barrier.wait().await;
+        while let Some(result) = close_tasks.join_next().await {
+            let cleanup = result.expect("join concurrent cleanup");
+            assert!(cleanup.is_ok(), "concurrent cleanup timed out: {cleanup:?}");
+            assert!(cleanup.expect("cleanup completed").is_ok());
+        }
 
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline && process_group_alive(pgid) {
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
         assert!(!process_group_alive(pgid), "process group still alive");
+    }
+
+    #[tokio::test]
+    #[cfg(windows)]
+    async fn abort_kills_the_entire_windows_job_tree() {
+        let system_root = std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+        let powershell = system_root
+            .join("System32")
+            .join("WindowsPowerShell")
+            .join("v1.0")
+            .join("powershell.exe");
+        if !powershell.is_file() {
+            eprintln!("skipping: Windows PowerShell is unavailable");
+            return;
+        }
+
+        let temp = TempDir::new().expect("temp dir");
+        let pid_file = temp.path().join("browser-child.pid");
+        let escaped_pid_path = pid_file.to_string_lossy().replace('\'', "''");
+        let script = format!(
+            "$child = Start-Process -FilePath $env:SystemRoot\\System32\\ping.exe \
+             -ArgumentList '-t','127.0.0.1' -NoNewWindow -PassThru; \
+             Set-Content -LiteralPath '{escaped_pid_path}' -Value $child.Id; \
+             Wait-Process -Id $child.Id"
+        );
+        let mut command = Command::new(powershell);
+        command
+            .arg("-NoLogo")
+            .arg("-NoProfile")
+            .arg("-NonInteractive")
+            .arg("-Command")
+            .arg(script);
+
+        let session = BrowserSession::spawn(command, BrowserSessionOptions::without_lock())
+            .await
+            .expect("spawn contained Windows browser-like process tree");
+        let parent_pid = session.pid();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let child_pid = loop {
+            if let Ok(text) = fs::read_to_string(&pid_file) {
+                if let Ok(pid) = text.trim().parse::<u32>() {
+                    break pid;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for Windows child PID"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        };
+        assert!(pid_is_alive(parent_pid));
+        assert!(pid_is_alive(child_pid));
+
+        session.abort().await.expect("abort Windows job");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && (pid_is_alive(parent_pid) || pid_is_alive(child_pid)) {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(!pid_is_alive(parent_pid), "Windows parent still alive");
+        assert!(!pid_is_alive(child_pid), "Windows child still alive");
     }
 
     #[tokio::test]

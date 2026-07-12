@@ -4,7 +4,7 @@ use axum::{
 };
 use tracing::warn;
 
-use crate::error::{AppError, ERR_INTERNAL_ERROR};
+use crate::error::{AppError, ERR_BACKOFF_REQUIRED, ERR_INTERNAL_ERROR};
 use crate::http_api::{app_error_response, json_error, repo_error_response, resolve_repo_context};
 use crate::search::{AppState, RepoContext};
 
@@ -46,6 +46,17 @@ pub(crate) async fn ensure_repo_index_ready(
             ERR_INTERNAL_ERROR,
             "indexing failed",
         ));
+    }
+    Ok(())
+}
+
+pub(crate) fn ensure_repo_index_writable(repo: &RepoContext) -> Result<(), Response> {
+    if repo.indexer.is_read_only() {
+        let err = AppError::new(
+            ERR_BACKOFF_REQUIRED,
+            "index writer unavailable (another docdexd may be indexing); retry later",
+        );
+        return Err(app_error_response(&err));
     }
     Ok(())
 }

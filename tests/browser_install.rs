@@ -18,6 +18,12 @@ impl EnvGuard {
         std::env::set_var(key, value);
         Self { key, prev }
     }
+
+    fn unset(key: &'static str) -> Self {
+        let prev = std::env::var_os(key);
+        std::env::remove_var(key);
+        Self { key, prev }
+    }
 }
 
 impl Drop for EnvGuard {
@@ -42,18 +48,51 @@ fn touch_file(path: &Path) {
     }
 }
 
-fn write_chromium_manifest(root: &Path, chromium_path: &Path) {
+fn current_managed_platform() -> Option<&'static str> {
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        Some("mac-arm64")
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        Some("mac-x64")
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        Some("linux64")
+    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        Some("win64")
+    } else {
+        None
+    }
+}
+
+fn managed_chromium_path(root: &Path, platform: &str) -> std::path::PathBuf {
+    let rel = match platform {
+        "mac-arm64" => "chrome-headless-shell-mac-arm64/chrome-headless-shell",
+        "mac-x64" => "chrome-headless-shell-mac-x64/chrome-headless-shell",
+        "linux64" => "chrome-headless-shell-linux64/chrome-headless-shell",
+        "win64" => "chrome-headless-shell-win64/chrome-headless-shell.exe",
+        _ => panic!("unsupported test platform"),
+    };
+    root.join(".docdex")
+        .join("state")
+        .join("bin")
+        .join("chromium")
+        .join(rel)
+}
+
+fn write_chromium_manifest(root: &Path, chromium_path: &Path, platform: &str) {
     let manifest_dir = root
         .join(".docdex")
         .join("state")
         .join("bin")
         .join("chromium");
     std::fs::create_dir_all(&manifest_dir).expect("create manifest dir");
+    let version = "123.0.4567.8";
+    let checked_at = chrono::Utc::now().to_rfc3339();
     let payload = serde_json::json!({
-        "installed_at": "2024-01-01T00:00:00Z",
-        "version": "12345",
-        "platform": "linux64",
-        "download_url": "https://example.com/chromium.zip",
+        "installed_at": checked_at.clone(),
+        "last_checked_at": checked_at,
+        "version": version,
+        "platform": platform,
+        "artifact": "chrome-headless-shell",
+        "download_url": format!("https://storage.googleapis.com/chrome-for-testing-public/{version}/{platform}/chrome-headless-shell-{platform}.zip"),
         "path": chromium_path,
     });
     std::fs::write(manifest_dir.join("manifest.json"), payload.to_string())
@@ -71,18 +110,47 @@ fn browser_install_respects_opt_out() {
 #[test]
 fn browser_install_reads_chromium_manifest() {
     let _lock = ENV_LOCK.lock().unwrap();
+    let Some(platform) = current_managed_platform() else {
+        return;
+    };
     let temp = TempDir::new().expect("tempdir");
-    let chromium_path = temp.path().join("docdex-chromium");
+    let chromium_path = managed_chromium_path(temp.path(), platform);
     touch_file(&chromium_path);
-    write_chromium_manifest(temp.path(), &chromium_path);
+    write_chromium_manifest(temp.path(), &chromium_path, platform);
 
     let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
+    let _state_dir = EnvGuard::unset("DOCDEX_STATE_DIR");
     let _auto_install = EnvGuard::set("DOCDEX_BROWSER_AUTO_INSTALL", "1");
+    let _auto_update = EnvGuard::set("DOCDEX_BROWSER_AUTO_UPDATE", "1");
+    let _update_interval = EnvGuard::set("DOCDEX_BROWSER_UPDATE_CHECK_INTERVAL_SECS", "86400");
 
     let result = browser_install::install_if_missing(true).expect("install ok");
     let Some(result) = result else {
         panic!("expected install result");
     };
     assert_eq!(result.path, chromium_path);
-    assert_eq!(result.version, "12345");
+    assert_eq!(result.version, "123.0.4567.8");
+}
+
+#[test]
+fn browser_install_rejects_an_oversized_managed_manifest() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let Some(platform) = current_managed_platform() else {
+        return;
+    };
+    let temp = TempDir::new().expect("tempdir");
+    let chromium_path = managed_chromium_path(temp.path(), platform);
+    touch_file(&chromium_path);
+    write_chromium_manifest(temp.path(), &chromium_path, platform);
+    let manifest_path = temp.path().join(".docdex/state/bin/chromium/manifest.json");
+    let mut payload = std::fs::read(&manifest_path).expect("read valid manifest");
+    payload.extend(std::iter::repeat_n(b' ', 70 * 1024));
+    std::fs::write(&manifest_path, payload).expect("write oversized valid manifest");
+    let _home = EnvGuard::set("HOME", temp.path().to_string_lossy().as_ref());
+    let _state_dir = EnvGuard::unset("DOCDEX_STATE_DIR");
+
+    let status = browser_install::chromium_install_status();
+    assert!(!status.installed);
+    assert!(status.path.is_none());
+    assert!(status.version.is_none());
 }

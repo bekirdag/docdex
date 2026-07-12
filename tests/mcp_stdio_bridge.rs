@@ -46,11 +46,20 @@ fn wait_for_health(host: &str, port: u16) -> Result<(), Box<dyn Error>> {
     common::wait_for_health(host, port)
 }
 
-fn start_daemon(state_root: &Path, repo_root: &Path, port: u16) -> Result<Daemon, Box<dyn Error>> {
+fn start_daemon(
+    home_root: &Path,
+    state_root: &Path,
+    repo_root: &Path,
+    port: u16,
+) -> Result<Daemon, Box<dyn Error>> {
     let lock_path = state_root.join("daemon.lock");
     let child = Command::new(common::docdex_bin())
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
+        .env("HOME", home_root)
+        .env("USERPROFILE", home_root)
+        .env("XDG_CONFIG_HOME", home_root.join(".config"))
+        .env("APPDATA", home_root.join("AppData"))
         .env("DOCDEX_STATE_DIR", state_root)
         .env("DOCDEX_DAEMON_LOCK_PATH", &lock_path)
         .env("DOCDEX_ENABLE_MCP", "1")
@@ -101,16 +110,21 @@ fn mcp_stdio_bridge_roundtrip() -> Result<(), Box<dyn Error>> {
     let repo = TempDir::new()?;
     write_repo(repo.path())?;
     let state_root = TempDir::new()?;
+    let home_root = TempDir::new()?;
 
     let Some(port) = pick_free_port() else {
         return Ok(());
     };
     let host = "127.0.0.1";
-    let _daemon = start_daemon(state_root.path(), repo.path(), port)?;
+    let _daemon = start_daemon(home_root.path(), state_root.path(), repo.path(), port)?;
     wait_for_health(host, port)?;
 
     let mut child = Command::new("node")
         .arg(bridge_path())
+        .env("HOME", home_root.path())
+        .env("USERPROFILE", home_root.path())
+        .env("XDG_CONFIG_HOME", home_root.path().join(".config"))
+        .env("APPDATA", home_root.path().join("AppData"))
         .env("DOCDEX_HTTP_BASE_URL", format!("http://{host}:{port}"))
         .env("DOCDEX_MCP_TRANSPORT", "http")
         .stdin(Stdio::piped())

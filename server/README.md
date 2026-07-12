@@ -6,7 +6,8 @@ daemon. It is intentionally separate from the client/runtime source tree.
 ## Runtime Shape
 
 - `docdexd daemon` runs as the `docdex` system user.
-- The daemon binds to `127.0.0.1:28491`; public traffic terminates at nginx.
+- The hosted daemon binds to `127.0.0.1:28492`; public traffic terminates at
+  nginx. Port `28491` remains reserved for the machine-local Docdex daemon.
 - Persistent state, indexes, audit logs, and managed repository data live under
   `/mnt/docdex`.
 - Web discovery is enabled for the hosted daemon, including encrypted-repo
@@ -39,7 +40,12 @@ DOCDEX_DEPLOY_HOST
 DOCDEX_DEPLOY_PORT
 DOCDEX_DEPLOY_USER
 DOCDEX_DEPLOY_SSH_KEY
+DOCDEX_DEPLOY_KNOWN_HOSTS
 ```
+
+Populate `DOCDEX_DEPLOY_KNOWN_HOSTS` from host public keys obtained through an
+already trusted administrative channel. Do not generate it with first-contact
+`ssh-keyscan` during deployment.
 
 Do not commit tokens, private keys, API keys, generated env files, or server
 inventory that should stay private.
@@ -52,10 +58,10 @@ Run the bootstrap script as root from a checked-out repository copy:
 sudo server/bin/bootstrap-ubuntu.sh
 ```
 
-The script installs packages, creates service directories, installs the
-systemd/nginx templates, creates `/etc/docdex/docdex.env` if it does not exist,
-and installs the release-apply helper plus a narrow sudoers rule for the deploy
-user.
+The script installs packages, creates service and root-anchored release-staging
+directories, installs the systemd/nginx templates, creates
+`/etc/docdex/docdex.env` if it does not exist, and installs the release-apply
+helper plus a narrow sudoers rule for the deploy user.
 
 After DNS points at the server, issue TLS certificates and switch nginx to the
 TLS template:
@@ -71,10 +77,19 @@ sudo systemctl reload nginx
 ## Health Checks
 
 ```bash
-curl -fsS http://127.0.0.1:28491/healthz
-curl -fsS http://127.0.0.1:28491/v1/personal-preferences/status
+curl -fsS http://127.0.0.1:28492/healthz
+curl -fsS http://127.0.0.1:28492/v1/personal-preferences/status
 curl -fsS https://api.docdex.org/healthz
 ```
+
+Release candidates must be uploaded as
+`/var/lib/docdex-deploy/incoming/<40-character-commit-sha>/docdexd`. The
+root-owned helper copies the candidate as the unprivileged deploy user and runs
+its pre-activation `--version` check as the `docdex` service user only after the
+root-owned copy matches the expected SHA-256 argument; it never executes a
+deploy-controlled program as root. Rollbacks accept only existing, root-owned
+immutable binaries under `/opt/docdex/releases` and must also match their
+expected SHA-256.
 
 `docdex-apply-release` performs the local health check plus the
 `/v1/personal-preferences/status` smoke check after every activation.

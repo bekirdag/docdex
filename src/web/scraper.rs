@@ -14,9 +14,11 @@ use tracing::{debug, info, warn};
 use url::Url;
 
 use crate::orchestrator::web_config::WebConfig;
+use crate::util::{self, BrowserCandidate, BrowserSource};
 use crate::web::browser_install;
 use crate::web::chrome::{fetch_dom as fetch_dom_chrome, ChromeFetchConfig, ChromeFetchResult};
 
+use crate::browser_session::BrowserSession;
 use crate::metrics;
 
 #[derive(Clone, Debug)]
@@ -97,6 +99,111 @@ pub struct TrackedProcess {
     pub process_group_id: Option<i32>,
 }
 
+#[derive(Clone, Debug)]
+struct TrackedProcessIdentity {
+    process: TrackedProcess,
+    owned_session: Option<BrowserSession>,
+    #[cfg(windows)]
+    windows_handle: Option<Arc<WindowsProcessHandle>>,
+}
+
+impl TrackedProcessIdentity {
+    fn capture(process: TrackedProcess) -> Self {
+        #[cfg(windows)]
+        {
+            let windows_handle = match WindowsProcessHandle::open(process.pid) {
+                Ok(handle) => Some(Arc::new(handle)),
+                Err(err) => {
+                    warn!(
+                        target: "docdexd_browser_guard",
+                        event = "chrome_watchdog_process_handle_open_failed",
+                        pid = process.pid,
+                        error = %err,
+                        "watchdog will not terminate a Windows process without a stable handle"
+                    );
+                    None
+                }
+            };
+            return Self {
+                process,
+                owned_session: None,
+                windows_handle,
+            };
+        }
+
+        #[cfg(not(windows))]
+        Self {
+            process,
+            owned_session: None,
+        }
+    }
+
+    fn pid(&self) -> u32 {
+        self.process.pid
+    }
+
+    fn process_group_id(&self) -> Option<i32> {
+        self.process.process_group_id
+    }
+}
+
+#[cfg(windows)]
+#[derive(Debug)]
+struct WindowsProcessHandle {
+    raw: windows_sys::Win32::Foundation::HANDLE,
+}
+
+#[cfg(windows)]
+impl WindowsProcessHandle {
+    fn open(pid: u32) -> Result<Self, String> {
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+        };
+
+        let raw = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, pid) };
+        if raw == 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        Ok(Self { raw })
+    }
+
+    fn is_alive(&self) -> Result<bool, String> {
+        use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+
+        match unsafe { WaitForSingleObject(self.raw, 0) } {
+            WAIT_TIMEOUT => Ok(true),
+            WAIT_OBJECT_0 => Ok(false),
+            status => Err(format!(
+                "WaitForSingleObject returned unexpected status {status}: {}",
+                std::io::Error::last_os_error()
+            )),
+        }
+    }
+
+    fn terminate(&self) -> Result<(), String> {
+        use windows_sys::Win32::System::Threading::TerminateProcess;
+
+        if unsafe { TerminateProcess(self.raw, 1) } == 0 {
+            let err = std::io::Error::last_os_error();
+            if matches!(self.is_alive(), Ok(false)) {
+                return Ok(());
+            }
+            return Err(err.to_string());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsProcessHandle {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.raw);
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ChromeProcessTracker {
     inner: Arc<Inner>,
@@ -110,6 +217,7 @@ impl ChromeProcessTracker {
     ) -> ChromeSessionHandle {
         let session_id = session_id.into();
         let process_for_log = process.clone();
+        let process = TrackedProcessIdentity::capture(process);
         let token;
         {
             let mut state = self.inner.state.lock();
@@ -159,6 +267,19 @@ impl ChromeProcessTracker {
         }
     }
 
+    pub(crate) fn register_browser_session(
+        &self,
+        session_id: impl Into<String>,
+        process: TrackedProcess,
+        session: BrowserSession,
+    ) -> ChromeSessionHandle {
+        let handle = self.register(session_id, process);
+        if let Some(record) = self.inner.state.lock().records.get_mut(&handle.token) {
+            record.process.owned_session = Some(session);
+        }
+        handle
+    }
+
     pub fn end_session(&self, session_id: &str) {
         let mut state = self.inner.state.lock();
         let Some(token) = state.session_current.get(session_id).copied() else {
@@ -174,8 +295,8 @@ impl ChromeProcessTracker {
                     event = "chrome_watchdog_session_ended",
                     session_id = record.session_id.as_str(),
                     token = record.token,
-                    pid = record.process.pid,
-                    pgid = record.process.process_group_id,
+                    pid = record.process.pid(),
+                    pgid = record.process.process_group_id(),
                     reason = ?SessionEndReason::Ended,
                     "chrome watchdog session ended"
                 );
@@ -213,7 +334,7 @@ impl ChromeSessionHandle {
         state
             .records
             .get(&self.token)
-            .map(|record| record.process.pid)
+            .map(|record| record.process.pid())
             .unwrap_or(0)
     }
 
@@ -238,8 +359,8 @@ impl ChromeSessionHandle {
                     event = "chrome_watchdog_session_ended",
                     session_id = record.session_id.as_str(),
                     token = record.token,
-                    pid = record.process.pid,
-                    pgid = record.process.process_group_id,
+                    pid = record.process.pid(),
+                    pgid = record.process.process_group_id(),
                     reason = ?SessionEndReason::Ended,
                     "chrome watchdog session ended"
                 );
@@ -261,8 +382,8 @@ impl Drop for ChromeSessionHandle {
                     event = "chrome_watchdog_session_dropped",
                     session_id = record.session_id.as_str(),
                     token = record.token,
-                    pid = record.process.pid,
-                    pgid = record.process.process_group_id,
+                    pid = record.process.pid(),
+                    pgid = record.process.process_group_id(),
                     reason = ?SessionEndReason::Dropped,
                     "chrome watchdog session dropped"
                 );
@@ -295,7 +416,43 @@ impl ChromeWatchdog {
     }
 }
 
-static GLOBAL_TRACKER: OnceCell<ChromeProcessTracker> = OnceCell::new();
+struct GlobalWatchdogState {
+    tracker: ChromeProcessTracker,
+    inner: Arc<Inner>,
+    loop_started: AtomicBool,
+}
+
+struct GlobalWatchdogLoopGuard(Arc<GlobalWatchdogState>);
+
+impl Drop for GlobalWatchdogLoopGuard {
+    fn drop(&mut self) {
+        self.0.loop_started.store(false, Ordering::Release);
+    }
+}
+
+impl GlobalWatchdogState {
+    fn ensure_loop_started(self: &Arc<Self>) -> bool {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return false;
+        };
+        if self
+            .loop_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return true;
+        }
+        let state = Arc::clone(self);
+        handle.spawn(async move {
+            let _reset = GlobalWatchdogLoopGuard(Arc::clone(&state));
+            watchdog_loop(Arc::clone(&state.inner)).await;
+        });
+        true
+    }
+}
+
+static GLOBAL_TRACKER: OnceCell<Arc<GlobalWatchdogState>> = OnceCell::new();
+static GLOBAL_WATCHDOG_NO_RUNTIME_WARNING: OnceCell<()> = OnceCell::new();
 
 /// Initializes a detached, process-wide watchdog tracker.
 ///
@@ -303,20 +460,21 @@ static GLOBAL_TRACKER: OnceCell<ChromeProcessTracker> = OnceCell::new();
 /// If no runtime is available, the tracker is still initialized but no periodic
 /// reaping will occur until `init_global` is called from within a runtime.
 pub fn init_global(config: ChromeWatchdogConfig) -> ChromeProcessTracker {
-    GLOBAL_TRACKER
-        .get_or_init(|| {
-            let (tracker, inner) = new_tracker(config);
-            if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                handle.spawn(watchdog_loop(inner));
-            } else {
-                warn!(
-                    target: "docdexd",
-                    "chrome watchdog initialized without a Tokio runtime; periodic reaping is disabled"
-                );
-            }
-            tracker
+    let state = GLOBAL_TRACKER.get_or_init(|| {
+        let (tracker, inner) = new_tracker(config);
+        Arc::new(GlobalWatchdogState {
+            tracker,
+            inner,
+            loop_started: AtomicBool::new(false),
         })
-        .clone()
+    });
+    if !state.ensure_loop_started() && GLOBAL_WATCHDOG_NO_RUNTIME_WARNING.set(()).is_ok() {
+        warn!(
+            target: "docdexd",
+            "chrome watchdog initialized without a Tokio runtime; periodic reaping will start when it is next accessed from a runtime"
+        );
+    }
+    state.tracker.clone()
 }
 
 pub fn init_global_from_env() -> Option<ChromeProcessTracker> {
@@ -324,7 +482,9 @@ pub fn init_global_from_env() -> Option<ChromeProcessTracker> {
 }
 
 pub fn global_tracker() -> Option<ChromeProcessTracker> {
-    GLOBAL_TRACKER.get().cloned()
+    let state = GLOBAL_TRACKER.get()?;
+    state.ensure_loop_started();
+    Some(state.tracker.clone())
 }
 
 fn new_tracker(config: ChromeWatchdogConfig) -> (ChromeProcessTracker, Arc<Inner>) {
@@ -367,7 +527,7 @@ enum SessionEndReason {
 struct SessionRecord {
     session_id: String,
     token: u64,
-    process: TrackedProcess,
+    process: TrackedProcessIdentity,
     started_at: Instant,
     last_heartbeat: Option<Instant>,
     active: bool,
@@ -402,7 +562,7 @@ async fn watchdog_loop(inner: Arc<Inner>) {
 
 async fn run_scan(inner: &Arc<Inner>) {
     let now = Instant::now();
-    let mut candidates: Vec<(String, u64, TrackedProcess, ReapReason)> = Vec::new();
+    let mut candidates: Vec<(String, u64, TrackedProcessIdentity, ReapReason)> = Vec::new();
     let mut to_remove: Vec<u64> = Vec::new();
 
     {
@@ -417,7 +577,7 @@ async fn run_scan(inner: &Arc<Inner>) {
                 debug!(
                     target: "docdexd",
                     session_id = record.session_id.as_str(),
-                    pid = record.process.pid,
+                    pid = record.process.pid(),
                     "watchdog: tracked Chrome process already exited; removing record"
                 );
                 to_remove.push(*token);
@@ -484,11 +644,11 @@ async fn reap_one(
     inner: &Arc<Inner>,
     session_id: &str,
     token: u64,
-    process: TrackedProcess,
+    process: TrackedProcessIdentity,
     reason: ReapReason,
 ) {
-    let pid = process.pid;
-    let pgid = process.process_group_id;
+    let pid = process.pid();
+    let pgid = process.process_group_id();
 
     metrics::global().inc_chrome_watchdog_reap_attempt();
     info!(
@@ -508,7 +668,7 @@ async fn reap_one(
     )
     .await;
 
-    match result {
+    match &result {
         Ok(()) => debug!(
             target: "docdexd",
             event = "chrome_watchdog_reap_done",
@@ -531,7 +691,8 @@ async fn reap_one(
         return;
     };
 
-    if !is_process_alive(&record.process) {
+    let owned_session_terminated = record.process.owned_session.is_some() && result.is_ok();
+    if owned_session_terminated || !is_process_alive(&record.process) {
         metrics::global().inc_chrome_watchdog_reaped();
         let record = state.records.remove(&token).expect("present");
         if state
@@ -547,30 +708,57 @@ async fn reap_one(
     }
 }
 
-fn is_process_alive(process: &TrackedProcess) -> bool {
+fn is_process_alive(process: &TrackedProcessIdentity) -> bool {
     #[cfg(unix)]
     {
-        if let Some(pgid) = process.process_group_id {
+        if let Some(pgid) = process.process_group_id() {
             return process_group_alive(pgid);
         }
-        return pid_alive(process.pid as i32);
+        return pid_alive(process.pid() as i32);
     }
-    #[cfg(not(unix))]
+
+    #[cfg(windows)]
     {
-        // Best-effort: if we can't reliably check, keep the record and rely on termination attempts.
+        let Some(handle) = process.windows_handle.as_deref() else {
+            // Without a captured handle, the PID may have been reused. Treat liveness as unknown
+            // and leave cleanup to BrowserSession rather than risking another process.
+            return true;
+        };
+        return match handle.is_alive() {
+            Ok(alive) => alive,
+            Err(err) => {
+                debug!(
+                    target: "docdexd_browser_guard",
+                    event = "chrome_watchdog_process_liveness_unknown",
+                    pid = process.pid(),
+                    error = %err,
+                    "watchdog could not query stable Windows process handle"
+                );
+                true
+            }
+        };
+    }
+
+    #[cfg(all(not(unix), not(windows)))]
+    {
         let _ = process;
         true
     }
 }
 
 async fn terminate_process(
-    process: &TrackedProcess,
+    process: &TrackedProcessIdentity,
     graceful_timeout: Duration,
     kill_timeout: Duration,
 ) -> Result<(), String> {
+    if let Some(session) = process.owned_session.as_ref() {
+        session.abort().await.map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+
     #[cfg(unix)]
     {
-        if let Some(pgid) = process.process_group_id {
+        if let Some(pgid) = process.process_group_id() {
             signal_process_group(pgid, nix::libc::SIGTERM);
             if wait_until_dead(process, graceful_timeout).await {
                 return Ok(());
@@ -579,7 +767,7 @@ async fn terminate_process(
             debug!(
                 target: "docdexd",
                 event = "chrome_watchdog_kill_escalation",
-                pid = process.pid,
+                pid = process.pid(),
                 pgid,
                 "watchdog escalating to SIGKILL"
             );
@@ -590,17 +778,17 @@ async fn terminate_process(
             return Err("process group did not exit after SIGKILL".to_string());
         }
 
-        signal_pid(process.pid as i32, nix::libc::SIGTERM);
+        signal_pid(process.pid() as i32, nix::libc::SIGTERM);
         if wait_until_dead(process, graceful_timeout).await {
             return Ok(());
         }
         debug!(
             target: "docdexd",
             event = "chrome_watchdog_kill_escalation",
-            pid = process.pid,
+            pid = process.pid(),
             "watchdog escalating to SIGKILL"
         );
-        signal_pid(process.pid as i32, nix::libc::SIGKILL);
+        signal_pid(process.pid() as i32, nix::libc::SIGKILL);
         if wait_until_dead(process, kill_timeout).await {
             return Ok(());
         }
@@ -609,19 +797,26 @@ async fn terminate_process(
 
     #[cfg(windows)]
     {
-        // taskkill supports graceful-ish termination and force.
-        if wait_until_dead(process, Duration::from_millis(1)).await {
-            return Ok(());
-        }
-        terminate_windows(process.pid, false).await?;
+        let handle = process.windows_handle.as_deref().ok_or_else(|| {
+            "stable Windows process handle unavailable; refusing PID-based termination".to_string()
+        })?;
+
+        // Windows has no process-agnostic graceful signal. Give an already-closing process its
+        // configured grace period, then terminate the exact kernel object captured at registration.
         if wait_until_dead(process, graceful_timeout).await {
             return Ok(());
         }
-        terminate_windows(process.pid, true).await?;
+        debug!(
+            target: "docdexd_browser_guard",
+            event = "chrome_watchdog_kill_escalation",
+            pid = process.pid(),
+            "watchdog terminating stable Windows process handle"
+        );
+        handle.terminate()?;
         if wait_until_dead(process, kill_timeout).await {
             return Ok(());
         }
-        Err("process did not exit after taskkill /F".to_string())
+        Err("process did not exit after TerminateProcess".to_string())
     }
 
     #[cfg(all(not(unix), not(windows)))]
@@ -631,7 +826,7 @@ async fn terminate_process(
     }
 }
 
-async fn wait_until_dead(process: &TrackedProcess, timeout: Duration) -> bool {
+async fn wait_until_dead(process: &TrackedProcessIdentity, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if !is_process_alive(process) {
@@ -690,47 +885,71 @@ fn signal_pid(pid: i32, signal: i32) {
     }
 }
 
-#[cfg(windows)]
-async fn terminate_windows(pid: u32, force: bool) -> Result<(), String> {
-    use tokio::process::Command;
-
-    let mut cmd = Command::new("taskkill");
-    cmd.arg("/PID").arg(pid.to_string()).arg("/T");
-    if force {
-        cmd.arg("/F");
-    }
-    let status = cmd
-        .status()
-        .await
-        .map_err(|err| format!("taskkill failed: {err}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("taskkill exited with {status}"))
-    }
-}
-
 #[derive(Clone, Debug)]
 pub enum ScraperEngine {
     Chrome { config: ChromeFetchConfig },
 }
 
+static MANAGED_BROWSER_MAINTENANCE_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+struct ManagedBrowserMaintenanceGuard;
+
+impl Drop for ManagedBrowserMaintenanceGuard {
+    fn drop(&mut self) {
+        MANAGED_BROWSER_MAINTENANCE_ACTIVE.store(false, Ordering::Release);
+    }
+}
+
 impl ScraperEngine {
-    pub fn from_web_config(config: &WebConfig) -> Result<Self> {
-        let engine = config.scraper_engine.trim().to_ascii_lowercase();
-        if !engine.is_empty()
-            && engine != "chrome"
-            && engine != "chromium"
-            && engine != "chromium-browser"
-        {
-            warn!(
-                "web scraper engine {} is not supported; using chromium",
-                config.scraper_engine
-            );
+    /// Resolve only an already-usable browser and schedule managed-browser
+    /// maintenance independently of the caller. This keeps cache/direct-fetch
+    /// request deadlines free of blocking installer work.
+    pub fn from_web_config_if_available(config: &WebConfig) -> Option<Self> {
+        warn_if_scraper_engine_is_unsupported(config);
+        let detected = util::detect_browser_binary(config.chrome_binary_path.as_deref());
+        let managed = should_refresh_managed_browser(detected.as_ref());
+        let chrome_config = ChromeFetchConfig::from_web_config(config);
+        if managed || chrome_config.is_none() {
+            schedule_managed_browser_maintenance(config.scraper_auto_install);
+        }
+        chrome_config.map(|config| ScraperEngine::Chrome { config })
+    }
+
+    pub async fn from_web_config(config: &WebConfig) -> Result<Self> {
+        warn_if_scraper_engine_is_unsupported(config);
+        let detected = util::detect_browser_binary(config.chrome_binary_path.as_deref());
+        if should_refresh_managed_browser(detected.as_ref()) {
+            let refresh = tokio::task::spawn_blocking({
+                let auto_install = config.scraper_auto_install;
+                move || browser_install::install_or_refresh_managed(auto_install)
+            })
+            .await;
+            match refresh {
+                Ok(Ok(Some(result))) => info!(
+                    path = %result.path.display(),
+                    version = %result.version,
+                    "validated managed Chromium refresh state for web scraper"
+                ),
+                Ok(Ok(None)) => {}
+                Ok(Err(err)) => warn!(
+                    error = %err,
+                    "managed Chromium refresh failed; continuing with the validated detected binary"
+                ),
+                Err(err) => warn!(
+                    error = %err,
+                    "managed Chromium refresh task failed; continuing with the validated detected binary"
+                ),
+            }
         }
         let chrome_config = match ChromeFetchConfig::from_web_config(config) {
             Some(chrome_config) => chrome_config,
-            None => match browser_install::install_if_missing(config.scraper_auto_install) {
+            None => match tokio::task::spawn_blocking({
+                let auto_install = config.scraper_auto_install;
+                move || browser_install::install_or_refresh_managed(auto_install)
+            })
+            .await
+            .map_err(|err| anyhow!("browser install task failed: {err}"))?
+            {
                 Ok(Some(result)) => {
                     info!(
                         path = %result.path.display(),
@@ -767,10 +986,163 @@ impl ScraperEngine {
     }
 }
 
+fn should_refresh_managed_browser(candidate: Option<&BrowserCandidate>) -> bool {
+    candidate.is_some_and(|candidate| candidate.source == BrowserSource::AutoInstall)
+}
+
+fn warn_if_scraper_engine_is_unsupported(config: &WebConfig) {
+    let engine = config.scraper_engine.trim().to_ascii_lowercase();
+    if !engine.is_empty()
+        && engine != "chrome"
+        && engine != "chromium"
+        && engine != "chromium-browser"
+    {
+        warn!(
+            "web scraper engine {} is not supported; using chromium",
+            config.scraper_engine
+        );
+    }
+}
+
+fn schedule_managed_browser_maintenance(auto_install: bool) {
+    if MANAGED_BROWSER_MAINTENANCE_ACTIVE
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("docdex-browser-maintenance".to_string())
+        .spawn(move || {
+            let _guard = ManagedBrowserMaintenanceGuard;
+            match browser_install::install_or_refresh_managed(auto_install) {
+                Ok(Some(result)) => info!(
+                    path = %result.path.display(),
+                    version = %result.version,
+                    "managed Chromium background maintenance completed"
+                ),
+                Ok(None) => {}
+                Err(err) => warn!(
+                    error = %err,
+                    "managed Chromium background maintenance failed"
+                ),
+            }
+        });
+    if let Err(err) = spawned {
+        MANAGED_BROWSER_MAINTENANCE_ACTIVE.store(false, Ordering::Release);
+        warn!(
+            error = %err,
+            "failed to start managed Chromium background maintenance thread"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     use super::*;
+
+    #[test]
+    fn only_the_selected_managed_browser_enters_the_refresh_path() {
+        let mut candidate = BrowserCandidate {
+            kind: util::BrowserKind::Chromium,
+            name: "Docdex Chromium".to_string(),
+            path: std::path::PathBuf::from("managed-chromium"),
+            source: BrowserSource::AutoInstall,
+            priority: 0,
+        };
+        assert!(should_refresh_managed_browser(Some(&candidate)));
+
+        candidate.source = BrowserSource::Config;
+        assert!(!should_refresh_managed_browser(Some(&candidate)));
+        assert!(!should_refresh_managed_browser(None));
+    }
+
+    #[test]
+    fn watchdog_loop_can_start_after_initialization_outside_a_runtime() {
+        let (tracker, inner) = new_tracker(ChromeWatchdogConfig {
+            scan_interval: Duration::from_millis(10),
+            ..ChromeWatchdogConfig::default()
+        });
+        let state = Arc::new(GlobalWatchdogState {
+            tracker,
+            inner,
+            loop_started: AtomicBool::new(false),
+        });
+        assert!(!state.ensure_loop_started());
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("test runtime");
+        runtime.block_on(async {
+            assert!(state.ensure_loop_started());
+            assert!(state.loop_started.load(Ordering::Acquire));
+            state.inner.shutdown.store(true, Ordering::Release);
+            state.inner.shutdown_notify.notify_one();
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while state.loop_started.load(Ordering::Acquire) && Instant::now() < deadline {
+                tokio::task::yield_now().await;
+            }
+            assert!(!state.loop_started.load(Ordering::Acquire));
+        });
+    }
+
+    #[tokio::test]
+    #[cfg(windows)]
+    async fn windows_watchdog_tracks_and_terminates_the_captured_process_handle() {
+        use std::process::Stdio;
+
+        let mut child = tokio::process::Command::new("ping")
+            .args(["-n", "60", "127.0.0.1"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn ping");
+        let pid = child.id().expect("ping pid");
+        let process = TrackedProcessIdentity::capture(TrackedProcess {
+            pid,
+            process_group_id: None,
+        });
+
+        assert!(
+            process.windows_handle.is_some(),
+            "expected a stable Windows process handle"
+        );
+        assert!(is_process_alive(&process));
+
+        terminate_process(&process, Duration::from_millis(1), Duration::from_secs(2))
+            .await
+            .expect("terminate captured process");
+        let _ = tokio::time::timeout(Duration::from_secs(2), child.wait())
+            .await
+            .expect("child wait timeout")
+            .expect("wait for ping");
+        assert!(!is_process_alive(&process));
+    }
+
+    #[tokio::test]
+    #[cfg(windows)]
+    async fn windows_watchdog_refuses_pid_only_termination() {
+        let process = TrackedProcessIdentity {
+            process: TrackedProcess {
+                pid: u32::MAX,
+                process_group_id: None,
+            },
+            owned_session: None,
+            windows_handle: None,
+        };
+
+        assert!(
+            is_process_alive(&process),
+            "unknown liveness must fail safe"
+        );
+        let err = terminate_process(&process, Duration::ZERO, Duration::ZERO)
+            .await
+            .expect_err("PID-only termination must be rejected");
+        assert!(err.contains("refusing PID-based termination"));
+    }
 
     #[cfg(unix)]
     fn resolve_shell() -> Option<std::path::PathBuf> {

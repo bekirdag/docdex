@@ -78,6 +78,7 @@ Optional (metadata; ignored by the installer unless noted):
 - `repo` (string): `owner/repo` the release belongs to.
 - `tag` (string): release tag, typically `vX.Y.Z`.
 - `version` (string): `X.Y.Z`.
+- `sourceCommit` (string): lowercase 40-hex Git commit used to build the assets.
 - `generatedAt` (string): ISO-8601 timestamp.
 - `publishedAssets` (array): `{name, sha256}` pairs for release automation auditing (installer ignores this).
 

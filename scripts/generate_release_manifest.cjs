@@ -12,13 +12,16 @@ const DEFAULT_TARGETS = Object.freeze(PUBLISHED_RELEASE_TARGETS.slice());
 
 function usage() {
   return [
-    "Usage: node scripts/generate_release_manifest.cjs --dir <assets_dir> --out <manifest_path> [--tag vX.Y.Z] [--repo owner/repo] [--allow-partial]",
+    "Usage: node scripts/generate_release_manifest.cjs --dir <assets_dir> --out <manifest_path> [--tag vX.Y.Z] [--repo owner/repo] [--source-commit SHA] [--source-date-epoch SECONDS] [--allow-partial]",
     "",
     "Generates a machine-readable release manifest with per-target SHA-256 integrity metadata,",
     "writes a sibling .sha256 file for the manifest itself, and writes SHA256SUMS (+ SHA256SUMS.txt)",
     "in the assets directory for deterministic installer fallback.",
     "",
     "Optional flags:",
+    "  --source-commit    Record the immutable 40-hex source commit in the manifest.",
+    "  --source-date-epoch  Use the immutable source commit timestamp for generatedAt.",
+    "                       SOURCE_DATE_EPOCH is used when this flag is omitted.",
     "  --allow-partial   Generate a manifest from only assets present in the dir. Missing targets",
     "                    are ignored if neither the archive nor its .sha256 exists.",
     "",
@@ -38,7 +41,7 @@ function usage() {
 }
 
 function parseArgs(argv) {
-  const args = { dir: null, out: null, tag: null, repo: null, allowPartial: false };
+  const args = { dir: null, out: null, tag: null, repo: null, sourceCommit: null, sourceDateEpoch: null, allowPartial: false };
   const rest = [...argv];
   while (rest.length) {
     const flag = rest.shift();
@@ -47,10 +50,28 @@ function parseArgs(argv) {
     else if (flag === "--out") args.out = rest.shift() || null;
     else if (flag === "--tag") args.tag = rest.shift() || null;
     else if (flag === "--repo") args.repo = rest.shift() || null;
+    else if (flag === "--source-commit") args.sourceCommit = rest.shift() || null;
+    else if (flag === "--source-date-epoch") args.sourceDateEpoch = rest.shift() || null;
     else if (flag === "--allow-partial") args.allowPartial = true;
     else return { ...args, error: `Unknown arg: ${flag}` };
   }
   return args;
+}
+
+function dateFromSourceEpoch(raw) {
+  const value = String(raw ?? "").trim();
+  if (!/^\d+$/.test(value)) {
+    const err = new Error("source date epoch must be a non-negative integer");
+    err.exitCode = 2;
+    throw err;
+  }
+  const seconds = Number(value);
+  if (!Number.isSafeInteger(seconds) || seconds > 253402300799) {
+    const err = new Error("source date epoch is outside the supported timestamp range");
+    err.exitCode = 2;
+    throw err;
+  }
+  return new Date(seconds * 1000);
 }
 
 function sha256FileSync(filePath) {
@@ -95,9 +116,11 @@ function uniqueOrThrow(values, label) {
  *   outPath: string,
  *   tag?: string|null,
  *   repo?: string|null,
+ *   sourceCommit?: string|null,
  *   targets?: {targetTriple: string, archiveBase: string}[],
  *   allowPartial?: boolean,
- *   now?: Date
+ *   now?: Date,
+ *   sourceDateEpoch?: string|number|null
  * }} options
  */
 function generateReleaseManifest(options) {
@@ -105,12 +128,23 @@ function generateReleaseManifest(options) {
   const outPath = options?.outPath;
   const tag = options?.tag ?? null;
   const repo = options?.repo ?? null;
+  const sourceCommit = options?.sourceCommit ?? null;
   const allowPartial = Boolean(options?.allowPartial);
   const targets = Array.isArray(options?.targets) && options.targets.length ? options.targets : DEFAULT_TARGETS;
-  const now = options?.now instanceof Date ? options.now : new Date();
+  const sourceDateEpoch = options?.sourceDateEpoch ?? process.env.SOURCE_DATE_EPOCH ?? null;
+  const now = options?.now instanceof Date
+    ? options.now
+    : sourceDateEpoch === null
+      ? new Date()
+      : dateFromSourceEpoch(sourceDateEpoch);
 
   if (!assetsDir || !outPath) {
     const err = new Error("Missing required --dir/--out");
+    err.exitCode = 2;
+    throw err;
+  }
+  if (sourceCommit !== null && !/^[0-9a-f]{40}$/.test(sourceCommit)) {
+    const err = new Error("source commit must be a lowercase 40-hex Git commit");
     err.exitCode = 2;
     throw err;
   }
@@ -203,6 +237,7 @@ function generateReleaseManifest(options) {
     manifestVersion: 1,
     ...(repo ? { repo } : {}),
     ...(tag ? { tag, version: tag.startsWith("v") ? tag.slice(1) : tag } : {}),
+    ...(sourceCommit ? { sourceCommit } : {}),
     generatedAt: now.toISOString(),
     targets: targetsObj,
     publishedAssets
@@ -272,6 +307,8 @@ if (require.main === module) {
       outPath: args.out,
       tag: args.tag,
       repo: args.repo,
+      sourceCommit: args.sourceCommit,
+      sourceDateEpoch: args.sourceDateEpoch,
       allowPartial: args.allowPartial
     });
 
@@ -285,4 +322,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { generateReleaseManifest, DEFAULT_TARGETS };
+module.exports = { generateReleaseManifest, dateFromSourceEpoch, DEFAULT_TARGETS };

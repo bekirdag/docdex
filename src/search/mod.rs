@@ -76,6 +76,9 @@ const AST_SCORE_SCALE: f32 = 0.03;
 const AST_SCORE_PER_MATCH: f32 = 0.15;
 const AST_SCORE_MAX_BOOST: f32 = 0.3;
 const RANKING_QUERY_TOKEN_LIMIT: usize = 6;
+const SEARCH_REPO_REFILL_FACTOR: usize = 4;
+const SEARCH_REPO_REFILL_MAX_EXTRA: usize = 128;
+const LIBRARY_RANK_WEIGHT: f32 = 0.95;
 
 // Rate limiting is shared with MCP and other surfaces via crate::ratelimit.
 
@@ -1113,7 +1116,11 @@ pub fn router(state: AppState) -> Router {
             "/v1/gates/status",
             get(crate::api::v1::gates::gates_status_handler),
         )
-        .route("/v1/mcp", post(crate::api::mcp_http::mcp_request_handler))
+        .route(
+            "/v1/mcp",
+            post(crate::api::mcp_http::mcp_request_handler)
+                .delete(crate::api::mcp_http::mcp_delete_handler),
+        )
         .route(
             "/v1/mcp/message",
             post(crate::api::mcp_http::mcp_message_handler),
@@ -2440,12 +2447,12 @@ fn search_with_optional_libs(
     limit: usize,
     surface: RankingSurface,
 ) -> Result<(Vec<Hit>, SearchQueryMeta)> {
-    let (mut repo_hits, query_meta) = indexer.search_with_query_meta(query, limit)?;
+    let (mut repo_hits, query_meta) = search_repo_with_bounded_refill(indexer, query, limit)?;
     if surface == RankingSurface::Search {
         apply_ranking_deltas(indexer, &mut repo_hits, query, limit, surface)?;
     }
     let Some(libs) = libs_indexer else {
-        return Ok((repo_hits, query_meta));
+        return Ok((merge_hits(repo_hits, Vec::new(), limit), query_meta));
     };
     let libs_hits = match libs.search_with_query_meta(query, limit) {
         Ok((hits, _meta)) => hits,
@@ -2455,6 +2462,37 @@ fn search_with_optional_libs(
         }
     };
     Ok((merge_hits(repo_hits, libs_hits, limit), query_meta))
+}
+
+fn bounded_repo_candidate_limit(limit: usize) -> usize {
+    let proportional_extra = limit.saturating_mul(SEARCH_REPO_REFILL_FACTOR.saturating_sub(1));
+    limit.saturating_add(proportional_extra.min(SEARCH_REPO_REFILL_MAX_EXTRA))
+}
+
+fn search_repo_with_bounded_refill(
+    indexer: &Indexer,
+    query: &str,
+    limit: usize,
+) -> Result<(Vec<Hit>, SearchQueryMeta)> {
+    let initial = indexer.search_with_query_meta(query, limit)?;
+    let refill_limit = bounded_repo_candidate_limit(limit);
+    if initial.0.len() >= limit || refill_limit == limit {
+        return Ok(initial);
+    }
+
+    match indexer.search_with_query_meta(query, refill_limit) {
+        Ok(refilled) => Ok(refilled),
+        Err(err) => {
+            warn!(
+                target: "docdexd",
+                error = ?err,
+                requested_limit = limit,
+                refill_limit,
+                "bounded repo search refill failed; returning the initial page"
+            );
+            Ok(initial)
+        }
+    }
 }
 
 pub(crate) fn apply_ranking_deltas(
@@ -3193,69 +3231,62 @@ fn path_hit_for_query(indexer: &Indexer, query: &str, window: usize) -> Result<O
 }
 
 fn merge_hits(repo_hits: Vec<Hit>, libs_hits: Vec<Hit>, limit: usize) -> Vec<Hit> {
-    if libs_hits.is_empty() {
-        return repo_hits;
-    }
-    if repo_hits.is_empty() {
-        return libs_hits.into_iter().take(limit).collect();
-    }
-    let repo_max = repo_hits
-        .first()
-        .map(|h| h.score)
-        .unwrap_or(0.0)
-        .max(0.0001);
-    let libs_max = libs_hits
-        .first()
-        .map(|h| h.score)
-        .unwrap_or(0.0)
-        .max(0.0001);
+    let max_finite_score = |hits: &[Hit]| {
+        hits.iter()
+            .map(|hit| hit.score)
+            .filter(|score| score.is_finite())
+            .fold(0.0001_f32, f32::max)
+    };
+    let repo_max = max_finite_score(&repo_hits);
+    let libs_max = max_finite_score(&libs_hits);
 
     struct Ranked {
         rank: f32,
+        source_priority: u8,
         hit: Hit,
     }
 
-    let mut repo_ranked: Vec<Ranked> = repo_hits
+    let repo_ranked = repo_hits
         .into_iter()
         .map(|hit| Ranked {
-            rank: (hit.score / repo_max) * 1.0,
+            rank: if hit.score.is_finite() {
+                hit.score / repo_max
+            } else {
+                f32::NEG_INFINITY
+            },
+            source_priority: 0,
             hit,
         })
-        .collect();
-    repo_ranked.sort_by(|a, b| {
-        b.rank
-            .partial_cmp(&a.rank)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.hit.doc_id.cmp(&b.hit.doc_id))
-    });
-    let mut libs_ranked: Vec<Ranked> = libs_hits
+        .collect::<Vec<_>>();
+    let libs_ranked = libs_hits
         .into_iter()
         .map(|hit| Ranked {
-            rank: (hit.score / libs_max) * 0.95,
+            rank: if hit.score.is_finite() {
+                (hit.score / libs_max) * LIBRARY_RANK_WEIGHT
+            } else {
+                f32::NEG_INFINITY
+            },
+            source_priority: 1,
             hit,
         })
-        .collect();
-    libs_ranked.sort_by(|a, b| {
-        b.rank
-            .partial_cmp(&a.rank)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.hit.doc_id.cmp(&b.hit.doc_id))
-    });
+        .collect::<Vec<_>>();
 
-    let mut ordered: Vec<Hit> = Vec::with_capacity(limit);
-    for ranked in repo_ranked {
-        if ordered.len() >= limit {
-            return ordered;
-        }
-        ordered.push(ranked.hit);
-    }
-    for ranked in libs_ranked {
-        if ordered.len() >= limit {
-            break;
-        }
-        ordered.push(ranked.hit);
-    }
-    ordered
+    let mut ranked = repo_ranked
+        .into_iter()
+        .chain(libs_ranked)
+        .collect::<Vec<_>>();
+    ranked.sort_by(|a, b| {
+        b.rank
+            .total_cmp(&a.rank)
+            .then_with(|| a.source_priority.cmp(&b.source_priority))
+            .then_with(|| a.hit.doc_id.cmp(&b.hit.doc_id))
+            .then_with(|| a.hit.rel_path.cmp(&b.hit.rel_path))
+    });
+    ranked
+        .into_iter()
+        .take(limit)
+        .map(|ranked| ranked.hit)
+        .collect()
 }
 
 fn query_overlap_ratio(tokens: &[String], text: &str) -> f32 {

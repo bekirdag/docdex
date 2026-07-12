@@ -2785,6 +2785,8 @@ if (require.main === module) {
 }
 
 module.exports = {
+  parseRepoSlug,
+  getVersion,
   checksumCandidateNames,
   manifestCandidateNames,
   tryResolveAssetViaManifest,

@@ -45,6 +45,8 @@ mod digest;
 mod generated_skills;
 #[path = "tests/governance.rs"]
 mod governance;
+#[path = "tests/migrations.rs"]
+mod migrations;
 #[path = "tests/operator_events.rs"]
 mod operator_events;
 #[path = "tests/routines.rs"]

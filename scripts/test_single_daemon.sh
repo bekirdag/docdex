@@ -86,6 +86,7 @@ wait_for_health() {
 }
 
 TEMP_HOME=""
+OWNED_DAEMON_PID=""
 if [[ "${MODE}" == "dry" ]]; then
   TEMP_HOME="$(mktemp -d)"
   export HOME="${TEMP_HOME}"
@@ -122,7 +123,9 @@ cleanup() {
   if [[ "${KEEP_DAEMON}" == "1" && "${MODE}" == "real" ]]; then
     return
   fi
-  if [[ -f "${LOCK_PATH}" ]]; then
+  if [[ -n "${OWNED_DAEMON_PID}" ]]; then
+    kill "${OWNED_DAEMON_PID}" >/dev/null 2>&1 || true
+  elif [[ -f "${LOCK_PATH}" ]]; then
     local pid
     pid="$(python3 - <<PY
 import json
@@ -145,7 +148,16 @@ PY
 trap cleanup EXIT
 
 log "running postinstall setup (port ${PORT})"
-node -e "require('./npm/lib/postinstall_setup').runPostInstallSetup({binaryPath:'${DOCDEX_BIN}'})"
+if [[ "${MODE}" == "dry" ]]; then
+  DOCDEX_TEST_BINARY="${DOCDEX_BIN}" DOCDEX_SETUP_SKIP=1 node -e \
+    "require('./npm/lib/postinstall_setup').runPostInstallSetup({binaryPath:process.env.DOCDEX_TEST_BINARY,isolatedDaemonLifecycle:true}).catch((err)=>{console.error(err);process.exitCode=1})"
+  log "starting caller-owned isolated daemon"
+  "${DOCDEX_BIN}" daemon --repo "${REPO_ROOT}" --host 127.0.0.1 --port "${PORT}" --log warn --secure-mode=false >/dev/null 2>&1 &
+  OWNED_DAEMON_PID=$!
+else
+  DOCDEX_TEST_BINARY="${DOCDEX_BIN}" node -e \
+    "require('./npm/lib/postinstall_setup').runPostInstallSetup({binaryPath:process.env.DOCDEX_TEST_BINARY}).catch((err)=>{console.error(err);process.exitCode=1})"
+fi
 
 log "waiting for daemon healthz"
 if ! wait_for_health "${BASE_URL}"; then
@@ -209,12 +221,16 @@ PY
 )"
   if [[ -n "${pid}" ]]; then
     kill "${pid}" >/dev/null 2>&1 || true
+    if [[ "${pid}" == "${OWNED_DAEMON_PID}" ]]; then
+      OWNED_DAEMON_PID=""
+    fi
   fi
 fi
 sleep 0.3
 
 log "starting daemon after stale lock"
 "${DOCDEX_BIN}" daemon --repo "${REPO_ROOT}" --host 127.0.0.1 --port "${PORT}" --log warn --secure-mode=false >/dev/null 2>&1 &
+OWNED_DAEMON_PID=$!
 if ! wait_for_health "${BASE_URL}"; then
   log "daemon did not restart after stale lock"
   exit 1

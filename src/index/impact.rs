@@ -23,8 +23,7 @@ impl Indexer {
         diagnostics: Option<ImpactDiagnostics>,
     ) -> Result<()> {
         let store = ImpactGraphStore::new(self.config.state_dir());
-        let existing = store.read_edges()?;
-        let mut diagnostics_map = store.read_diagnostics_map()?;
+        let (existing, mut diagnostics_map) = store.read_snapshot_for_update()?;
         let mut merged: BTreeSet<ImpactGraphEdge> = BTreeSet::new();
         for edge in existing {
             if edge.source == rel_path {
@@ -50,8 +49,7 @@ impl Indexer {
 
     pub(super) fn remove_impact_edges_for_file(&self, rel_path: &str) -> Result<()> {
         let store = ImpactGraphStore::new(self.config.state_dir());
-        let existing = store.read_edges()?;
-        let mut diagnostics_map = store.read_diagnostics_map()?;
+        let (existing, mut diagnostics_map) = store.read_snapshot_for_update()?;
         let mut merged: BTreeSet<ImpactGraphEdge> = BTreeSet::new();
         for edge in existing {
             if edge.source == rel_path || edge.target == rel_path {

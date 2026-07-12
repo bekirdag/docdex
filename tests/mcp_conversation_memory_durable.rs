@@ -93,7 +93,7 @@ fn parse_tool_result(body: &Value) -> Result<Value, Box<dyn Error>> {
         .and_then(|value| value.first())
         .and_then(|value| value.get("text"))
         .and_then(|value| value.as_str())
-        .ok_or("missing MCP tool response")?;
+        .ok_or_else(|| format!("missing MCP tool response: {body}"))?;
     Ok(serde_json::from_str(text)?)
 }
 
@@ -122,6 +122,14 @@ fn mcp_conversation_import_routes_durable_memories_into_repo_and_profile(
         port,
         &mock.base_url,
     )?;
+    assert!(
+        state_root
+            .path()
+            .join("personal_preferences")
+            .join("personal_preferences.db")
+            .is_file(),
+        "explicit state roots must keep personal-preferences state beneath the supplied root"
+    );
 
     let client = Client::builder().timeout(Duration::from_secs(5)).build()?;
     let import_response: Value = client

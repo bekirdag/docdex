@@ -1,46 +1,134 @@
 name: Deploy Docdex Server
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Immutable Docdex release tag to deploy (for example v0.2.86)
+        required: true
+        type: string
+      confirmation:
+        description: Confirm an intentional production deployment
+        required: true
+        type: choice
+        options:
+          - deploy
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   group: docdex-server-deploy
   cancel-in-progress: false
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
-  build:
+  prepare:
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    outputs:
+      release_sha: ${{ steps.release.outputs.release_sha }}
+      release_sha256: ${{ steps.release.outputs.release_sha256 }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Run tests
-        run: cargo test --locked --all
-
-      - name: Build release binary
-        run: cargo build --release --locked --bin docdexd
-
-      - name: Upload release binary
-        uses: actions/upload-artifact@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          name: docdexd-linux-x64
-          path: target/release/docdexd
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+
+      - name: Download and verify immutable release asset
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REF}" = "refs/heads/main"
+          [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+
+          git fetch --force --depth=1 origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          RELEASE_SHA="$(git rev-list -n 1 "${RELEASE_TAG}")"
+          [[ "${RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]]
+
+          mkdir -p dist/archive dist/extracted
+          gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > dist/release.json
+          jq -e --arg tag "${RELEASE_TAG}" \
+            '.tag_name == $tag and .draft == false and .prerelease == false and .immutable == true' \
+            dist/release.json >/dev/null
+          gh release download "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" \
+            --dir dist/archive \
+            --pattern docdexd-linux-x64-gnu.tar.gz \
+            --pattern docdexd-linux-x64-gnu.tar.gz.sha256 \
+            --pattern docdex-release-manifest.json
+
+          (
+            cd dist/archive
+            sha256sum -c docdexd-linux-x64-gnu.tar.gz.sha256
+          )
+          RELEASE_SHA="${RELEASE_SHA}" RELEASE_TAG="${RELEASE_TAG}" node <<'NODE'
+          const crypto = require("node:crypto");
+          const fs = require("node:fs");
+          const { resolveCanonicalAssetForTargetTriple } = require("./npm/lib/release_manifest");
+          const archiveName = "docdexd-linux-x64-gnu.tar.gz";
+          const archive = fs.readFileSync(`dist/archive/${archiveName}`);
+          const manifest = JSON.parse(fs.readFileSync("dist/archive/docdex-release-manifest.json", "utf8"));
+          const resolved = resolveCanonicalAssetForTargetTriple(
+            manifest,
+            "x86_64-unknown-linux-gnu"
+          );
+          const actualSha256 = crypto.createHash("sha256").update(archive).digest("hex");
+          if (manifest.tag !== process.env.RELEASE_TAG) throw new Error("release manifest tag mismatch");
+          if (manifest.sourceCommit !== process.env.RELEASE_SHA) throw new Error("release manifest source commit mismatch");
+          if (resolved.asset.name !== archiveName) throw new Error("release manifest asset mismatch");
+          if (resolved.integrity.sha256 !== actualSha256) throw new Error("release manifest checksum mismatch");
+          fs.writeFileSync(
+            "dist/release-provenance.json",
+            JSON.stringify({
+              schema_version: 1,
+              tag: process.env.RELEASE_TAG,
+              source_commit: process.env.RELEASE_SHA,
+              asset: archiveName,
+              sha256: actualSha256
+            }, null, 2) + "\n"
+          );
+          NODE
+
+          test "$(tar -tzf dist/archive/docdexd-linux-x64-gnu.tar.gz)" = "docdexd"
+          tar -xzf dist/archive/docdexd-linux-x64-gnu.tar.gz -C dist/extracted
+          test -f dist/extracted/docdexd
+          test ! -L dist/extracted/docdexd
+          install -m 0755 dist/extracted/docdexd dist/docdexd
+          CANDIDATE_VERSION="$(dist/docdexd --version)"
+          test "${CANDIDATE_VERSION}" = "docdexd ${RELEASE_TAG#v}"
+          RELEASE_SHA256="$(sha256sum dist/docdexd | awk '{print $1}')"
+          [[ "${RELEASE_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+          {
+            echo "release_sha=${RELEASE_SHA}"
+            echo "release_sha256=${RELEASE_SHA256}"
+            echo "release_tag=${RELEASE_TAG}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Upload verified release binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: docdexd-linux-x64-release
+          path: |
+            dist/docdexd
+            dist/release-provenance.json
           if-no-files-found: error
 
   deploy:
-    needs: build
+    needs: prepare
+    environment: production
+    permissions:
+      actions: read
     runs-on:
       - self-hosted
       - Linux
@@ -48,39 +136,131 @@ jobs:
       - docdex-deploy
     steps:
       - name: Download release binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: docdexd-linux-x64
+          name: docdexd-linux-x64-release
           path: dist
+
+      - name: Restore and validate artifact mode
+        run: |
+          set -euo pipefail
+          test -f dist/docdexd
+          test ! -L dist/docdexd
+          chmod 0755 dist/docdexd
 
       - name: Configure SSH
         env:
           DOCDEX_DEPLOY_HOST: ${{ secrets.DOCDEX_DEPLOY_HOST }}
           DOCDEX_DEPLOY_PORT: ${{ secrets.DOCDEX_DEPLOY_PORT }}
           DOCDEX_DEPLOY_SSH_KEY: ${{ secrets.DOCDEX_DEPLOY_SSH_KEY }}
+          DOCDEX_DEPLOY_KNOWN_HOSTS: ${{ secrets.DOCDEX_DEPLOY_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
           test -n "${DOCDEX_DEPLOY_HOST}"
           test -n "${DOCDEX_DEPLOY_PORT}"
           test -n "${DOCDEX_DEPLOY_SSH_KEY}"
-          install -d -m 0700 ~/.ssh
-          printf '%s\n' "${DOCDEX_DEPLOY_SSH_KEY}" > ~/.ssh/docdex_deploy_key
-          chmod 0600 ~/.ssh/docdex_deploy_key
-          ssh-keyscan -p "${DOCDEX_DEPLOY_PORT}" "${DOCDEX_DEPLOY_HOST}" >> ~/.ssh/known_hosts
+          test -n "${DOCDEX_DEPLOY_KNOWN_HOSTS}"
+          SSH_KEY_PATH="${RUNNER_TEMP}/docdex-deploy-key"
+          KNOWN_HOSTS_PATH="${RUNNER_TEMP}/docdex-known-hosts"
+          printf '%s\n' "${DOCDEX_DEPLOY_SSH_KEY}" > "${SSH_KEY_PATH}"
+          chmod 0600 "${SSH_KEY_PATH}"
+          printf '%s\n' "${DOCDEX_DEPLOY_KNOWN_HOSTS}" > "${KNOWN_HOSTS_PATH}"
+          chmod 0600 "${KNOWN_HOSTS_PATH}"
+          {
+            echo "DOCDEX_SSH_KEY_PATH=${SSH_KEY_PATH}"
+            echo "DOCDEX_KNOWN_HOSTS_PATH=${KNOWN_HOSTS_PATH}"
+          } >> "${GITHUB_ENV}"
 
       - name: Upload and activate release
         env:
           DOCDEX_DEPLOY_HOST: ${{ secrets.DOCDEX_DEPLOY_HOST }}
           DOCDEX_DEPLOY_PORT: ${{ secrets.DOCDEX_DEPLOY_PORT }}
           DOCDEX_DEPLOY_USER: ${{ secrets.DOCDEX_DEPLOY_USER }}
-          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
+          RELEASE_SHA256: ${{ needs.prepare.outputs.release_sha256 }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
         run: |
+          # shellcheck disable=SC2029
+          # Remote command arguments are locally expanded only after strict
+          # username, commit, checksum, tag, and immutable-path validation.
           set -euo pipefail
           test -n "${DOCDEX_DEPLOY_USER}"
-          RELEASE_DIR="/home/${DOCDEX_DEPLOY_USER}/docdex-releases/${RELEASE_SHA}"
-          SSH_OPTS=(-i ~/.ssh/docdex_deploy_key -p "${DOCDEX_DEPLOY_PORT}" -o BatchMode=yes)
-          SCP_OPTS=(-i ~/.ssh/docdex_deploy_key -P "${DOCDEX_DEPLOY_PORT}" -o BatchMode=yes)
+          [[ "${DOCDEX_DEPLOY_USER}" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]
+          test -f "${DOCDEX_SSH_KEY_PATH}"
+          test -f "${DOCDEX_KNOWN_HOSTS_PATH}"
+          RELEASE_DIR="/var/lib/docdex-deploy/incoming/${RELEASE_SHA}"
+          SSH_OPTS=(-i "${DOCDEX_SSH_KEY_PATH}" -p "${DOCDEX_DEPLOY_PORT}" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${DOCDEX_KNOWN_HOSTS_PATH}")
+          SCP_OPTS=(-i "${DOCDEX_SSH_KEY_PATH}" -P "${DOCDEX_DEPLOY_PORT}" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${DOCDEX_KNOWN_HOSTS_PATH}")
+          [[ "${RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${RELEASE_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+          [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+
+          PREVIOUS_BIN="$(ssh "${SSH_OPTS[@]}" "${DOCDEX_DEPLOY_USER}@${DOCDEX_DEPLOY_HOST}" "readlink -f /opt/docdex/bin/docdexd")"
+          [[ "${PREVIOUS_BIN}" =~ ^/opt/docdex/releases/docdexd-[A-Za-z0-9._-]+$ ]]
+          PREVIOUS_VERSION="$(ssh "${SSH_OPTS[@]}" "${DOCDEX_DEPLOY_USER}@${DOCDEX_DEPLOY_HOST}" "'${PREVIOUS_BIN}' --version")"
+          PREVIOUS_SHA256="$(ssh "${SSH_OPTS[@]}" "${DOCDEX_DEPLOY_USER}@${DOCDEX_DEPLOY_HOST}" "sha256sum '${PREVIOUS_BIN}'" | awk '{print $1}')"
+          [[ "${PREVIOUS_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+          CANDIDATE_SHA256="$(sha256sum dist/docdexd | awk '{print $1}')"
+          [[ "${CANDIDATE_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+          test "${CANDIDATE_SHA256}" = "${RELEASE_SHA256}"
+          CANDIDATE_VERSION="$(dist/docdexd --version)"
+          test "${CANDIDATE_VERSION}" = "docdexd ${RELEASE_TAG#v}"
+          echo "Previous release: ${PREVIOUS_VERSION} (${PREVIOUS_SHA256})"
+          echo "Candidate release: ${CANDIDATE_VERSION} (${CANDIDATE_SHA256})"
+
+          rollback_release() {
+            local rollback_revision="rollback-${RELEASE_SHA}"
+            echo "Activation failed; restoring ${PREVIOUS_VERSION}." >&2
+            ssh "${SSH_OPTS[@]}" "${DOCDEX_DEPLOY_USER}@${DOCDEX_DEPLOY_HOST}" \
+              "test -x '${PREVIOUS_BIN}' && sudo /usr/local/sbin/docdex-apply-release '${PREVIOUS_BIN}' '${rollback_revision}' '${PREVIOUS_SHA256}'"
+            local rollback_sha256
+            rollback_sha256="$(ssh "${SSH_OPTS[@]}" "${DOCDEX_DEPLOY_USER}@${DOCDEX_DEPLOY_HOST}" "sha256sum /opt/docdex/bin/docdexd" | awk '{print $1}')"
+            if [[ "${rollback_sha256}" != "${PREVIOUS_SHA256}" ]]; then
+              echo "Rollback binary hash mismatch: expected ${PREVIOUS_SHA256}, got ${rollback_sha256}." >&2
+              return 1
+            fi
+            echo "Rollback restored ${PREVIOUS_VERSION} (${rollback_sha256})." >&2
+          }
+
           ssh "${SSH_OPTS[@]}" "${DOCDEX_DEPLOY_USER}@${DOCDEX_DEPLOY_HOST}" "install -d -m 0700 '${RELEASE_DIR}'"
           scp "${SCP_OPTS[@]}" dist/docdexd "${DOCDEX_DEPLOY_USER}@${DOCDEX_DEPLOY_HOST}:${RELEASE_DIR}/docdexd"
+          set +e
           ssh "${SSH_OPTS[@]}" "${DOCDEX_DEPLOY_USER}@${DOCDEX_DEPLOY_HOST}" \
-            "chmod 0755 '${RELEASE_DIR}/docdexd' && sudo /usr/local/sbin/docdex-apply-release '${RELEASE_DIR}/docdexd' '${RELEASE_SHA}'"
+            "chmod 0755 '${RELEASE_DIR}/docdexd' && sudo /usr/local/sbin/docdex-apply-release '${RELEASE_DIR}/docdexd' '${RELEASE_SHA}' '${RELEASE_SHA256}'"
+          APPLY_STATUS=$?
+          set -e
+          if (( APPLY_STATUS != 0 )); then
+            if (( APPLY_STATUS == 69 )); then
+              echo "Activation was rejected; the release helper verified the previous release remained active." >&2
+            else
+              rollback_release
+            fi
+            exit 1
+          fi
+
+          if ! ACTIVE_SHA256="$(ssh "${SSH_OPTS[@]}" "${DOCDEX_DEPLOY_USER}@${DOCDEX_DEPLOY_HOST}" "sha256sum /opt/docdex/bin/docdexd" | awk '{print $1}')"; then
+            echo "Unable to verify the activated binary; attempting rollback." >&2
+            rollback_release
+            exit 1
+          fi
+          if [[ "${ACTIVE_SHA256}" != "${CANDIDATE_SHA256}" ]]; then
+            echo "Active binary hash mismatch: expected ${CANDIDATE_SHA256}, got ${ACTIVE_SHA256}." >&2
+            rollback_release
+            exit 1
+          fi
+          if ! ACTIVE_VERSION="$(ssh "${SSH_OPTS[@]}" "${DOCDEX_DEPLOY_USER}@${DOCDEX_DEPLOY_HOST}" "/opt/docdex/bin/docdexd --version")"; then
+            echo "Unable to verify the activated version; attempting rollback." >&2
+            rollback_release
+            exit 1
+          fi
+          if [[ "${ACTIVE_VERSION}" != "${CANDIDATE_VERSION}" ]]; then
+            echo "Active version mismatch: expected ${CANDIDATE_VERSION}, got ${ACTIVE_VERSION}." >&2
+            rollback_release
+            exit 1
+          fi
+          echo "Activated release: ${ACTIVE_VERSION} (${ACTIVE_SHA256})"
+
+      - name: Remove SSH credentials
+        if: ${{ always() }}
+        run: |
+          rm -f "${RUNNER_TEMP}/docdex-deploy-key" "${RUNNER_TEMP}/docdex-known-hosts"

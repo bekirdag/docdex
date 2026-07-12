@@ -17,6 +17,9 @@ use crate::state_layout::StateLayout;
 use crate::web::cache;
 use crate::web::ddg_policy::{DdgDiscoveryPacer, DdgDiscoveryPolicyConfig};
 use crate::web::normalize::dedupe_urls;
+use crate::web::policy::{
+    host_matches_blocklist, public_dns_resolver, validate_outbound_url_structure,
+};
 use crate::web::WebConfig;
 
 const PROVIDER: &str = "duckduckgo_lite";
@@ -29,6 +32,7 @@ const TAVILY_PROVIDER: &str = "tavily";
 const EXA_PROVIDER: &str = "exa";
 const MSWARM_PROVIDER: &str = "mswarm";
 const MAX_DDG_RESULTS: usize = 50;
+const DISCOVERY_RESPONSE_MAX_BYTES: usize = 2 * 1024 * 1024;
 const DDG_PREFETCH_PAUSE_MIN_MS: u64 = 1_000;
 const DDG_PREFETCH_PAUSE_MAX_MS: u64 = 2_000;
 const DDG_TYPING_DELAY_MIN_MS: u64 = 50;
@@ -361,44 +365,41 @@ impl DdgDiscovery {
             .into());
         }
 
-        for _ in 0..attempts {
-            loop {
-                let backoff = { self.pacer.lock().check_or_backoff() };
-                if let Err(err) = backoff {
-                    if let Some(response) = self
-                        .maybe_proxy_discovery(
-                            proxy_base_url,
-                            &mut proxy_attempted,
-                            query,
-                            limit,
-                            cache_limit,
-                            &cache_key,
-                            &mut last_error,
-                        )
-                        .await
-                    {
-                        return Ok(response);
-                    }
-                    if let Some(response) = self
-                        .maybe_fallback_discovery(
-                            self.fallback_chain_for(
-                                &mut fallback_chain,
-                                false,
-                                preferred_fallback_provider,
-                            ),
-                            query,
-                            limit,
-                            cache_limit,
-                            &cache_key,
-                            &mut last_error,
-                        )
-                        .await
-                    {
-                        return Ok(response);
-                    }
-                    return Err(err.into());
+        for attempt in 0..attempts {
+            let backoff = { self.pacer.lock().check_or_backoff() };
+            if let Err(err) = backoff {
+                if let Some(response) = self
+                    .maybe_proxy_discovery(
+                        proxy_base_url,
+                        &mut proxy_attempted,
+                        query,
+                        limit,
+                        cache_limit,
+                        &cache_key,
+                        &mut last_error,
+                    )
+                    .await
+                {
+                    return Ok(response);
                 }
-                break;
+                if let Some(response) = self
+                    .maybe_fallback_discovery(
+                        self.fallback_chain_for(
+                            &mut fallback_chain,
+                            false,
+                            preferred_fallback_provider,
+                        ),
+                        query,
+                        limit,
+                        cache_limit,
+                        &cache_key,
+                        &mut last_error,
+                    )
+                    .await
+                {
+                    return Ok(response);
+                }
+                return Err(err.into());
             }
 
             self.prefetch_homepage(&self.config.ddg_base_url).await;
@@ -414,12 +415,30 @@ impl DdgDiscovery {
                 Ok(resp) => {
                     let status = resp.status();
                     if status.is_success() {
-                        let body = resp.text().await.map_err(|err| {
-                            AppError::new(
-                                ERR_INTERNAL_ERROR,
-                                format!("duckduckgo discovery failed: {err}"),
-                            )
-                        })?;
+                        let body = match read_discovery_text(resp, "duckduckgo discovery").await {
+                            Ok(body) => body,
+                            Err(err) => {
+                                let (backoff_error, failures, max_failures, stop_backoff) = {
+                                    let mut pacer = self.pacer.lock();
+                                    let backoff_error = pacer.record_failure();
+                                    let failures = pacer.consecutive_failures();
+                                    let max_failures = pacer.config().max_consecutive_failures;
+                                    let stop_backoff = pacer.config().stop_backoff;
+                                    (backoff_error, failures, max_failures, stop_backoff)
+                                };
+                                if (failures < max_failures || stop_backoff.is_zero())
+                                    && retry_remaining(attempt, attempts)
+                                {
+                                    sleep_for_retry(&backoff_error).await;
+                                    continue;
+                                }
+                                return Err(AppError::new(
+                                    ERR_INTERNAL_ERROR,
+                                    format!("duckduckgo discovery failed: {err}"),
+                                )
+                                .into());
+                            }
+                        };
                         if is_ddg_anomaly_page(&body) {
                             let (backoff_error, failures, max_failures, stop_backoff) = {
                                 let mut pacer = self.pacer.lock();
@@ -580,6 +599,10 @@ impl DdgDiscovery {
                     }
 
                     if should_retry(status) {
+                        if retry_remaining(attempt, attempts) {
+                            sleep_for_retry(&backoff_error).await;
+                            continue;
+                        }
                         return Err(backoff_with_message(
                             backoff_error,
                             format!("duckduckgo discovery blocked ({status})"),
@@ -634,6 +657,10 @@ impl DdgDiscovery {
                     }
                     if failures >= max_failures && !stop_backoff.is_zero() {
                         return Err(backoff_error.into());
+                    }
+                    if retry_remaining(attempt, attempts) {
+                        sleep_for_retry(&backoff_error).await;
+                        continue;
                     }
                     return Err(AppError::new(
                         ERR_INTERNAL_ERROR,
@@ -886,12 +913,7 @@ impl DdgDiscovery {
         if !resp.status().is_success() {
             return Ok(None);
         }
-        let body = resp.text().await.map_err(|err| {
-            AppError::new(
-                ERR_INTERNAL_ERROR,
-                format!("duckduckgo fallback discovery failed: {err}"),
-            )
-        })?;
+        let body = read_discovery_text(resp, "duckduckgo fallback discovery").await?;
         if is_ddg_anomaly_page(&body) {
             return Ok(None);
         }
@@ -922,12 +944,7 @@ impl DdgDiscovery {
         if !resp.status().is_success() {
             return Ok(None);
         }
-        let body = resp.text().await.map_err(|err| {
-            AppError::new(
-                ERR_INTERNAL_ERROR,
-                format!("searxng discovery failed: {err}"),
-            )
-        })?;
+        let body = read_discovery_text(resp, "searxng discovery").await?;
         let links = extract_searxng_links(&body)?;
         let filtered = self.filter_links(links);
         if filtered.is_empty() {
@@ -970,9 +987,7 @@ impl DdgDiscovery {
         if !resp.status().is_success() {
             return Ok(None);
         }
-        let body: Value = resp.json().await.map_err(|err| {
-            AppError::new(ERR_INTERNAL_ERROR, format!("brave discovery failed: {err}"))
-        })?;
+        let body = read_discovery_json(resp, "brave discovery").await?;
         let links = extract_brave_links(&body);
         let filtered = self.filter_links(links);
         if filtered.is_empty() {
@@ -1000,12 +1015,7 @@ impl DdgDiscovery {
         if !resp.status().is_success() {
             return Ok(None);
         }
-        let body: Value = resp.json().await.map_err(|err| {
-            AppError::new(
-                ERR_INTERNAL_ERROR,
-                format!("google cse discovery failed: {err}"),
-            )
-        })?;
+        let body = read_discovery_json(resp, "google cse discovery").await?;
         let links = extract_google_cse_links(&body);
         let filtered = self.filter_links(links);
         if filtered.is_empty() {
@@ -1037,9 +1047,7 @@ impl DdgDiscovery {
         if !resp.status().is_success() {
             return Ok(None);
         }
-        let body: Value = resp.json().await.map_err(|err| {
-            AppError::new(ERR_INTERNAL_ERROR, format!("bing discovery failed: {err}"))
-        })?;
+        let body = read_discovery_json(resp, "bing discovery").await?;
         let links = extract_bing_links(&body);
         let filtered = self.filter_links(links);
         if filtered.is_empty() {
@@ -1075,12 +1083,7 @@ impl DdgDiscovery {
         if !resp.status().is_success() {
             return Ok(None);
         }
-        let body: Value = resp.json().await.map_err(|err| {
-            AppError::new(
-                ERR_INTERNAL_ERROR,
-                format!("tavily discovery failed: {err}"),
-            )
-        })?;
+        let body = read_discovery_json(resp, "tavily discovery").await?;
         let links = extract_json_links(&body);
         let filtered = self.filter_links(links);
         if filtered.is_empty() {
@@ -1116,9 +1119,7 @@ impl DdgDiscovery {
         if !resp.status().is_success() {
             return Ok(None);
         }
-        let body: Value = resp.json().await.map_err(|err| {
-            AppError::new(ERR_INTERNAL_ERROR, format!("exa discovery failed: {err}"))
-        })?;
+        let body = read_discovery_json(resp, "exa discovery").await?;
         let links = extract_json_links(&body);
         let filtered = self.filter_links(links);
         if filtered.is_empty() {
@@ -1155,12 +1156,7 @@ impl DdgDiscovery {
         if !resp.status().is_success() {
             return Ok(None);
         }
-        let body: Value = resp.json().await.map_err(|err| {
-            AppError::new(
-                ERR_INTERNAL_ERROR,
-                format!("mswarm discovery failed: {err}"),
-            )
-        })?;
+        let body = read_discovery_json(resp, "mswarm discovery").await?;
         let links = extract_json_links(&body);
         let filtered = self.filter_links(links);
         if filtered.is_empty() {
@@ -1216,12 +1212,7 @@ impl DdgDiscovery {
         if !resp.status().is_success() {
             return Ok(None);
         }
-        let body = resp.text().await.map_err(|err| {
-            AppError::new(
-                ERR_INTERNAL_ERROR,
-                format!("duckduckgo proxy discovery failed: {err}"),
-            )
-        })?;
+        let body = read_discovery_text(resp, "duckduckgo proxy discovery").await?;
         if is_ddg_anomaly_page(&body) {
             return Ok(None);
         }
@@ -1234,6 +1225,62 @@ impl DdgDiscovery {
         self.cache_response(cache_key, &responses.response_for_cache);
         Ok(Some(responses.response))
     }
+}
+
+async fn read_discovery_body_limited(
+    mut response: reqwest::Response,
+    label: &str,
+    max_bytes: usize,
+) -> Result<Vec<u8>> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes as u64)
+    {
+        return Err(AppError::new(
+            ERR_INTERNAL_ERROR,
+            format!("{label} response exceeds the {max_bytes}-byte limit"),
+        )
+        .into());
+    }
+
+    let mut body = Vec::with_capacity(
+        response
+            .content_length()
+            .unwrap_or_default()
+            .min(max_bytes as u64) as usize,
+    );
+    while let Some(chunk) = response.chunk().await.map_err(|err| {
+        AppError::new(
+            ERR_INTERNAL_ERROR,
+            format!("{label} response read failed: {err}"),
+        )
+    })? {
+        if body.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(AppError::new(
+                ERR_INTERNAL_ERROR,
+                format!("{label} response exceeds the {max_bytes}-byte limit"),
+            )
+            .into());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+async fn read_discovery_text(response: reqwest::Response, label: &str) -> Result<String> {
+    let body = read_discovery_body_limited(response, label, DISCOVERY_RESPONSE_MAX_BYTES).await?;
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
+async fn read_discovery_json(response: reqwest::Response, label: &str) -> Result<Value> {
+    let body = read_discovery_body_limited(response, label, DISCOVERY_RESPONSE_MAX_BYTES).await?;
+    serde_json::from_slice(&body).map_err(|err| {
+        AppError::new(
+            ERR_INTERNAL_ERROR,
+            format!("{label} returned invalid JSON: {err}"),
+        )
+        .into()
+    })
 }
 
 fn build_ddg_url(base: &Url, query: &str) -> Result<Url> {
@@ -1637,6 +1684,22 @@ fn should_retry(status: StatusCode) -> bool {
         || status.is_server_error()
 }
 
+fn retry_remaining(attempt: usize, attempts: usize) -> bool {
+    attempt.saturating_add(1) < attempts
+}
+
+async fn sleep_for_retry(backoff: &AppError) {
+    let retry_after_ms = backoff
+        .details
+        .as_ref()
+        .and_then(|details| details.get("retry_after_ms"))
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    if retry_after_ms > 0 {
+        tokio::time::sleep(Duration::from_millis(retry_after_ms)).await;
+    }
+}
+
 fn is_ddg_block_status(status: StatusCode) -> bool {
     status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::FORBIDDEN
 }
@@ -1676,9 +1739,11 @@ fn build_ddg_client(config: &WebConfig) -> Result<reqwest::Client> {
         .default_headers(headers)
         .user_agent(config.user_agent.clone())
         .timeout(config.request_timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
         .cookie_store(true);
-    if is_loopback_url(&config.ddg_base_url) {
-        builder = builder.no_proxy();
+    if !is_loopback_url(&config.ddg_base_url) {
+        builder = builder.dns_resolver(public_dns_resolver());
     }
     builder.build().context("build ddg client")
 }
@@ -1761,9 +1826,6 @@ fn normalize_blocklist_entry(raw: &str) -> Option<String> {
 }
 
 fn filter_blocked_urls(urls: Vec<String>, blocklist: &[String]) -> Vec<String> {
-    if blocklist.is_empty() {
-        return urls;
-    }
     urls.into_iter()
         .filter(|raw| is_url_allowed(raw, blocklist))
         .collect()
@@ -1771,18 +1833,9 @@ fn filter_blocked_urls(urls: Vec<String>, blocklist: &[String]) -> Vec<String> {
 
 fn is_url_allowed(raw: &str, blocklist: &[String]) -> bool {
     let Ok(parsed) = Url::parse(raw) else {
-        return true;
+        return false;
     };
-    let Some(host) = parsed.host_str() else {
-        return true;
-    };
-    let host = host.to_ascii_lowercase();
-    for entry in blocklist {
-        if host == *entry || host.ends_with(&format!(".{entry}")) {
-            return false;
-        }
-    }
-    true
+    validate_outbound_url_structure(&parsed).is_ok() && !host_matches_blocklist(&parsed, blocklist)
 }
 
 fn searxng_fallbacks() -> Vec<FallbackProvider> {
@@ -1844,6 +1897,208 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::orchestrator::web_policy::SpacingBackoffPolicy;
+    use std::io::{Read, Write};
+    use std::net::{Shutdown, TcpListener};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::thread;
+    use std::time::Instant;
+
+    fn retry_test_config(base_url: Url, max_attempts: usize) -> WebConfig {
+        WebConfig {
+            enabled: true,
+            discovery_provider: DDG_LITE_PROVIDER.to_string(),
+            user_agent: format!(
+                "docdex-ddg-retry-test-{}",
+                base_url.port_or_known_default().unwrap_or_default()
+            ),
+            ddg_base_url: base_url,
+            ddg_proxy_base_url: None,
+            mswarm_base_url: Url::parse("http://127.0.0.1:1").expect("valid mswarm url"),
+            mswarm_api_key: None,
+            request_timeout: Duration::from_secs(1),
+            max_results: 5,
+            policy: SpacingBackoffPolicy {
+                min_spacing: Duration::ZERO,
+                jitter_ms: 0,
+                max_attempts,
+                base_backoff: Duration::ZERO,
+                backoff_multiplier: 2.0,
+                max_backoff: Duration::ZERO,
+                max_consecutive_failures: max_attempts.saturating_add(1),
+                cooldown: Duration::ZERO,
+            },
+            cache_ttl: Duration::ZERO,
+            blocklist: Vec::new(),
+            boilerplate_phrases: Vec::new(),
+            fetch_delay: Duration::ZERO,
+            scraper_engine: "chromium".to_string(),
+            scraper_headless: true,
+            chrome_binary_path: None,
+            scraper_auto_install: false,
+            scraper_browser_kind: None,
+            scraper_user_data_dir: None,
+            page_load_timeout: Duration::from_secs(1),
+            brave_api_key: None,
+            google_cse_api_key: None,
+            google_cse_cx: None,
+            bing_api_key: None,
+        }
+    }
+
+    fn spawn_raw_http_server(
+        responses: Vec<Vec<u8>>,
+    ) -> (
+        Url,
+        Arc<AtomicUsize>,
+        mpsc::Sender<()>,
+        thread::JoinHandle<()>,
+    ) {
+        assert!(!responses.is_empty(), "at least one response is required");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        listener
+            .set_nonblocking(true)
+            .expect("make test server nonblocking");
+        let address = listener.local_addr().expect("test server address");
+        let requests = Arc::new(AtomicUsize::new(0));
+        let requests_for_server = Arc::clone(&requests);
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            let mut response_index = 0usize;
+            loop {
+                match stop_rx.try_recv() {
+                    Ok(()) | Err(mpsc::TryRecvError::Disconnected) => break,
+                    Err(mpsc::TryRecvError::Empty) => {}
+                }
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
+                        let mut request = Vec::with_capacity(2_048);
+                        let request_deadline = Instant::now() + Duration::from_secs(30);
+                        loop {
+                            let mut chunk = [0u8; 1_024];
+                            match stream.read(&mut chunk) {
+                                Ok(0) => break,
+                                Ok(read) => {
+                                    request.extend_from_slice(&chunk[..read]);
+                                    assert!(
+                                        request.len() <= 16 * 1_024,
+                                        "test request headers exceeded their bound"
+                                    );
+                                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                                        break;
+                                    }
+                                }
+                                Err(err)
+                                    if matches!(
+                                        err.kind(),
+                                        std::io::ErrorKind::WouldBlock
+                                            | std::io::ErrorKind::TimedOut
+                                    ) && Instant::now() < request_deadline =>
+                                {
+                                    continue;
+                                }
+                                Err(err) => panic!("test server request read failed: {err}"),
+                            }
+                        }
+                        assert!(
+                            request.windows(4).any(|window| window == b"\r\n\r\n"),
+                            "test server received incomplete request headers"
+                        );
+                        let response = &responses[response_index.min(responses.len() - 1)];
+                        response_index = response_index.saturating_add(1);
+                        requests_for_server.fetch_add(1, Ordering::SeqCst);
+                        let _ = stream.write_all(response);
+                        let _ = stream.flush();
+                        let _ = stream.shutdown(Shutdown::Write);
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(err) => panic!("test server accept failed: {err}"),
+                }
+            }
+        });
+        (
+            Url::parse(&format!("http://{address}/lite/")).expect("valid test server url"),
+            requests,
+            stop_tx,
+            handle,
+        )
+    }
+
+    fn truncated_success_response() -> Vec<u8> {
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 128\r\nConnection: close\r\n\r\nshort"
+            .to_vec()
+    }
+
+    fn valid_success_response() -> Vec<u8> {
+        let body = r#"<a class="result__a" href="https://example.com/docs">Docs</a>"#;
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .into_bytes()
+    }
+
+    async fn fetch_single_raw_response(response: Vec<u8>) -> reqwest::Response {
+        let (base_url, _requests, stop_tx, server) = spawn_raw_http_server(vec![response]);
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .pool_max_idle_per_host(0)
+            .build()
+            .expect("build test client");
+        let result = client.get(base_url).send().await.expect("raw response");
+        let _ = stop_tx.send(());
+        server.join().expect("join test server");
+        result
+    }
+
+    #[tokio::test]
+    async fn discovery_response_reader_enforces_declared_and_streamed_limits() {
+        let declared_oversize =
+            b"HTTP/1.1 200 OK\r\nContent-Length: 32\r\nConnection: close\r\n\r\nshort".to_vec();
+        let streamed_oversize = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n9\r\n123456789\r\n0\r\n\r\n".to_vec();
+        let exact =
+            b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\n12345678".to_vec();
+        let declared = fetch_single_raw_response(declared_oversize).await;
+        let declared_error = read_discovery_body_limited(declared, "test", 8)
+            .await
+            .expect_err("declared oversize response must fail");
+        assert!(declared_error.to_string().contains("8-byte limit"));
+
+        let streamed = fetch_single_raw_response(streamed_oversize).await;
+        let streamed_error = read_discovery_body_limited(streamed, "test", 8)
+            .await
+            .expect_err("streamed oversize response must fail");
+        assert!(streamed_error.to_string().contains("8-byte limit"));
+
+        let allowed = fetch_single_raw_response(exact).await;
+        assert_eq!(
+            read_discovery_body_limited(allowed, "test", 8)
+                .await
+                .expect("exact response is allowed"),
+            b"12345678"
+        );
+    }
+
+    async fn run_retry_test(
+        responses: Vec<Vec<u8>>,
+        max_attempts: usize,
+    ) -> (Result<WebDiscoveryResponse>, usize) {
+        let (base_url, requests, stop_tx, server) = spawn_raw_http_server(responses);
+        DDG_PREFETCHED_HOSTS.lock().insert("127.0.0.1".to_string());
+        let query = format!("r{}", base_url.port_or_known_default().unwrap_or_default());
+        let mut discovery =
+            DdgDiscovery::new(retry_test_config(base_url, max_attempts)).expect("discovery");
+        discovery.cache_layout = None;
+        let result = discovery.discover(&query, 1).await;
+        let _ = stop_tx.send(());
+        server.join().expect("join test server");
+        (result, requests.load(Ordering::SeqCst))
+    }
 
     #[test]
     fn extract_links_from_ddg_html() {
@@ -1909,5 +2164,37 @@ Markdown Content:
         let min_ms = min_ms.min(DDG_TYPING_MAX_TOTAL_MS);
         assert!(ms >= min_ms, "delay {ms}ms below min {min_ms}ms");
         assert!(ms <= max_ms, "delay {ms}ms above max {max_ms}ms");
+    }
+
+    #[test]
+    fn result_filter_rejects_unsafe_outbound_urls() {
+        assert!(!is_url_allowed("file:///etc/passwd", &[]));
+        assert!(!is_url_allowed("http://127.0.0.1/admin", &[]));
+        assert!(!is_url_allowed("https://user:pass@example.com", &[]));
+        assert!(!is_url_allowed("https://metadata.google.internal/", &[]));
+        assert!(is_url_allowed("https://example.com/docs", &[]));
+    }
+
+    #[tokio::test]
+    async fn discovery_retries_transient_body_failure_then_succeeds() {
+        let (result, requests) = run_retry_test(
+            vec![truncated_success_response(), valid_success_response()],
+            2,
+        )
+        .await;
+
+        let response = result.expect("second attempt should succeed");
+        assert_eq!(requests, 2);
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(response.results[0].url, "https://example.com/docs");
+    }
+
+    #[tokio::test]
+    async fn discovery_stops_after_configured_attempts() {
+        let (result, requests) = run_retry_test(vec![truncated_success_response()], 2).await;
+
+        let err = result.expect_err("all attempts should fail");
+        assert_eq!(requests, 2);
+        assert!(err.to_string().contains("duckduckgo discovery failed"));
     }
 }

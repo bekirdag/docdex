@@ -18,7 +18,7 @@ fn mcp_local_completion_test_guard() -> MutexGuard<'static, ()> {
     TEST_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
-        .expect("mcp local completion test lock poisoned")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn docdex_bin() -> PathBuf {
@@ -35,7 +35,11 @@ fn write_repo(repo_root: &Path) -> Result<(), Box<dyn Error>> {
 }
 
 fn run_index(state_root: &Path, repo_root: &Path) -> Result<(), Box<dyn Error>> {
+    let isolated_home = state_root.join("home");
+    std::fs::create_dir_all(&isolated_home)?;
     let output = Command::new(docdex_bin())
+        .env("HOME", &isolated_home)
+        .env("USERPROFILE", &isolated_home)
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .args([
@@ -90,7 +94,11 @@ fn spawn_server(
 ) -> Result<Child, Box<dyn Error>> {
     let repo_arg = repo_root.to_string_lossy().to_string();
     let lock_path = state_root.join("daemon.lock");
+    let isolated_home = state_root.join("home");
+    std::fs::create_dir_all(&isolated_home)?;
     Ok(Command::new(docdex_bin())
+        .env("HOME", &isolated_home)
+        .env("USERPROFILE", &isolated_home)
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_ENABLE_MCP", "1")

@@ -6,17 +6,146 @@ on:
       - "v*"
   workflow_dispatch:
 
-permissions:
-  contents: write
-  id-token: write
+permissions: {}
 
 env:
   CARGO_TERM_COLOR: always
+  MCP_PUBLISHER_VERSION: "1.7.9"
+  MCP_PUBLISHER_LINUX_AMD64_SHA256: "ab128162b0616090b47cf245afe0a23f3ef08936fdce19074f5ba0a4469281ac"
 
 jobs:
+  preflight:
+    name: Release preflight
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Free disk space
+        run: |
+          df -h
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+            /usr/local/share/boost /usr/local/share/chromium /usr/share/swift
+          sudo rm -rf /var/lib/apt/lists/* /var/cache/apt/*
+          sudo apt-get clean
+          df -h
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: "1.91.1"
+          components: rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: |
+            .
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: npm/package-lock.json
+
+      - name: Pin npm for trusted publishing
+        run: |
+          npm install --global npm@11.18.0
+          test "$(npm --version)" = "11.18.0"
+
+      - name: Install audit tooling
+        run: |
+          cargo install cargo-audit --version 0.22.0 --locked
+          cargo install cargo-sbom --version 0.10.0 --locked
+
+      - name: Validate release version surfaces
+        run: |
+          test "${GITHUB_REF_TYPE}" = "tag"
+          python3 scripts/verify_release_versions.py --tag "${GITHUB_REF_NAME}"
+
+      - name: Cargo formatting
+        run: cargo fmt --all -- --check
+
+      - name: Cargo check
+        run: cargo check --locked --all-targets
+
+      - name: Cargo tests
+        run: cargo test --locked --all
+
+      - name: Release feature-matrix contract tests
+        run: python3 scripts/test_release_feature_matrix_contract.py
+
+      - name: Build optimized native release feature-matrix binary
+        run: cargo build --locked --release --bin docdexd
+
+      - name: Fail-closed optimized release feature matrix
+        env:
+          DOCDEX_FEATURE_MATRIX_USER_MEMORY_SCRIPT: ${{ vars.DOCDEX_FEATURE_MATRIX_USER_MEMORY_SCRIPT }}
+          DOCDEX_FEATURE_MATRIX_USER_MEMORY_MODE: real
+          DOCDEX_FEATURE_MATRIX_USER_MEMORY_ENV_ALLOWLIST: ${{ vars.DOCDEX_FEATURE_MATRIX_USER_MEMORY_ENV_ALLOWLIST }}
+          DOCDEX_FEATURE_MATRIX_ADMIN_SCRIPT: ${{ vars.DOCDEX_FEATURE_MATRIX_ADMIN_SCRIPT }}
+          DOCDEX_FEATURE_MATRIX_ADMIN_MODE: real
+          DOCDEX_FEATURE_MATRIX_ADMIN_ENV_ALLOWLIST: ${{ vars.DOCDEX_FEATURE_MATRIX_ADMIN_ENV_ALLOWLIST }}
+          DOCDEX_FEATURE_MATRIX_INTROSPECTION_SCRIPT: ${{ vars.DOCDEX_FEATURE_MATRIX_INTROSPECTION_SCRIPT }}
+          DOCDEX_FEATURE_MATRIX_INTROSPECTION_MODE: real
+          DOCDEX_FEATURE_MATRIX_INTROSPECTION_ENV_ALLOWLIST: ${{ vars.DOCDEX_FEATURE_MATRIX_INTROSPECTION_ENV_ALLOWLIST }}
+          DOCDEX_FEATURE_MATRIX_WEB_SCRIPT: ${{ vars.DOCDEX_FEATURE_MATRIX_WEB_SCRIPT }}
+          DOCDEX_FEATURE_MATRIX_WEB_MODE: real
+          DOCDEX_FEATURE_MATRIX_WEB_ENV_ALLOWLIST: ${{ vars.DOCDEX_FEATURE_MATRIX_WEB_ENV_ALLOWLIST }}
+          DOCDEX_FEATURE_MATRIX_DELEGATION_SCRIPT: ${{ vars.DOCDEX_FEATURE_MATRIX_DELEGATION_SCRIPT }}
+          DOCDEX_FEATURE_MATRIX_DELEGATION_MODE: real
+          DOCDEX_FEATURE_MATRIX_DELEGATION_ENV_ALLOWLIST: ${{ vars.DOCDEX_FEATURE_MATRIX_DELEGATION_ENV_ALLOWLIST }}
+        run: scripts/test_release_feature_matrix.sh --binary target/release/docdexd --release-gate
+
+      - name: Install npm dependencies
+        working-directory: npm
+        run: npm ci --ignore-scripts
+
+      - name: npm tests
+        working-directory: npm
+        run: npm test
+
+      - name: npm package guardrails
+        working-directory: npm
+        run: |
+          npm run pack:verify
+          npm pack --ignore-scripts --dry-run --json >/dev/null
+
+      - name: Reproducible release packaging regression
+        run: python3 scripts/test_release_packaging.py
+
+      - name: Security audit
+        if: ${{ always() }}
+        run: scripts/security_audit.sh
+
+      - name: Enforce npm high/critical audit gate
+        if: ${{ always() }}
+        working-directory: npm
+        run: npm audit --audit-level=high
+
+      - name: Upload audit and SBOM artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-preflight-security
+          path: |
+            target/audit
+            target/release_feature_matrix
+          if-no-files-found: warn
+          retention-days: 14
+
   build:
     name: Build ${{ matrix.archive }}
+    needs: preflight
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -48,7 +177,9 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Free disk space (Linux)
         if: ${{ runner.os == 'Linux' }}
@@ -64,15 +195,17 @@ jobs:
 
       - name: Compute source date epoch
         id: epoch
+        shell: bash
         run: echo "epoch=$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
+          toolchain: "1.91.1"
           targets: ${{ matrix.target }}
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         if: ${{ runner.os != 'Linux' }}
         with:
           key: ${{ runner.os }}-${{ matrix.target }}
@@ -89,12 +222,7 @@ jobs:
 
       - name: Build release binary
         env:
-          CARGO_INCREMENTAL: 0
           SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.epoch }}
-          CARGO_PROFILE_RELEASE_DEBUG: 0
-          CARGO_PROFILE_RELEASE_LTO: true
-          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 1
-          RUSTFLAGS: "-C strip=symbols"
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
           AR_aarch64_unknown_linux_gnu: ${{ matrix.ar }}
           CC_aarch64_unknown_linux_gnu: ${{ matrix.cc }}
@@ -104,35 +232,46 @@ jobs:
 
       - name: Package binary
         shell: bash
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.epoch }}
         run: |
-          mkdir -p dist
+          set -euo pipefail
           BIN_NAME="docdexd"
-          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
-            BIN_NAME="docdexd.exe"
-          fi
-          cp "target/${{ matrix.target }}/release/${BIN_NAME}" "dist/${BIN_NAME}"
-          tar -czf ${{ matrix.archive }}.tar.gz -C dist "${BIN_NAME}"
-          python -c "import hashlib, pathlib; p=pathlib.Path('${{ matrix.archive }}.tar.gz'); h=hashlib.sha256(p.read_bytes()).hexdigest(); pathlib.Path(f'{p}.sha256').write_bytes(f'{h}  {p.name}\n'.encode())"
+          case "${{ matrix.target }}" in
+            *windows*) BIN_NAME="docdexd.exe" ;;
+          esac
+          python scripts/package_release_binary.py \
+            --input "target/${{ matrix.target }}/release/${BIN_NAME}" \
+            --archive-name "${BIN_NAME}" \
+            --output "${{ matrix.archive }}.tar.gz" \
+            --source-date-epoch "${SOURCE_DATE_EPOCH}"
 
       - name: Upload artifacts for npm packaging
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.archive }}
           path: |
             ${{ matrix.archive }}.tar.gz
             ${{ matrix.archive }}.tar.gz.sha256
 
-  publish-npm:
-    name: Publish npm package and MCP server
+  prepare-release-assets:
+    name: Prepare immutable GitHub release assets
     needs: build
     runs-on: ubuntu-latest
-    environment: release
+    permissions:
+      contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Compute source date epoch
+        id: epoch
+        run: echo "epoch=$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
 
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: docdexd-*
           path: artifacts
@@ -153,127 +292,458 @@ jobs:
             shasum -a 256 -c "$f"
           done
 
-      - name: Verify tag matches crate and npm versions
-        run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          CRATE_VERSION=$(python -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('Cargo.toml').read_text())['package']['version'])")
-          PKG_VERSION=$(node -p "require('./npm/package.json').version")
-          if [ "$TAG" != "$CRATE_VERSION" ]; then
-            echo "Tag v$TAG does not match Cargo.toml version $CRATE_VERSION"
-            exit 1
-          fi
-          if [ "$TAG" != "$PKG_VERSION" ]; then
-            echo "Tag v$TAG does not match npm/package.json version $PKG_VERSION"
-            exit 1
-          fi
-          echo "✓ Tag matches Cargo.toml and npm/package.json: $TAG"
-
-      # Keep server.json in sync with npm/package.json before publishing
-      - name: Update server.json version
-        run: |
-          node -e "
-            const fs = require('fs');
-            const pkg = JSON.parse(fs.readFileSync('npm/package.json', 'utf8'));
-            const server = JSON.parse(fs.readFileSync('server.json', 'utf8'));
-            const version = pkg.version;
-            server.version = version;
-            if (Array.isArray(server.packages) && server.packages.length > 0) {
-              server.packages[0].version = version;
-            }
-            fs.writeFileSync('server.json', JSON.stringify(server, null, 2) + '\n');
-          "
-
-      - name: Verify server.json version
-        run: |
-          PKG_VERSION=$(node -p "require('./npm/package.json').version")
-          SERVER_VERSION=$(node -e "console.log(require('./server.json').version)")
-          if [ "$PKG_VERSION" != "$SERVER_VERSION" ]; then
-            echo "Error: Version mismatch between npm/package.json ($PKG_VERSION) and server.json ($SERVER_VERSION)"
-            exit 1
-          fi
-          echo "✓ server.json version synchronized: $SERVER_VERSION"
-
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 20
-          registry-url: https://registry.npmjs.org
+          node-version: 24
 
       - name: Generate release manifest
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.epoch }}
         run: |
           node scripts/generate_release_manifest.cjs \
             --dir artifacts \
             --out artifacts/docdex-release-manifest.json \
             --tag "${GITHUB_REF_NAME}" \
-            --repo "${GITHUB_REPOSITORY}"
+            --repo "${GITHUB_REPOSITORY}" \
+            --source-commit "${GITHUB_SHA}" \
+            --source-date-epoch "${SOURCE_DATE_EPOCH}"
 
-      - name: Upload release manifest + checksums
-        uses: softprops/action-gh-release@v1
+      - name: Retain exact release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          tag_name: ${{ github.ref_name }}
-          fail_on_unmatched_files: true
-          files: |
-            artifacts/docdexd-*.tar.gz
-            artifacts/docdexd-*.tar.gz.sha256
+          name: release-assets-${{ github.ref_name }}
+          path: artifacts
+          if-no-files-found: error
+          retention-days: 30
+
+  prepare-npm:
+    name: Pack and smoke npm package
+    needs: prepare-release-assets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      filename: ${{ steps.pack.outputs.filename }}
+      integrity: ${{ steps.pack.outputs.integrity }}
+      package_name: ${{ steps.pack.outputs.package_name }}
+      version: ${{ steps.pack.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Download exact release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-assets-${{ github.ref_name }}
+          path: artifacts/release
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: npm/package-lock.json
+
+      - name: Pin npm for trusted publishing
+        run: |
+          npm install --global npm@11.18.0 --ignore-scripts
+          test "$(npm --version)" = "11.18.0"
+
+      - name: Install npm deps (no postinstall)
+        working-directory: npm
+        run: npm ci --ignore-scripts
+
+      - name: Pack exact npm tarball
+        id: pack
+        shell: bash
+        working-directory: npm
+        run: |
+          set -euo pipefail
+          mkdir -p ../artifacts/npm
+          PACK_JSON=$(npm pack --ignore-scripts --json --pack-destination ../artifacts/npm)
+          printf '%s\n' "${PACK_JSON}" > ../artifacts/npm/npm-pack.json
+          PACK_FILENAME=$(node -e 'const value=JSON.parse(require("fs").readFileSync(0,"utf8")); if(value.length!==1||!value[0].filename) process.exit(1); process.stdout.write(value[0].filename)' <<<"${PACK_JSON}")
+          PACK_INTEGRITY=$(node -e 'const value=JSON.parse(require("fs").readFileSync(0,"utf8")); if(value.length!==1||!value[0].integrity) process.exit(1); process.stdout.write(value[0].integrity)' <<<"${PACK_JSON}")
+          PACK_SHASUM=$(node -e 'const value=JSON.parse(require("fs").readFileSync(0,"utf8")); if(value.length!==1||!value[0].shasum) process.exit(1); process.stdout.write(value[0].shasum)' <<<"${PACK_JSON}")
+          PACKAGE_NAME=$(node -p 'require("./package.json").name')
+          EXPECTED_VERSION=$(node -p 'require("./package.json").version')
+          EXPECTED_FILENAME="docdex-${EXPECTED_VERSION}.tgz"
+          test "${PACK_FILENAME}" = "${EXPECTED_FILENAME}"
+          test -f "../artifacts/npm/${PACK_FILENAME}"
+          printf '%s  %s\n' "${PACK_SHASUM}" "${PACK_FILENAME}" > "../artifacts/npm/${PACK_FILENAME}.sha1"
+          {
+            echo "path=artifacts/npm/${PACK_FILENAME}"
+            echo "filename=${PACK_FILENAME}"
+            echo "integrity=${PACK_INTEGRITY}"
+            echo "package_name=${PACKAGE_NAME}"
+            echo "version=${EXPECTED_VERSION}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Retain packed npm artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-package-${{ github.ref_name }}
+          path: artifacts/npm
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Smoke test install from exact tarball
+        shell: bash
+        env:
+          DOCDEX_DOWNLOAD_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          PACK_PATH="$PWD/${{ steps.pack.outputs.path }}"
+          EXPECTED_VERSION="${{ steps.pack.outputs.version }}"
+          TEST_DIR=$(mktemp -d)
+          MIRROR_ROOT=$(mktemp -d)
+          MIRROR_PID=""
+          cleanup() {
+            if [[ -n "${MIRROR_PID}" ]]; then
+              kill "${MIRROR_PID}" >/dev/null 2>&1 || true
+              wait "${MIRROR_PID}" 2>/dev/null || true
+            fi
+            rm -rf "${TEST_DIR}" "${MIRROR_ROOT}"
+          }
+          trap cleanup EXIT
+          mkdir -p "${TEST_DIR}/home" "${MIRROR_ROOT}/v${EXPECTED_VERSION}"
+          cp -a artifacts/release/. "${MIRROR_ROOT}/v${EXPECTED_VERSION}/"
+          MIRROR_PORT=$(python3 - <<'PY'
+          import socket
+          with socket.socket() as sock:
+              sock.bind(("127.0.0.1", 0))
+              print(sock.getsockname()[1])
+          PY
+          )
+          python3 -m http.server "${MIRROR_PORT}" \
+            --bind 127.0.0.1 \
+            --directory "${MIRROR_ROOT}" \
+            >"${TEST_DIR}/release-mirror.log" 2>&1 &
+          MIRROR_PID=$!
+          for _ in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:${MIRROR_PORT}/v${EXPECTED_VERSION}/docdex-release-manifest.json" >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS "http://127.0.0.1:${MIRROR_PORT}/v${EXPECTED_VERSION}/docdex-release-manifest.json" >/dev/null
+          pushd "$TEST_DIR" >/dev/null
+          npm init -y >/dev/null
+          HOME="${TEST_DIR}/home" \
+            DOCDEX_DOWNLOAD_BASE="http://127.0.0.1:${MIRROR_PORT}" \
+            npm install "$PACK_PATH"
+          INSTALLED_VERSION=$(node -p 'require("./node_modules/docdex/package.json").version')
+          test "${INSTALLED_VERSION}" = "${EXPECTED_VERSION}"
+          HOME="${TEST_DIR}/home" npx --no-install docdex --version
+          popd >/dev/null
+
+  release-assets:
+    name: Publish immutable GitHub release assets
+    needs:
+      - prepare-release-assets
+      - prepare-npm
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Download exact release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-assets-${{ github.ref_name }}
+          path: artifacts
+
+      - name: Publish draft after exact verification
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          verify_remote_tag() {
+            local direct_sha=""
+            local peeled_sha=""
+            local resolved_sha=""
+            direct_sha="$(git ls-remote --tags origin "refs/tags/${GITHUB_REF_NAME}" | awk 'NR == 1 { print $1 }')"
+            peeled_sha="$(git ls-remote --tags origin "refs/tags/${GITHUB_REF_NAME}^{}" | awk 'NR == 1 { print $1 }')"
+            resolved_sha="${peeled_sha:-${direct_sha}}"
+            [[ "${resolved_sha}" =~ ^[0-9a-f]{40}$ ]]
+            test "${resolved_sha}" = "${GITHUB_SHA}"
+          }
+
+          test "$(gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/${GITHUB_REPOSITORY}/immutable-releases" --jq '.enabled')" = "true"
+          verify_remote_tag
+          test "$(jq -r '.sourceCommit' artifacts/docdex-release-manifest.json)" = "${GITHUB_SHA}"
+
+          archives=(artifacts/docdexd-*.tar.gz)
+          checksums=(artifacts/docdexd-*.tar.gz.sha256)
+          test "${#archives[@]}" -eq 6
+          test "${#checksums[@]}" -eq 6
+          assets=(
+            "${archives[@]}"
+            "${checksums[@]}"
             artifacts/docdex-release-manifest.json
             artifacts/docdex-release-manifest.json.sha256
             artifacts/SHA256SUMS
             artifacts/SHA256SUMS.txt
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          )
 
-      - name: Update npm for trusted publishing
-        run: npm install -g npm@11.18.0
+          RELEASE_JSON=$(mktemp)
+          VERIFY_DIR=$(mktemp -d)
+          trap 'rm -f "${RELEASE_JSON}"; rm -rf "${VERIFY_DIR}"' EXIT
+          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
+            --json tagName,isDraft,isPrerelease >"${RELEASE_JSON}" 2>/dev/null; then
+            jq -e --arg tag "${GITHUB_REF_NAME}" \
+              '.tagName == $tag and .isPrerelease == false' "${RELEASE_JSON}" >/dev/null
+            if jq -e '.isDraft == false' "${RELEASE_JSON}" >/dev/null; then
+              gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+                "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" >"${RELEASE_JSON}"
+              jq -e '.draft == false and .prerelease == false and .immutable == true' \
+                "${RELEASE_JSON}" >/dev/null
+              python3 scripts/verify_release_assets_immutable.py \
+                --repository "${GITHUB_REPOSITORY}" \
+                --tag "${GITHUB_REF_NAME}" \
+                --require-complete \
+                "${assets[@]}"
+              exit 0
+            fi
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --verify-tag \
+              --draft \
+              --title "${GITHUB_REF_NAME}"
+          fi
 
-      - name: Cache node modules
-        uses: actions/cache@v4
+          gh release upload "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --clobber \
+            "${assets[@]}"
+
+          printf '%s\n' "${assets[@]##*/}" | LC_ALL=C sort >"${VERIFY_DIR}/expected-assets.txt"
+          gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
+            --json assets --jq '.assets[].name' | LC_ALL=C sort >"${VERIFY_DIR}/actual-assets.txt"
+          diff -u "${VERIFY_DIR}/expected-assets.txt" "${VERIFY_DIR}/actual-assets.txt"
+          gh release download "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --dir "${VERIFY_DIR}/download"
+          for asset in "${assets[@]}"; do
+            cmp -- "${asset}" "${VERIFY_DIR}/download/${asset##*/}"
+          done
+
+          verify_remote_tag
+          gh release edit "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --draft=false
+          IMMUTABLE_RELEASE_VERIFIED=0
+          for attempt in $(seq 1 12); do
+            if gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" \
+              --jq 'select(.draft == false and .prerelease == false and .immutable == true) | .tag_name' \
+              | grep -Fxq "${GITHUB_REF_NAME}"; then
+              IMMUTABLE_RELEASE_VERIFIED=1
+              break
+            fi
+            echo "immutable release verification attempt ${attempt}/12 is not complete yet"
+            sleep 5
+          done
+          test "${IMMUTABLE_RELEASE_VERIFIED}" = "1"
+          verify_remote_tag
+
+  publish-npm:
+    name: Publish exact npm artifact
+    needs:
+      - prepare-npm
+      - release-assets
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          path: |
-            ~/.npm
-          key: node-${{ runner.os }}-${{ hashFiles('npm/package-lock.json') }}
-          restore-keys: |
-            node-${{ runner.os }}-
+          node-version: 24
+          registry-url: https://registry.npmjs.org
 
-      - name: Install npm deps (no postinstall)
-        working-directory: npm
-        run: npm install --ignore-scripts
+      - name: Pin npm for trusted publishing
+        run: |
+          npm install --global npm@11.18.0 --ignore-scripts
+          test "$(npm --version)" = "11.18.0"
 
-      - name: Pack npm tarball (verification)
-        working-directory: npm
-        run: npm pack --ignore-scripts
+      - name: Download retained npm artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: npm-package-${{ github.ref_name }}
+          path: artifacts/npm
 
-      - name: Publish to npm
-        working-directory: npm
+      - name: Verify exact npm artifact integrity
+        shell: bash
+        env:
+          EXPECTED_INTEGRITY: ${{ needs.prepare-npm.outputs.integrity }}
+          PACK_FILENAME: ${{ needs.prepare-npm.outputs.filename }}
+        run: |
+          set -euo pipefail
+          PACK_PATH="artifacts/npm/${PACK_FILENAME}"
+          test -f "${PACK_PATH}"
+          ACTUAL_INTEGRITY=$(node -e 'const fs=require("fs"); const crypto=require("crypto"); const data=fs.readFileSync(process.argv[1]); process.stdout.write("sha512-"+crypto.createHash("sha512").update(data).digest("base64"))' "${PACK_PATH}")
+          test "${ACTUAL_INTEGRITY}" = "${EXPECTED_INTEGRITY}"
+
+      - name: Check npm publication state
+        id: npm-state
+        shell: bash
+        env:
+          PACKAGE_NAME: ${{ needs.prepare-npm.outputs.package_name }}
+          PACKED_INTEGRITY: ${{ needs.prepare-npm.outputs.integrity }}
+          VERSION: ${{ needs.prepare-npm.outputs.version }}
+        run: |
+          set -euo pipefail
+          VIEW_OUT=$(mktemp)
+          VIEW_ERR=$(mktemp)
+          trap 'rm -f "${VIEW_OUT}" "${VIEW_ERR}"' EXIT
+          if npm view "${PACKAGE_NAME}@${VERSION}" version --json >"${VIEW_OUT}" 2>"${VIEW_ERR}"; then
+            REMOTE_VERSION=$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")))' "${VIEW_OUT}")
+            REMOTE_INTEGRITY=$(npm view "${PACKAGE_NAME}@${VERSION}" dist.integrity --json | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0,"utf8")))')
+            test "${REMOTE_VERSION}" = "${VERSION}"
+            if [[ "${REMOTE_INTEGRITY}" != "${PACKED_INTEGRITY}" ]]; then
+              echo "npm already has ${PACKAGE_NAME}@${VERSION}, but its integrity does not match the packed tarball" >&2
+              exit 1
+            fi
+            echo "already-published=true" >> "${GITHUB_OUTPUT}"
+            echo "${PACKAGE_NAME}@${VERSION} is already published with the expected integrity; npm publish will be skipped"
+          else
+            cat "${VIEW_ERR}" >&2
+            if grep -Eqi 'E404|404 Not Found' "${VIEW_ERR}" "${VIEW_OUT}"; then
+              echo "already-published=false" >> "${GITHUB_OUTPUT}"
+            else
+              echo "unable to determine npm publication state safely" >&2
+              exit 1
+            fi
+          fi
+
+      - name: Publish exact tarball to npm
+        if: ${{ steps.npm-state.outputs.already-published != 'true' }}
         env:
           DOCDEX_DOWNLOAD_REPO: ${{ github.repository }}
           NPM_CONFIG_PROVENANCE: "true"
-        run: npm publish --access public --provenance
+          PACK_FILENAME: ${{ needs.prepare-npm.outputs.filename }}
+        run: npm publish "artifacts/npm/${PACK_FILENAME}" --access public --provenance
 
-      - name: Smoke test install from packed tarball
+      - name: Verify npm publication
         shell: bash
         env:
-          DOCDEX_DOWNLOAD_REPO: ${{ github.repository }}
-          DOCDEX_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PACKAGE_NAME: ${{ needs.prepare-npm.outputs.package_name }}
+          PACKED_INTEGRITY: ${{ needs.prepare-npm.outputs.integrity }}
+          VERSION: ${{ needs.prepare-npm.outputs.version }}
         run: |
           set -euo pipefail
-          PACK_TGZ=$(ls npm/docdex-*.tgz | head -n 1)
-          PACK_PATH="$PWD/$PACK_TGZ"
-          TEST_DIR=$(mktemp -d)
-          pushd "$TEST_DIR" >/dev/null
-          npm init -y >/dev/null
-          npm install "$PACK_PATH"
-          npx docdex --version
-          popd >/dev/null
+          for attempt in $(seq 1 12); do
+            if REMOTE_VERSION=$(npm view "${PACKAGE_NAME}@${VERSION}" version 2>/dev/null) && \
+               REMOTE_INTEGRITY=$(npm view "${PACKAGE_NAME}@${VERSION}" dist.integrity 2>/dev/null); then
+              if [[ "${REMOTE_VERSION}" == "${VERSION}" && "${REMOTE_INTEGRITY}" == "${PACKED_INTEGRITY}" ]]; then
+                echo "verified ${PACKAGE_NAME}@${VERSION} with the packed tarball integrity"
+                exit 0
+              fi
+              echo "npm returned mismatched metadata for ${PACKAGE_NAME}@${VERSION}" >&2
+              exit 1
+            fi
+            echo "npm visibility check ${attempt}/12 did not find the expected version yet"
+            sleep 5
+          done
+          echo "${PACKAGE_NAME}@${VERSION} did not become visible on npm in time" >&2
+          exit 1
 
-      # MCP Registry publishing
-      - name: Install MCP Publisher
+  publish-mcp:
+    name: Publish MCP Registry server
+    needs: publish-npm
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check MCP Registry publication state
+        id: mcp-state
+        shell: bash
         run: |
-          curl -L "https://github.com/modelcontextprotocol/registry/releases/download/v1.7.6/mcp-publisher_linux_amd64.tar.gz" \
-            | tar xz mcp-publisher
+          set -euo pipefail
+          SERVER_NAME=$(node -p 'require("./server.json").name')
+          SERVER_VERSION=$(node -p 'require("./server.json").version')
+          ENCODED_NAME=$(node -p 'encodeURIComponent(require("./server.json").name)')
+          ENCODED_VERSION=$(node -p 'encodeURIComponent(require("./server.json").version)')
+          REGISTRY_URL="https://registry.modelcontextprotocol.io/v0.1/servers/${ENCODED_NAME}/versions/${ENCODED_VERSION}"
+          RESPONSE=$(mktemp)
+          trap 'rm -f "${RESPONSE}"' EXIT
+          HTTP_CODE=$(curl --silent --show-error --location --output "${RESPONSE}" --write-out '%{http_code}' "${REGISTRY_URL}")
+          echo "url=${REGISTRY_URL}" >> "${GITHUB_OUTPUT}"
+          case "${HTTP_CODE}" in
+            200)
+              node scripts/verify_mcp_registry_server.cjs "${RESPONSE}" server.json
+              echo "already-published=true" >> "${GITHUB_OUTPUT}"
+              echo "${SERVER_NAME}@${SERVER_VERSION} is already present in the MCP Registry; publish will be skipped"
+              ;;
+            404)
+              echo "already-published=false" >> "${GITHUB_OUTPUT}"
+              ;;
+            *)
+              cat "${RESPONSE}" >&2
+              echo "MCP Registry state check failed with HTTP ${HTTP_CODE}" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Install verified MCP Publisher
+        if: ${{ steps.mcp-state.outputs.already-published != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE="mcp-publisher_linux_amd64.tar.gz"
+          curl --fail --location --retry 3 \
+            --output "${ARCHIVE}" \
+            "https://github.com/modelcontextprotocol/registry/releases/download/v${MCP_PUBLISHER_VERSION}/${ARCHIVE}"
+          printf '%s  %s\n' "${MCP_PUBLISHER_LINUX_AMD64_SHA256}" "${ARCHIVE}" | shasum -a 256 -c -
+          tar -xzf "${ARCHIVE}" mcp-publisher
           chmod +x mcp-publisher
 
       - name: Login to MCP Registry
+        if: ${{ steps.mcp-state.outputs.already-published != 'true' }}
         run: ./mcp-publisher login github-oidc
 
       - name: Publish to MCP Registry
+        if: ${{ steps.mcp-state.outputs.already-published != 'true' }}
         run: ./mcp-publisher publish
+
+      - name: Verify MCP Registry publication
+        shell: bash
+        env:
+          REGISTRY_URL: ${{ steps.mcp-state.outputs.url }}
+        run: |
+          set -euo pipefail
+          RESPONSE=$(mktemp)
+          trap 'rm -f "${RESPONSE}"' EXIT
+          for attempt in $(seq 1 12); do
+            if curl --fail --silent --show-error --location --output "${RESPONSE}" "${REGISTRY_URL}"; then
+              if node scripts/verify_mcp_registry_server.cjs "${RESPONSE}" server.json; then
+                echo "verified MCP Registry publication"
+                exit 0
+              fi
+            fi
+            echo "MCP Registry visibility check ${attempt}/12 did not verify the version yet"
+            sleep 5
+          done
+          echo "MCP Registry publication did not become verifiable in time" >&2
+          exit 1

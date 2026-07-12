@@ -327,6 +327,7 @@ mod tests {
                 legacy_repo_id,
                 repo_root,
                 indexer,
+                read_only: false,
                 libs_indexer: None,
                 memory: None,
                 conversations: None,

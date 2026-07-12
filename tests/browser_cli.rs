@@ -17,18 +17,51 @@ fn touch_file(path: &Path) {
     }
 }
 
-fn write_chromium_manifest(root: &Path, chromium_path: &Path) {
+fn current_managed_platform() -> Option<&'static str> {
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        Some("mac-arm64")
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        Some("mac-x64")
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        Some("linux64")
+    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        Some("win64")
+    } else {
+        None
+    }
+}
+
+fn managed_chromium_path(root: &Path, platform: &str) -> std::path::PathBuf {
+    let rel = match platform {
+        "mac-arm64" => "chrome-headless-shell-mac-arm64/chrome-headless-shell",
+        "mac-x64" => "chrome-headless-shell-mac-x64/chrome-headless-shell",
+        "linux64" => "chrome-headless-shell-linux64/chrome-headless-shell",
+        "win64" => "chrome-headless-shell-win64/chrome-headless-shell.exe",
+        _ => panic!("unsupported test platform"),
+    };
+    root.join(".docdex")
+        .join("state")
+        .join("bin")
+        .join("chromium")
+        .join(rel)
+}
+
+fn write_chromium_manifest(root: &Path, chromium_path: &Path, platform: &str) {
     let manifest_dir = root
         .join(".docdex")
         .join("state")
         .join("bin")
         .join("chromium");
     std::fs::create_dir_all(&manifest_dir).expect("create manifest dir");
+    let version = "123.0.4567.8";
+    let checked_at = chrono::Utc::now().to_rfc3339();
     let payload = serde_json::json!({
-        "installed_at": "2024-01-01T00:00:00Z",
-        "version": "12345",
-        "platform": "linux64",
-        "download_url": "https://example.com/chromium.zip",
+        "installed_at": checked_at.clone(),
+        "last_checked_at": checked_at,
+        "version": version,
+        "platform": platform,
+        "artifact": "chrome-headless-shell",
+        "download_url": format!("https://storage.googleapis.com/chrome-for-testing-public/{version}/{platform}/chrome-headless-shell-{platform}.zip"),
         "path": chromium_path,
     });
     std::fs::write(manifest_dir.join("manifest.json"), payload.to_string())
@@ -37,10 +70,13 @@ fn write_chromium_manifest(root: &Path, chromium_path: &Path) {
 
 #[test]
 fn browser_list_reports_chromium_manifest() {
+    let Some(platform) = current_managed_platform() else {
+        return;
+    };
     let temp = TempDir::new().expect("tempdir");
-    let chromium_path = temp.path().join("docdex-chromium");
+    let chromium_path = managed_chromium_path(temp.path(), platform);
     touch_file(&chromium_path);
-    write_chromium_manifest(temp.path(), &chromium_path);
+    write_chromium_manifest(temp.path(), &chromium_path, platform);
 
     let mut cmd = Command::new(common::docdex_bin());
     cmd.env("DOCDEX_WEB_ENABLED", "0");
@@ -67,10 +103,13 @@ fn browser_list_reports_chromium_manifest() {
 #[test]
 #[cfg(not(target_os = "windows"))]
 fn browser_setup_reports_chromium_manifest() {
+    let Some(platform) = current_managed_platform() else {
+        return;
+    };
     let temp = TempDir::new().expect("tempdir");
-    let chromium_path = temp.path().join("docdex-chromium");
+    let chromium_path = managed_chromium_path(temp.path(), platform);
     touch_file(&chromium_path);
-    write_chromium_manifest(temp.path(), &chromium_path);
+    write_chromium_manifest(temp.path(), &chromium_path, platform);
 
     let mut cmd = Command::new(common::docdex_bin());
     cmd.env("DOCDEX_WEB_ENABLED", "0");

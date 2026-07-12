@@ -3,8 +3,7 @@ name: Release Dry Run
 on:
   workflow_dispatch:
 
-permissions:
-  contents: read
+permissions: {}
 
 env:
   CARGO_TERM_COLOR: always
@@ -12,41 +11,151 @@ env:
 jobs:
   dry-run:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: "1.91.1"
+          components: rustfmt
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        if: ${{ runner.os != 'Linux' }}
-
-      - name: Tests
-        run: cargo test --locked --all
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: |
+            .
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 20
+          node-version: 24
           registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: npm/package-lock.json
 
-      - name: Cache node modules
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.npm
-          key: node-dryrun-${{ runner.os }}-${{ hashFiles('npm/package-lock.json') }}
-          restore-keys: |
-            node-dryrun-${{ runner.os }}-
+      - name: Pin npm for release validation
+        run: |
+          npm install --global npm@11.18.0
+          test "$(npm --version)" = "11.18.0"
 
-      - name: Install npm deps (no postinstall)
+      - name: Install audit tooling
+        run: |
+          cargo install cargo-audit --version 0.22.0 --locked
+          cargo install cargo-sbom --version 0.10.0 --locked
+
+      - name: Validate release version surfaces
+        run: python3 scripts/verify_release_versions.py
+
+      - name: Cargo formatting
+        run: cargo fmt --all -- --check
+
+      - name: Cargo check
+        run: cargo check --locked --all-targets
+
+      - name: Cargo tests
+        run: cargo test --locked --all
+
+      - name: Release feature-matrix contract tests
+        run: python3 scripts/test_release_feature_matrix_contract.py
+
+      - name: Build optimized native release feature-matrix binary
+        run: cargo build --locked --release --bin docdexd
+
+      - name: Fail-closed optimized release feature matrix
+        env:
+          DOCDEX_FEATURE_MATRIX_USER_MEMORY_SCRIPT: ${{ vars.DOCDEX_FEATURE_MATRIX_USER_MEMORY_SCRIPT }}
+          DOCDEX_FEATURE_MATRIX_USER_MEMORY_MODE: real
+          DOCDEX_FEATURE_MATRIX_USER_MEMORY_ENV_ALLOWLIST: ${{ vars.DOCDEX_FEATURE_MATRIX_USER_MEMORY_ENV_ALLOWLIST }}
+          DOCDEX_FEATURE_MATRIX_ADMIN_SCRIPT: ${{ vars.DOCDEX_FEATURE_MATRIX_ADMIN_SCRIPT }}
+          DOCDEX_FEATURE_MATRIX_ADMIN_MODE: real
+          DOCDEX_FEATURE_MATRIX_ADMIN_ENV_ALLOWLIST: ${{ vars.DOCDEX_FEATURE_MATRIX_ADMIN_ENV_ALLOWLIST }}
+          DOCDEX_FEATURE_MATRIX_INTROSPECTION_SCRIPT: ${{ vars.DOCDEX_FEATURE_MATRIX_INTROSPECTION_SCRIPT }}
+          DOCDEX_FEATURE_MATRIX_INTROSPECTION_MODE: real
+          DOCDEX_FEATURE_MATRIX_INTROSPECTION_ENV_ALLOWLIST: ${{ vars.DOCDEX_FEATURE_MATRIX_INTROSPECTION_ENV_ALLOWLIST }}
+          DOCDEX_FEATURE_MATRIX_WEB_SCRIPT: ${{ vars.DOCDEX_FEATURE_MATRIX_WEB_SCRIPT }}
+          DOCDEX_FEATURE_MATRIX_WEB_MODE: real
+          DOCDEX_FEATURE_MATRIX_WEB_ENV_ALLOWLIST: ${{ vars.DOCDEX_FEATURE_MATRIX_WEB_ENV_ALLOWLIST }}
+          DOCDEX_FEATURE_MATRIX_DELEGATION_SCRIPT: ${{ vars.DOCDEX_FEATURE_MATRIX_DELEGATION_SCRIPT }}
+          DOCDEX_FEATURE_MATRIX_DELEGATION_MODE: real
+          DOCDEX_FEATURE_MATRIX_DELEGATION_ENV_ALLOWLIST: ${{ vars.DOCDEX_FEATURE_MATRIX_DELEGATION_ENV_ALLOWLIST }}
+        run: scripts/test_release_feature_matrix.sh --binary target/release/docdexd --release-gate
+
+      - name: Install npm dependencies
         working-directory: npm
-        run: npm install --ignore-scripts
+        run: npm ci --ignore-scripts
 
-      - name: npm publish dry run
+      - name: npm tests and package guardrails
         working-directory: npm
+        run: |
+          npm test
+          npm run pack:verify
+
+      - name: Pack exact npm tarball
+        id: pack
+        shell: bash
+        working-directory: npm
+        run: |
+          set -euo pipefail
+          mkdir -p ../target/npm-dry-run
+          PACK_JSON=$(npm pack --ignore-scripts --json --pack-destination ../target/npm-dry-run)
+          printf '%s\n' "${PACK_JSON}" > ../target/npm-dry-run/npm-pack.json
+          PACK_FILENAME=$(node -e 'const value=JSON.parse(require("fs").readFileSync(0,"utf8")); if(value.length!==1||!value[0].filename) process.exit(1); process.stdout.write(value[0].filename)' <<<"${PACK_JSON}")
+          EXPECTED_VERSION=$(node -p 'require("./package.json").version')
+          test "${PACK_FILENAME}" = "docdex-${EXPECTED_VERSION}.tgz"
+          test -f "../target/npm-dry-run/${PACK_FILENAME}"
+          echo "path=target/npm-dry-run/${PACK_FILENAME}" >> "${GITHUB_OUTPUT}"
+          echo "version=${EXPECTED_VERSION}" >> "${GITHUB_OUTPUT}"
+
+      - name: Smoke test packed npm tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          PACK_PATH="$PWD/${{ steps.pack.outputs.path }}"
+          TEST_DIR=$(mktemp -d)
+          trap 'rm -rf "${TEST_DIR}"' EXIT
+          pushd "${TEST_DIR}" >/dev/null
+          npm init -y >/dev/null
+          npm install --ignore-scripts "${PACK_PATH}"
+          test "$(node -p 'require("./node_modules/docdex/package.json").version')" = "${{ steps.pack.outputs.version }}"
+          popd >/dev/null
+
+      - name: npm publish exact tarball dry run
         env:
           NPM_CONFIG_PROVENANCE: "true"
-        run: npm publish --dry-run --provenance --access public
+        # --force only bypasses the already-published version check; --dry-run keeps this non-mutating.
+        run: npm publish "${{ steps.pack.outputs.path }}" --dry-run --force --provenance --access public
+
+      - name: Security audit
+        if: ${{ always() }}
+        run: scripts/security_audit.sh
+
+      - name: Enforce npm high/critical audit gate
+        if: ${{ always() }}
+        working-directory: npm
+        run: npm audit --audit-level=high
+
+      - name: Upload dry-run package
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-package-dry-run
+          path: target/npm-dry-run
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload audit and SBOM artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-dry-run-security
+          path: |
+            target/audit
+            target/release_feature_matrix
+          if-no-files-found: warn
+          retention-days: 14

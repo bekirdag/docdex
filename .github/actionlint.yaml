@@ -1,0 +1,10 @@
+self-hosted-runner:
+  labels:
+    - docdex-deploy
+
+config-variables: null
+
+paths:
+  .github/workflows/deploy-docdex-server.yml:
+    ignore:
+      - "SC2029"

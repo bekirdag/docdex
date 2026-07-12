@@ -741,6 +741,7 @@ pub async fn serve(
             legacy_repo_id: legacy_repo_id.clone(),
             repo_root: indexer.repo_root().to_path_buf(),
             indexer: indexer.clone(),
+            read_only: false,
             libs_indexer: libs_indexer.clone(),
             memory: memory.clone(),
             conversations: conversations.clone(),
@@ -789,6 +790,8 @@ pub async fn serve(
             embedding_model.clone(),
             embedding_timeout_ms,
             Some(mcp_http_base_url.clone()),
+            global_state_dir.clone(),
+            Some(personal_preferences_config.clone()),
             mcp_auth_token.clone(),
             repo_manager.clone(),
             delegation_metrics.clone(),
@@ -1149,15 +1152,17 @@ pub async fn serve(
             });
         }
     }
-    if !daemon_mode {
-        let _watcher = watcher::spawn(indexer.clone()).map_err(|err| {
+    let mut watcher_handle = if !daemon_mode {
+        Some(watcher::spawn(indexer.clone()).map_err(|err| {
             StartupError::new(
                 "startup_state_invalid",
                 format!("failed to start file watcher: {err}"),
             )
             .with_hint("Verify the repo path is accessible and not on an unsupported filesystem.")
-        })?;
-    }
+        })?)
+    } else {
+        None
+    };
 
     let addr = SocketAddr::new(ip, port);
 
@@ -1330,13 +1335,28 @@ pub async fn serve(
             "hook_socket_path is configured but unix sockets are not supported on this platform"
         );
     }
-    if let Some(tls_config) = tls_config.clone() {
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        let _ = shutdown_tx.send(true);
+    });
+
+    let result = if let Some(tls_config) = tls_config.clone() {
         let tls_acceptor = TlsAcceptor::from(tls_config);
-        loop {
-            let (stream, remote_addr) = listener.accept().await?;
+        let mut shutdown = Box::pin(wait_for_shutdown(shutdown_rx));
+        let mut connections = tokio::task::JoinSet::new();
+        let accept_result = loop {
+            let accepted = tokio::select! {
+                _ = &mut shutdown => break Ok(()),
+                accepted = listener.accept() => accepted,
+            };
+            let (stream, remote_addr) = match accepted {
+                Ok(connection) => connection,
+                Err(err) => break Err(err),
+            };
             let acceptor = tls_acceptor.clone();
             let svc = make_service.clone();
-            tokio::spawn(async move {
+            connections.spawn(async move {
                 match acceptor.accept(stream).await {
                     Ok(tls_stream) => {
                         let io = TokioIo::new(tls_stream);
@@ -1363,9 +1383,56 @@ pub async fn serve(
                     }
                 }
             });
+        };
+        connections.abort_all();
+        while connections.join_next().await.is_some() {}
+        accept_result
+    } else {
+        let shutdown_observer = shutdown_rx.clone();
+        let server = axum::serve(listener, make_service)
+            .with_graceful_shutdown(wait_for_shutdown(shutdown_rx));
+        let server = std::future::IntoFuture::into_future(server);
+        tokio::pin!(server);
+        tokio::select! {
+            result = &mut server => result,
+            _ = wait_for_shutdown(shutdown_observer.clone()) => {
+                match tokio::time::timeout(Duration::from_secs(5), &mut server).await {
+                    Ok(result) => result,
+                    Err(_) => {
+                        warn!(
+                            target: "docdexd",
+                            "HTTP connection drain exceeded five seconds; forcing shutdown"
+                        );
+                        Ok(())
+                    }
+                }
+            }
+        }
+    };
+
+    if let Some(watcher) = watcher_handle.as_mut() {
+        watcher.stop();
+    }
+    if let Err(err) = crate::web::chrome::shutdown_global().await {
+        warn!(
+            target: "docdexd",
+            error = ?err,
+            "failed to shut down the global Chromium instance"
+        );
+    }
+    #[cfg(unix)]
+    if let Some(socket_path) = hook_socket_path.as_ref() {
+        if let Err(err) = fs::remove_file(socket_path) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                warn!(
+                    target: "docdexd",
+                    socket = %socket_path.display(),
+                    error = ?err,
+                    "failed to remove hook unix socket during shutdown"
+                );
+            }
         }
     }
-    let result = axum::serve(listener, make_service).await;
     match result {
         Ok(()) => {
             info!(
@@ -1387,6 +1454,35 @@ pub async fn serve(
                 "docdex daemon terminated with error"
             );
             Err(err.into())
+        }
+    }
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        if let Ok(mut terminate) = signal(SignalKind::terminate()) {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = terminate.recv() => {}
+            }
+        } else {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+async fn wait_for_shutdown(mut shutdown: tokio::sync::watch::Receiver<bool>) {
+    while !*shutdown.borrow() {
+        if shutdown.changed().await.is_err() {
+            break;
         }
     }
 }

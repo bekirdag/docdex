@@ -2,8 +2,6 @@ use crate::hardware::{self, HardwareProfile, ModelTier};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::cmp::Ordering;
-use std::fs;
-use std::path::PathBuf;
 use std::sync::OnceLock;
 
 pub mod adapter;
@@ -11,7 +9,7 @@ pub mod delegation;
 pub mod delegation_rating;
 pub mod local_library;
 
-const LLMLIST_JSON: &str = "docs/llm_list.json";
+const LLMLIST_JSON: &str = include_str!("../docs/llm_list.json");
 const EXPENSIVE_MODELS_JSON: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/docs/expensive_models.json"
@@ -43,14 +41,9 @@ struct ExpensiveModelLibrary {
     adapter_types: Vec<String>,
 }
 
-fn catalog_file() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(LLMLIST_JSON)
-}
-
 pub fn load_catalog() -> Result<Vec<LlmModel>> {
-    let raw = fs::read_to_string(catalog_file()).context("read llm catalog")?;
     let mut models: Vec<LlmModel> =
-        serde_json::from_str(&raw).context("parse docs/llm_list.json for llm catalog")?;
+        serde_json::from_str(LLMLIST_JSON).context("parse embedded llm catalog")?;
     models.sort_by(|a, b| {
         a.min_ram_gb
             .partial_cmp(&b.min_ram_gb)

@@ -101,6 +101,8 @@ pub(crate) struct IndexJobStatus {
     finished_at_epoch_ms: Option<u128>,
     paths_total: usize,
     paths_indexed: usize,
+    #[serde(default)]
+    paths_skipped: usize,
     paths_failed: usize,
     errors: Vec<String>,
 }
@@ -297,6 +299,9 @@ pub(crate) async fn index_compat_handler(
         Ok(repo) => repo,
         Err(err) => return repo_error_response(err),
     };
+    if let Err(response) = super::shared::ensure_repo_index_writable(&repo) {
+        return response;
+    }
     let paths = match normalize_index_paths(&payload.paths) {
         Ok(paths) => paths,
         Err(response) => return response,
@@ -317,6 +322,7 @@ pub(crate) async fn index_compat_handler(
         finished_at_epoch_ms: None,
         paths_total: paths.len(),
         paths_indexed: 0,
+        paths_skipped: 0,
         paths_failed: 0,
         errors: Vec::new(),
     };
@@ -360,6 +366,9 @@ pub(crate) async fn index_delete_compat_handler(
     )
     .await
     {
+        return response;
+    }
+    if let Err(response) = super::shared::ensure_repo_index_writable(&repo) {
         return response;
     }
     let paths = match normalize_index_paths(&payload.paths) {
@@ -1261,9 +1270,12 @@ fn spawn_index_job(
                 }
             }
         } else {
+            let repo_root = indexer.repo_root().to_path_buf();
             for path in paths {
-                match indexer.ingest_file(path.clone()).await {
-                    Ok(_) => status.paths_indexed += 1,
+                let full_path = repo_root.join(&path);
+                match indexer.ingest_file(full_path).await {
+                    Ok(decision) if decision.should_index() => status.paths_indexed += 1,
+                    Ok(_) => status.paths_skipped += 1,
                     Err(err) => {
                         metrics.inc_error();
                         status.paths_failed += 1;
@@ -1315,6 +1327,8 @@ fn now_epoch_ms() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+    use tempfile::TempDir;
 
     #[test]
     fn normalize_optional_rel_path_rejects_parent_segments() {
@@ -1330,5 +1344,67 @@ mod tests {
     fn strip_symlink_targets_removes_target_paths() {
         let tree = "repo\n|- link -> /private/path\n";
         assert_eq!(strip_symlink_targets(tree), "repo\n|- link\n");
+    }
+
+    #[tokio::test]
+    async fn index_job_resolves_repo_relative_paths_and_tracks_skips() -> anyhow::Result<()> {
+        let repo = TempDir::new()?;
+        let state_root = TempDir::new()?;
+        fs::write(repo.path().join("kept.md"), "INDEX_JOB_RELATIVE_TOKEN")?;
+        fs::write(repo.path().join("skipped.unsupported"), "ignored")?;
+        let config = crate::index::IndexConfig::with_overrides(
+            repo.path(),
+            Some(state_root.path().to_path_buf()),
+            Vec::new(),
+            Vec::new(),
+            true,
+        )?;
+        let indexer = Arc::new(Indexer::with_config(repo.path().to_path_buf(), config)?);
+        let jobs_dir = index_jobs_dir(indexer.state_dir());
+        let status = IndexJobStatus {
+            job_id: "relative-path-job".to_string(),
+            repo_id: "test-repo".to_string(),
+            operation: "ingest_paths".to_string(),
+            status: "queued".to_string(),
+            queued_at_epoch_ms: now_epoch_ms(),
+            started_at_epoch_ms: None,
+            finished_at_epoch_ms: None,
+            paths_total: 2,
+            paths_indexed: 0,
+            paths_skipped: 0,
+            paths_failed: 0,
+            errors: Vec::new(),
+        };
+        spawn_index_job(
+            Arc::clone(&indexer),
+            jobs_dir.clone(),
+            status,
+            vec![
+                PathBuf::from("kept.md"),
+                PathBuf::from("skipped.unsupported"),
+            ],
+            Arc::new(crate::metrics::Metrics::default()),
+        );
+
+        let completed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Ok(payload) = fs::read(index_job_path(&jobs_dir, "relative-path-job")) {
+                    if let Ok(status) = serde_json::from_slice::<IndexJobStatus>(&payload) {
+                        if status.finished_at_epoch_ms.is_some() {
+                            break status;
+                        }
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await?;
+
+        assert_eq!(completed.status, "succeeded", "{completed:?}");
+        assert_eq!(completed.paths_indexed, 1);
+        assert_eq!(completed.paths_skipped, 1);
+        assert_eq!(completed.paths_failed, 0);
+        assert!(!indexer.search("INDEX_JOB_RELATIVE_TOKEN", 1)?.is_empty());
+        Ok(())
     }
 }

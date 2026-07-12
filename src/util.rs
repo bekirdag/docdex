@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::fs::OpenOptions;
-use std::io::{self, Write};
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tracing_subscriber::{fmt, EnvFilter};
@@ -308,14 +308,23 @@ pub fn detect_browser_candidates(config_path: Option<&Path>) -> Vec<BrowserCandi
     candidates
 }
 
+pub(crate) const MANAGED_CHROMIUM_ARTIFACT: &str = "chrome-headless-shell";
+const CHROMIUM_MANIFEST_MAX_BYTES: u64 = 64 * 1024;
+const CHROMIUM_DOWNLOAD_BASE_URL: &str = "https://storage.googleapis.com/chrome-for-testing-public";
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ChromiumManifest {
     #[serde(default)]
     pub installed_at: Option<String>,
     #[serde(default)]
+    pub last_checked_at: Option<String>,
+    #[serde(default)]
     pub version: Option<String>,
     #[serde(default)]
     pub platform: Option<String>,
+    #[serde(default)]
+    pub artifact: Option<String>,
     #[serde(default)]
     pub download_url: Option<String>,
     pub path: PathBuf,
@@ -323,22 +332,138 @@ pub(crate) struct ChromiumManifest {
 
 pub(crate) fn resolve_chromium_binary_path() -> Option<PathBuf> {
     let manifest = read_chromium_manifest()?;
-    if manifest.path.is_file() {
+    if chromium_manifest_is_usable(&manifest) {
         Some(manifest.path)
     } else {
         None
     }
 }
 
+pub(crate) fn chromium_manifest_is_usable(manifest: &ChromiumManifest) -> bool {
+    let Some(base_dir) = crate::state_paths::default_state_base_dir().ok() else {
+        return false;
+    };
+    let Some(platform) = managed_chromium_platform() else {
+        return false;
+    };
+    chromium_manifest_is_usable_at(manifest, &base_dir, platform)
+}
+
+pub(crate) fn chromium_manifest_is_usable_at(
+    manifest: &ChromiumManifest,
+    base_dir: &Path,
+    platform: &str,
+) -> bool {
+    let Some(version) = manifest.version.as_deref() else {
+        return false;
+    };
+    if !managed_chromium_version_is_valid(version)
+        || manifest.platform.as_deref() != Some(platform)
+        || manifest.artifact.as_deref() != Some(MANAGED_CHROMIUM_ARTIFACT)
+    {
+        return false;
+    }
+    let Some(expected_path) = managed_chromium_binary_path(base_dir, platform) else {
+        return false;
+    };
+    let Some(expected_url) = managed_chromium_download_url(version, platform) else {
+        return false;
+    };
+    manifest.path == expected_path
+        && manifest.download_url.as_deref() == Some(expected_url.as_str())
+        && managed_chromium_binary_is_executable(&manifest.path)
+}
+
 pub(crate) fn read_chromium_manifest() -> Option<ChromiumManifest> {
     let manifest_path = resolve_chromium_manifest_path()?;
-    let raw = std::fs::read_to_string(&manifest_path).ok()?;
-    serde_json::from_str(&raw).ok()
+    let metadata = std::fs::symlink_metadata(&manifest_path).ok()?;
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() > CHROMIUM_MANIFEST_MAX_BYTES
+    {
+        return None;
+    }
+    let file = File::open(&manifest_path).ok()?;
+    let mut raw = Vec::with_capacity(metadata.len().min(CHROMIUM_MANIFEST_MAX_BYTES) as usize);
+    file.take(CHROMIUM_MANIFEST_MAX_BYTES.saturating_add(1))
+        .read_to_end(&mut raw)
+        .ok()?;
+    if raw.len() as u64 > CHROMIUM_MANIFEST_MAX_BYTES {
+        return None;
+    }
+    serde_json::from_slice(&raw).ok()
 }
 
 pub(crate) fn resolve_chromium_manifest_path() -> Option<PathBuf> {
     let base_dir = crate::state_paths::default_state_base_dir().ok()?;
     Some(base_dir.join("bin").join("chromium").join("manifest.json"))
+}
+
+pub(crate) fn managed_chromium_platform() -> Option<&'static str> {
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        Some("mac-arm64")
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        Some("mac-x64")
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        Some("linux64")
+    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        Some("win64")
+    } else {
+        None
+    }
+}
+
+pub(crate) fn managed_chromium_binary_rel_path(platform: &str) -> Option<&'static str> {
+    match platform {
+        "mac-arm64" => Some("chrome-headless-shell-mac-arm64/chrome-headless-shell"),
+        "mac-x64" => Some("chrome-headless-shell-mac-x64/chrome-headless-shell"),
+        "linux64" => Some("chrome-headless-shell-linux64/chrome-headless-shell"),
+        "win64" => Some("chrome-headless-shell-win64/chrome-headless-shell.exe"),
+        _ => None,
+    }
+}
+
+pub(crate) fn managed_chromium_binary_path(base_dir: &Path, platform: &str) -> Option<PathBuf> {
+    let rel_path = managed_chromium_binary_rel_path(platform)?;
+    Some(base_dir.join("bin").join("chromium").join(rel_path))
+}
+
+pub(crate) fn managed_chromium_download_url(version: &str, platform: &str) -> Option<String> {
+    if !managed_chromium_version_is_valid(version)
+        || managed_chromium_binary_rel_path(platform).is_none()
+    {
+        return None;
+    }
+    Some(format!(
+        "{CHROMIUM_DOWNLOAD_BASE_URL}/{version}/{platform}/{MANAGED_CHROMIUM_ARTIFACT}-{platform}.zip"
+    ))
+}
+
+fn managed_chromium_version_is_valid(version: &str) -> bool {
+    !version.is_empty()
+        && version.len() <= 64
+        && version
+            .bytes()
+            .all(|value| value.is_ascii_digit() || value == b'.')
+        && version.bytes().any(|value| value.is_ascii_digit())
+}
+
+fn managed_chromium_binary_is_executable(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 fn resolve_state_log_path() -> Option<PathBuf> {

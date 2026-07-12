@@ -2000,7 +2000,7 @@ fn list_chromium_browsers() -> Vec<BrowserStatus> {
     };
 
     if let Some(manifest) = util::read_chromium_manifest() {
-        if manifest.path.is_file() {
+        if util::chromium_manifest_is_usable(&manifest) {
             browser.installed = true;
             browser.version = manifest.version;
             browser.path = Some(manifest.path);

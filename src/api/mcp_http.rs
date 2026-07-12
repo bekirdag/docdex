@@ -3,7 +3,7 @@ use crate::auth::RepoOperation;
 use crate::error::status_for_app_error;
 use crate::error::{
     repo_resolution_details, AppError, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
-    ERR_MISSING_DEPENDENCY, ERR_MISSING_REPO_PATH,
+    ERR_MISSING_DEPENDENCY, ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_SCOPE_DENIED,
 };
 use crate::http_api::{app_error_response, json_error};
 use crate::search::AppState;
@@ -14,16 +14,72 @@ use axum::response::{IntoResponse, Json, Response};
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::PathBuf;
+use std::pin::Pin;
+use std::task::{Context as TaskContext, Poll};
 use std::time::Duration;
 use tokio_stream::wrappers::ReceiverStream;
-use tokio_stream::StreamExt;
 
-const SESSION_HEADER: &str = "x-docdex-mcp-session";
+const MCP_SESSION_HEADER: &str = "mcp-session-id";
+const LEGACY_SESSION_HEADER: &str = "x-docdex-mcp-session";
 
 #[derive(Deserialize)]
 pub struct McpSessionQuery {
     #[serde(default)]
     session_id: Option<String>,
+}
+
+struct McpCallOutcome {
+    response: Option<Value>,
+    issued_session_id: Option<String>,
+}
+
+struct McpSseStream {
+    inner: ReceiverStream<Value>,
+    router: std::sync::Arc<crate::mcp::McpProxyRouter>,
+    session_id: String,
+}
+
+impl tokio_stream::Stream for McpSseStream {
+    type Item = Result<Event, std::convert::Infallible>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        context: &mut TaskContext<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        Pin::new(&mut self.inner)
+            .poll_next(context)
+            .map(|item| item.map(|payload| Ok(Event::default().data(payload.to_string()))))
+    }
+}
+
+impl Drop for McpSseStream {
+    fn drop(&mut self) {
+        let router = self.router.clone();
+        let session_id = self.session_id.clone();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                router.remove_session(&session_id).await;
+            });
+        }
+    }
+}
+
+impl McpCallOutcome {
+    fn into_response(self) -> Response {
+        let Some(payload) = self.response else {
+            return StatusCode::NO_CONTENT.into_response();
+        };
+        let mut response = Json(payload).into_response();
+        if let Some(session_id) = self.issued_session_id {
+            if let Ok(value) = HeaderValue::from_str(&session_id) {
+                response
+                    .headers_mut()
+                    .insert(MCP_SESSION_HEADER, value.clone());
+                response.headers_mut().insert(LEGACY_SESSION_HEADER, value);
+            }
+        }
+        response
+    }
 }
 
 pub async fn mcp_request_handler(
@@ -38,13 +94,55 @@ pub async fn mcp_request_handler(
             "mcp proxy is not enabled",
         );
     };
+    let session_id = match header_session_id(&headers) {
+        Ok(session_id) => session_id,
+        Err(message) => {
+            return json_error(StatusCode::BAD_REQUEST, ERR_INVALID_ARGUMENT, message);
+        }
+    };
     match payload {
-        Value::Array(batch) => handle_mcp_batch(&state, router, &headers, batch).await,
-        payload => match handle_mcp_single(&state, router, &headers, payload).await {
-            Ok(Some(response)) => Json(response).into_response(),
-            Ok(None) => StatusCode::NO_CONTENT.into_response(),
-            Err(response) => response,
-        },
+        Value::Array(batch) => {
+            handle_mcp_batch(&state, router, &headers, session_id.as_deref(), batch).await
+        }
+        payload => {
+            match handle_mcp_single(&state, router, &headers, session_id.as_deref(), payload).await
+            {
+                Ok(outcome) => outcome.into_response(),
+                Err(response) => response,
+            }
+        }
+    }
+}
+
+pub async fn mcp_delete_handler(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let Some(router) = state.mcp_router.as_ref() else {
+        return json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            ERR_MISSING_DEPENDENCY,
+            "mcp proxy is not enabled",
+        );
+    };
+    let session_id = match header_session_id(&headers) {
+        Ok(Some(session_id)) => session_id,
+        Ok(None) => {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                ERR_INVALID_ARGUMENT,
+                "missing MCP session header",
+            );
+        }
+        Err(message) => {
+            return json_error(StatusCode::BAD_REQUEST, ERR_INVALID_ARGUMENT, message);
+        }
+    };
+    if router.remove_session(&session_id).await {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "unknown or expired MCP session",
+        )
     }
 }
 
@@ -56,10 +154,21 @@ pub async fn mcp_sse_handler(State(state): State<AppState>) -> Response {
             "mcp proxy is not enabled",
         );
     };
-    let (session_id, rx) = router.create_session().await;
-    let stream = ReceiverStream::new(rx).map(|payload| {
-        Ok::<_, std::convert::Infallible>(Event::default().data(payload.to_string()))
-    });
+    let (session_id, rx) = match router.create_session().await {
+        Ok(session) => session,
+        Err(err) => {
+            return json_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                ERR_RATE_LIMITED,
+                format!("mcp session unavailable: {err}"),
+            );
+        }
+    };
+    let stream = McpSseStream {
+        inner: ReceiverStream::new(rx),
+        router: router.clone(),
+        session_id: session_id.clone(),
+    };
     let mut response = Sse::new(stream)
         .keep_alive(
             KeepAlive::new()
@@ -68,7 +177,10 @@ pub async fn mcp_sse_handler(State(state): State<AppState>) -> Response {
         )
         .into_response();
     if let Ok(value) = HeaderValue::from_str(&session_id) {
-        response.headers_mut().insert(SESSION_HEADER, value);
+        response
+            .headers_mut()
+            .insert(MCP_SESSION_HEADER, value.clone());
+        response.headers_mut().insert(LEGACY_SESSION_HEADER, value);
     }
     response
 }
@@ -86,18 +198,33 @@ pub async fn mcp_message_handler(
             "mcp proxy is not enabled",
         );
     };
-    let session_id = query.session_id.or_else(|| header_session_id(&headers));
+    let header_session_id = match header_session_id(&headers) {
+        Ok(session_id) => session_id,
+        Err(message) => {
+            return json_error(StatusCode::BAD_REQUEST, ERR_INVALID_ARGUMENT, message);
+        }
+    };
+    if let (Some(query_session_id), Some(header_session_id)) =
+        (query.session_id.as_deref(), header_session_id.as_deref())
+    {
+        if query_session_id != header_session_id {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                ERR_INVALID_ARGUMENT,
+                "conflicting MCP session identifiers",
+            );
+        }
+    }
+    let session_id = header_session_id.or(query.session_id);
     let Some(session_id) = session_id else {
         return json_error(
             StatusCode::BAD_REQUEST,
             ERR_INVALID_ARGUMENT,
-            "missing session_id (header x-docdex-mcp-session or ?session_id=)",
+            "missing session_id (header mcp-session-id, legacy x-docdex-mcp-session, or ?session_id=)",
         );
     };
     let method = extract_method(&payload).map(str::to_string);
-    if is_notification(&payload, method.as_deref()) {
-        return StatusCode::NO_CONTENT.into_response();
-    }
+    let notification = is_notification(&payload, method.as_deref());
     if method.as_deref() == Some("initialize") {
         normalize_initialize_payload(&mut payload);
         let root_uri = match extract_init_root(&payload) {
@@ -116,6 +243,17 @@ pub async fn mcp_message_handler(
                 return json_error(status_for_app_error(err.code), err.code, err.message);
             }
         };
+        if router
+            .session_repo_root(&session_id)
+            .await
+            .is_some_and(|bound_root| bound_root != repo_root)
+        {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                ERR_INVALID_ARGUMENT,
+                "MCP session is already bound to a different repository; create a new session",
+            );
+        }
         if let Err(err) = router.bind_session(&session_id, &repo_root).await {
             return json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -124,73 +262,96 @@ pub async fn mcp_message_handler(
             );
         }
     } else {
-        let bound_root = router.session_repo_root(&session_id).await;
-        let mut mcp_repo_root_for_auth = bound_root.clone();
+        let Some(bound_root) = router.session_repo_root(&session_id).await else {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                ERR_INVALID_ARGUMENT,
+                "missing initialize (call initialize with rootUri before MCP requests)",
+            );
+        };
         if let Some(root_uri) = extract_project_root(&payload) {
             match resolve_repo_for_mcp(&state, Some(root_uri)) {
                 Ok(repo_root) => {
-                    mcp_repo_root_for_auth = Some(repo_root.clone());
-                    let should_init = bound_root
-                        .as_ref()
-                        .map(|root| root != &repo_root)
-                        .unwrap_or(true);
-                    if let Err(err) = router.bind_session(&session_id, &repo_root).await {
+                    if repo_root != bound_root {
                         return json_error(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            ERR_INTERNAL_ERROR,
-                            format!("mcp proxy failed: {err}"),
+                            StatusCode::BAD_REQUEST,
+                            ERR_INVALID_ARGUMENT,
+                            "MCP session is bound to a different repository; create a new session",
                         );
-                    }
-                    if should_init {
-                        if let Err(err) = router
-                            .enqueue_internal_initialize(&session_id, &repo_root)
-                            .await
-                        {
-                            return json_error(
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                ERR_INTERNAL_ERROR,
-                                format!("mcp proxy failed: {err}"),
-                            );
-                        }
                     }
                 }
                 Err(err) => {
                     return app_error_response(&err);
                 }
             }
-        } else if bound_root.is_none() {
-            return json_error(
-                StatusCode::BAD_REQUEST,
-                ERR_INVALID_ARGUMENT,
-                "missing initialize (call initialize with rootUri before MCP requests)",
-            );
         }
-        if let Err(response) = authorize_mcp_encrypted_repo(
-            &state,
-            &headers,
-            &payload,
-            mcp_repo_root_for_auth.as_ref(),
-        )
-        .await
+        if let Err(response) =
+            authorize_mcp_encrypted_repo(&state, &headers, &payload, Some(&bound_root)).await
         {
             return response;
         }
     }
+    if notification {
+        let result = if is_cancellation_notification(method.as_deref()) {
+            router
+                .call_for_session(&session_id, payload)
+                .await
+                .map(|_| ())
+        } else {
+            router.touch_bound_session(&session_id).await
+        };
+        return match result {
+            Ok(()) => StatusCode::NO_CONTENT.into_response(),
+            Err(err) => json_error(
+                StatusCode::BAD_REQUEST,
+                ERR_INVALID_ARGUMENT,
+                format!("mcp notification failed: {err}"),
+            ),
+        };
+    }
     match router.enqueue_for_session(&session_id, payload).await {
         Ok(ack) => Json(ack).into_response(),
-        Err(err) => json_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            ERR_INTERNAL_ERROR,
-            format!("mcp proxy failed: {err}"),
-        ),
+        Err(err) => mcp_proxy_failure_response(err),
     }
 }
 
-fn header_session_id(headers: &HeaderMap) -> Option<String> {
-    headers
-        .get(SESSION_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.to_string())
+fn mcp_proxy_failure_response(err: anyhow::Error) -> Response {
+    if let Some(app_error) = err.downcast_ref::<AppError>() {
+        return app_error_response(app_error);
+    }
+    json_error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        ERR_INTERNAL_ERROR,
+        format!("mcp proxy failed: {err}"),
+    )
+}
+
+fn header_session_id(headers: &HeaderMap) -> Result<Option<String>, &'static str> {
+    let standard = session_header_value(headers, MCP_SESSION_HEADER)?;
+    let legacy = session_header_value(headers, LEGACY_SESSION_HEADER)?;
+    if let (Some(standard), Some(legacy)) = (standard.as_deref(), legacy.as_deref()) {
+        if standard != legacy {
+            return Err("conflicting MCP session headers");
+        }
+    }
+    Ok(standard.or(legacy))
+}
+
+fn session_header_value(
+    headers: &HeaderMap,
+    name: &'static str,
+) -> Result<Option<String>, &'static str> {
+    let Some(value) = headers.get(name) else {
+        return Ok(None);
+    };
+    let value = value
+        .to_str()
+        .map_err(|_| "invalid MCP session header")?
+        .trim();
+    if value.is_empty() {
+        return Err("empty MCP session header");
+    }
+    Ok(Some(value.to_string()))
 }
 
 fn extract_method(payload: &Value) -> Option<&str> {
@@ -206,6 +367,10 @@ fn is_notification(payload: &Value, method: Option<&str>) -> bool {
         Some("initialized") => true,
         _ => false,
     }
+}
+
+fn is_cancellation_notification(method: Option<&str>) -> bool {
+    method == Some("notifications/cancelled")
 }
 
 fn extract_init_root(payload: &Value) -> Option<String> {
@@ -224,10 +389,37 @@ fn extract_project_root(payload: &Value) -> Option<String> {
     None
 }
 
+fn extract_clone_routing_root(payload: &Value) -> Option<String> {
+    let params = payload.get("params")?.as_object()?;
+    let tool_name = params.get("name")?.as_str()?;
+    if !tool_name.starts_with("docdex_clone_") {
+        return None;
+    }
+    let arguments = params.get("arguments")?.as_object()?;
+    for key in ["current_repo_root", "currentRepoRoot"] {
+        if let Some(value) = arguments.get(key).and_then(Value::as_str) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn extract_stateless_routing_root(payload: &Value, require_repo_id: bool) -> Option<String> {
+    extract_project_root(payload).or_else(|| {
+        require_repo_id
+            .then(|| extract_clone_routing_root(payload))
+            .flatten()
+    })
+}
+
 async fn handle_mcp_batch(
     state: &AppState,
-    router: &crate::mcp::McpProxyRouter,
+    router: &std::sync::Arc<crate::mcp::McpProxyRouter>,
     headers: &HeaderMap,
+    session_id: Option<&str>,
     batch: Vec<Value>,
 ) -> Response {
     if batch.is_empty() {
@@ -237,11 +429,24 @@ async fn handle_mcp_batch(
             "mcp batch must contain at least one request",
         );
     }
+    if batch
+        .iter()
+        .any(|payload| extract_method(payload) == Some("initialize"))
+    {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "MCP initialize must be sent as a standalone request",
+        );
+    }
     let mut responses = Vec::new();
     for payload in batch {
-        match handle_mcp_single(state, router, headers, payload).await {
-            Ok(Some(response)) => responses.push(response),
-            Ok(None) => {}
+        match handle_mcp_single(state, router, headers, session_id, payload).await {
+            Ok(outcome) => {
+                if let Some(response) = outcome.response {
+                    responses.push(response);
+                }
+            }
             Err(response) => return response,
         }
     }
@@ -254,10 +459,11 @@ async fn handle_mcp_batch(
 
 async fn handle_mcp_single(
     state: &AppState,
-    router: &crate::mcp::McpProxyRouter,
+    router: &std::sync::Arc<crate::mcp::McpProxyRouter>,
     headers: &HeaderMap,
+    session_id: Option<&str>,
     mut payload: Value,
-) -> Result<Option<Value>, Response> {
+) -> Result<McpCallOutcome, Response> {
     if !payload.is_object() {
         return Err(json_error(
             StatusCode::BAD_REQUEST,
@@ -266,45 +472,147 @@ async fn handle_mcp_single(
         ));
     }
     let method = extract_method(&payload).map(str::to_string);
-    if is_notification(&payload, method.as_deref()) {
-        return Ok(None);
+    let notification = is_notification(&payload, method.as_deref());
+    let cancellation_notification = is_cancellation_notification(method.as_deref());
+    if notification && session_id.is_none() {
+        if cancellation_notification {
+            return Err(json_error(
+                StatusCode::BAD_REQUEST,
+                ERR_INVALID_ARGUMENT,
+                "MCP cancellation requires a valid session header",
+            ));
+        }
+        return Ok(McpCallOutcome {
+            response: None,
+            issued_session_id: None,
+        });
     }
     if method.as_deref() == Some("initialize") {
+        if session_id.is_some() {
+            return Err(json_error(
+                StatusCode::BAD_REQUEST,
+                ERR_INVALID_ARGUMENT,
+                "MCP initialize must not include an existing session header",
+            ));
+        }
         normalize_initialize_payload(&mut payload);
-    }
-    let repo_root = if method.as_deref() == Some("initialize") {
         let resolved = match extract_init_root(&payload) {
             Some(root_uri) => resolve_repo_for_mcp(state, Some(root_uri)),
             None => resolve_repo_for_mcp(state, None),
         };
-        match resolved {
+        let repo_root = match resolved {
             Ok(root) => {
                 ensure_initialize_root(&mut payload, &root);
-                Some(root)
+                root
             }
             Err(err) => return Err(app_error_response(&err)),
+        };
+        authorize_mcp_encrypted_repo(state, headers, &payload, Some(&repo_root)).await?;
+        let issued_session_id = router.create_direct_session().await.map_err(|err| {
+            json_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                ERR_RATE_LIMITED,
+                format!("mcp session unavailable: {err}"),
+            )
+        })?;
+        if let Err(err) = router.bind_session(&issued_session_id, &repo_root).await {
+            router.remove_session(&issued_session_id).await;
+            return Err(json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ERR_INTERNAL_ERROR,
+                format!("mcp proxy failed: {err}"),
+            ));
         }
-    } else if let Some(root_uri) = extract_project_root(&payload) {
-        match resolve_repo_for_mcp(state, Some(root_uri)) {
-            Ok(root) => Some(root),
+        let response = match router.call_for_session(&issued_session_id, payload).await {
+            Ok(response) => response,
             Err(err) => {
-                return Err(app_error_response(&err));
+                router.remove_session(&issued_session_id).await;
+                return Err(mcp_proxy_failure_response(err));
+            }
+        };
+        if response.get("result").is_none() || response.get("error").is_some() {
+            router.remove_session(&issued_session_id).await;
+            return Ok(McpCallOutcome {
+                response: Some(response),
+                issued_session_id: None,
+            });
+        }
+        return Ok(McpCallOutcome {
+            response: Some(response),
+            issued_session_id: Some(issued_session_id),
+        });
+    }
+
+    if let Some(session_id) = session_id {
+        let Some(bound_root) = router.session_repo_root(session_id).await else {
+            return Err(json_error(
+                StatusCode::BAD_REQUEST,
+                ERR_INVALID_ARGUMENT,
+                "unknown or expired MCP session",
+            ));
+        };
+        if let Some(root_uri) = extract_project_root(&payload) {
+            let requested_root = resolve_repo_for_mcp(state, Some(root_uri))
+                .map_err(|err| app_error_response(&err))?;
+            if requested_root != bound_root {
+                return Err(json_error(
+                    StatusCode::BAD_REQUEST,
+                    ERR_INVALID_ARGUMENT,
+                    "MCP session is bound to a different repository",
+                ));
             }
         }
-    } else {
-        match resolve_repo_for_mcp(state, None) {
-            Ok(root) => Some(root),
-            Err(err) => return Err(app_error_response(&err)),
+        authorize_mcp_encrypted_repo(state, headers, &payload, Some(&bound_root)).await?;
+        if notification {
+            let result = if cancellation_notification {
+                router
+                    .call_for_session(session_id, payload)
+                    .await
+                    .map(|_| ())
+            } else {
+                router.touch_bound_session(session_id).await
+            };
+            return match result {
+                Ok(()) => Ok(McpCallOutcome {
+                    response: None,
+                    issued_session_id: None,
+                }),
+                Err(err) => Err(json_error(
+                    StatusCode::BAD_REQUEST,
+                    ERR_INVALID_ARGUMENT,
+                    format!("mcp notification failed: {err}"),
+                )),
+            };
         }
-    };
-    authorize_mcp_encrypted_repo(state, headers, &payload, repo_root.as_ref()).await?;
-    match router.call(repo_root.as_deref(), payload).await {
-        Ok(response) => Ok(Some(response)),
-        Err(err) => Err(json_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            ERR_INTERNAL_ERROR,
-            format!("mcp proxy failed: {err}"),
-        )),
+        return match router.call_for_session(session_id, payload).await {
+            Ok(response) => Ok(McpCallOutcome {
+                response: Some(response),
+                issued_session_id: None,
+            }),
+            Err(err) => Err(mcp_proxy_failure_response(err)),
+        };
+    }
+
+    if notification {
+        return Ok(McpCallOutcome {
+            response: None,
+            issued_session_id: None,
+        });
+    }
+
+    let repo_root =
+        if let Some(root_uri) = extract_stateless_routing_root(&payload, state.require_repo_id) {
+            resolve_repo_for_mcp(state, Some(root_uri)).map_err(|err| app_error_response(&err))?
+        } else {
+            resolve_repo_for_mcp(state, None).map_err(|err| app_error_response(&err))?
+        };
+    authorize_mcp_encrypted_repo(state, headers, &payload, Some(&repo_root)).await?;
+    match router.call(Some(&repo_root), None, payload).await {
+        Ok(response) => Ok(McpCallOutcome {
+            response: Some(response),
+            issued_session_id: None,
+        }),
+        Err(err) => Err(mcp_proxy_failure_response(err)),
     }
 }
 
@@ -330,9 +638,10 @@ async fn authorize_mcp_encrypted_repo(
             ));
         }
     };
+    let operation = mcp_operation(payload).map_err(|err| app_error_response(&err))?;
     match state
         .auth
-        .authorize_repo_access(headers, &repo_id, mcp_operation(payload))
+        .authorize_repo_access(headers, &repo_id, operation)
         .await
     {
         Ok(_) => Ok(()),
@@ -340,24 +649,39 @@ async fn authorize_mcp_encrypted_repo(
     }
 }
 
-fn mcp_operation(payload: &Value) -> RepoOperation {
-    let tool_name = payload
-        .pointer("/params/name")
-        .and_then(|value| value.as_str())
-        .unwrap_or_default();
-    if tool_name.contains("capabilities") {
-        RepoOperation::Capabilities
-    } else if tool_name.contains("snippet") {
-        RepoOperation::Snippet
-    } else if tool_name.contains("open")
-        || tool_name.contains("symbols")
-        || tool_name.contains("ast")
-        || tool_name.contains("impact")
-        || tool_name.contains("dag")
-    {
-        RepoOperation::Open
-    } else {
-        RepoOperation::Search
+fn mcp_operation(payload: &Value) -> Result<RepoOperation, AppError> {
+    match extract_method(payload) {
+        Some("tools/call") => {
+            let tool_name = payload
+                .pointer("/params/name")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            crate::mcp_tool_policy::operation_for_tool(tool_name).ok_or_else(|| {
+                AppError::new(
+                    ERR_SCOPE_DENIED,
+                    format!("MCP tool is not authorized for encrypted repositories: {tool_name}"),
+                )
+            })
+        }
+        Some("resources/read") => Ok(RepoOperation::Open),
+        Some(
+            "tools/list"
+            | "prompts/list"
+            | "prompts/get"
+            | "resources/list"
+            | "resources/templates/list"
+            | "ping"
+            | "notifications/initialized"
+            | "notifications/cancelled",
+        ) => Ok(RepoOperation::Capabilities),
+        Some(method) => Err(AppError::new(
+            ERR_SCOPE_DENIED,
+            format!("MCP method is not authorized for encrypted repositories: {method}"),
+        )),
+        None => Err(AppError::new(
+            ERR_SCOPE_DENIED,
+            "MCP method is required for encrypted repository authorization",
+        )),
     }
 }
 
@@ -475,6 +799,12 @@ mod tests {
     use url::Url;
 
     async fn build_test_state() -> Result<(AppState, TempDir), Box<dyn std::error::Error>> {
+        build_test_state_with_mcp_auth(None).await
+    }
+
+    async fn build_test_state_with_mcp_auth(
+        mcp_auth_token: Option<&str>,
+    ) -> Result<(AppState, TempDir), Box<dyn std::error::Error>> {
         let temp = TempDir::new()?;
         fs::create_dir_all(temp.path())?;
         let repo_root = temp.path().join("repo");
@@ -514,6 +844,9 @@ mod tests {
             exclude_dir: Vec::new(),
             enable_symbol_extraction: true,
         };
+        let mcp_global_state_dir = temp.path().join("mcp-global");
+        let mcp_personal_preferences_root = temp.path().join("mcp-personal-preferences");
+        fs::create_dir_all(&mcp_global_state_dir)?;
         let mcp_router = Some(
             crate::mcp::spawn_proxy_for_serve(
                 repo_args,
@@ -525,7 +858,12 @@ mod tests {
                 String::new(),
                 0,
                 None,
-                None,
+                Some(mcp_global_state_dir),
+                Some(crate::config::MemoryPersonalPreferencesConfig {
+                    storage_root: mcp_personal_preferences_root.to_string_lossy().into_owned(),
+                    ..crate::config::MemoryPersonalPreferencesConfig::default()
+                }),
+                mcp_auth_token.map(str::to_string),
                 None,
                 Arc::new(crate::metrics::DelegationMetrics::default()),
             )
@@ -608,6 +946,44 @@ mod tests {
     }
 
     #[test]
+    fn clone_current_repo_root_only_routes_stateless_multi_repo_calls() {
+        for key in ["current_repo_root", "currentRepoRoot"] {
+            let mut arguments = serde_json::Map::new();
+            arguments.insert(
+                key.to_string(),
+                Value::String("/workspace/project".to_string()),
+            );
+            let payload = json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "docdex_clone_evaluate",
+                    "arguments": Value::Object(arguments)
+                }
+            });
+            assert!(extract_project_root(&payload).is_none());
+            assert!(extract_stateless_routing_root(&payload, false).is_none());
+            assert_eq!(
+                extract_stateless_routing_root(&payload, true).as_deref(),
+                Some("/workspace/project"),
+                "key: {key}"
+            );
+        }
+
+        let unrelated = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "docdex_search",
+                "arguments": { "current_repo_root": "/workspace/project" }
+            }
+        });
+        assert!(extract_stateless_routing_root(&unrelated, true).is_none());
+    }
+
+    #[test]
     fn normalize_initialize_payload_sets_root_from_roots() {
         let temp = TempDir::new().expect("temp dir");
         let repo_root = temp.path().join("repo");
@@ -659,14 +1035,49 @@ mod tests {
         assert!(root.is_none());
     }
 
+    #[test]
+    fn encrypted_repo_mcp_operations_are_exact_and_fail_closed() {
+        let tool_call = |name: &str| {
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": { "name": name, "arguments": {} }
+            })
+        };
+
+        assert_eq!(
+            mcp_operation(&tool_call("docdex_search")).expect("search policy"),
+            RepoOperation::Search
+        );
+        assert_eq!(
+            mcp_operation(&tool_call("docdex_index")).expect("index policy"),
+            RepoOperation::Index
+        );
+        assert_eq!(
+            mcp_operation(&tool_call("docdex_memory_save")).expect("memory policy"),
+            RepoOperation::Admin
+        );
+        assert_eq!(
+            mcp_operation(&json!({ "method": "resources/read" })).expect("resource policy"),
+            RepoOperation::Open
+        );
+        assert_eq!(
+            mcp_operation(&json!({ "method": "tools/list" })).expect("list policy"),
+            RepoOperation::Capabilities
+        );
+        assert!(mcp_operation(&tool_call("docdex_search_and_delete")).is_err());
+        assert!(mcp_operation(&json!({ "method": "unknown/method" })).is_err());
+    }
+
     #[tokio::test]
     async fn mcp_message_rejects_uninitialized_session() -> Result<(), Box<dyn std::error::Error>> {
         let (state, _temp) = build_test_state().await?;
         let router = state.mcp_router.as_ref().expect("mcp router").clone();
-        let (session_id, _rx) = router.create_session().await;
+        let (session_id, _rx) = router.create_session().await?;
 
         let mut headers = HeaderMap::new();
-        headers.insert(SESSION_HEADER, HeaderValue::from_str(&session_id)?);
+        headers.insert(LEGACY_SESSION_HEADER, HeaderValue::from_str(&session_id)?);
         let payload = json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -696,6 +1107,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mcp_pending_overflow_maps_to_too_many_requests(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let response = mcp_proxy_failure_response(
+            AppError::new(
+                crate::error::ERR_BACKOFF_REQUIRED,
+                "MCP session pending request limit reached",
+            )
+            .into(),
+        );
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let body = response.into_body().collect().await?.to_bytes();
+        let payload: serde_json::Value = serde_json::from_slice(&body)?;
+        assert_eq!(
+            payload
+                .get("error")
+                .and_then(|value| value.get("code"))
+                .and_then(Value::as_str),
+            Some(crate::error::ERR_BACKOFF_REQUIRED)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mcp_sse_drop_and_delete_reclaim_router_sessions(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (state, _temp) = build_test_state().await?;
+        let router = state.mcp_router.as_ref().expect("mcp router").clone();
+
+        let response = mcp_sse_handler(State(state.clone())).await;
+        assert!(response.status().is_success());
+        assert_eq!(router.session_count_for_tests().await, 1);
+        drop(response);
+        for _ in 0..50 {
+            if router.session_count_for_tests().await == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(router.session_count_for_tests().await, 0);
+
+        let session_id = router.create_direct_session().await?;
+        let mut headers = HeaderMap::new();
+        headers.insert(MCP_SESSION_HEADER, HeaderValue::from_str(&session_id)?);
+        let deleted = mcp_delete_handler(State(state.clone()), headers.clone()).await;
+        assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+        assert_eq!(router.session_count_for_tests().await, 0);
+        let repeated = mcp_delete_handler(State(state), headers).await;
+        assert_eq!(repeated.status(), StatusCode::BAD_REQUEST);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mcp_http_session_capacity_fails_busy_and_recovers(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (state, _temp) = build_test_state().await?;
+        let router = state.mcp_router.as_ref().expect("mcp router").clone();
+        router.set_max_sessions_for_tests(1);
+        let held_session = router.create_direct_session().await?;
+        let response = mcp_request_handler(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {}
+            })),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(router.remove_session(&held_session).await);
+
+        let recovered = mcp_request_handler(
+            State(state),
+            HeaderMap::new(),
+            Json(json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "initialize",
+                "params": {}
+            })),
+        )
+        .await;
+        assert!(recovered.status().is_success());
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn mcp_http_initialize_defaults_to_repo_root() -> Result<(), Box<dyn std::error::Error>> {
         let (state, _temp) = build_test_state().await?;
         let init_payload = json!({
@@ -707,6 +1206,18 @@ mod tests {
         let init_response =
             mcp_request_handler(State(state.clone()), HeaderMap::new(), Json(init_payload)).await;
         let init_status = init_response.status();
+        let session_id = init_response
+            .headers()
+            .get(MCP_SESSION_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        assert_eq!(
+            init_response
+                .headers()
+                .get(LEGACY_SESSION_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            session_id.as_deref()
+        );
         let init_body = init_response.into_body().collect().await?.to_bytes();
         assert!(
             init_status.is_success(),
@@ -715,6 +1226,12 @@ mod tests {
         );
         let init_value: serde_json::Value = serde_json::from_slice(&init_body)?;
         assert!(init_value.get("result").is_some());
+        let session_id = session_id.unwrap_or_else(|| {
+            panic!(
+                "initialize response omitted session header: {}",
+                String::from_utf8_lossy(&init_body)
+            )
+        });
 
         let tools_payload = json!({
             "jsonrpc": "2.0",
@@ -722,8 +1239,10 @@ mod tests {
             "method": "tools/list",
             "params": {}
         });
+        let mut tools_headers = HeaderMap::new();
+        tools_headers.insert(MCP_SESSION_HEADER, HeaderValue::from_str(&session_id)?);
         let tools_response =
-            mcp_request_handler(State(state), HeaderMap::new(), Json(tools_payload)).await;
+            mcp_request_handler(State(state), tools_headers, Json(tools_payload)).await;
         assert!(tools_response.status().is_success());
         let tools_body = tools_response.into_body().collect().await?.to_bytes();
         let tools_value: serde_json::Value = serde_json::from_slice(&tools_body)?;
@@ -734,14 +1253,322 @@ mod tests {
         assert!(tools.is_some());
         Ok(())
     }
+
+    #[tokio::test]
+    async fn mcp_http_forwards_scoped_cancellation_notifications(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (state, _temp) = build_test_state().await?;
+        let init_response = mcp_request_handler(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {}
+            })),
+        )
+        .await;
+        assert!(init_response.status().is_success());
+        let session_id = init_response
+            .headers()
+            .get(MCP_SESSION_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .expect("initialize session header")
+            .to_string();
+        let mut headers = HeaderMap::new();
+        headers.insert(MCP_SESSION_HEADER, HeaderValue::from_str(&session_id)?);
+
+        let unknown_request = mcp_request_handler(
+            State(state.clone()),
+            headers.clone(),
+            Json(json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/cancelled",
+                "params": { "requestId": 999 }
+            })),
+        )
+        .await;
+        assert_eq!(unknown_request.status(), StatusCode::NO_CONTENT);
+
+        let malformed = mcp_request_handler(
+            State(state.clone()),
+            headers,
+            Json(json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/cancelled",
+                "params": {}
+            })),
+        )
+        .await;
+        assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
+
+        let unscoped = mcp_request_handler(
+            State(state),
+            HeaderMap::new(),
+            Json(json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/cancelled",
+                "params": { "requestId": 999 }
+            })),
+        )
+        .await;
+        assert_eq!(unscoped.status(), StatusCode::BAD_REQUEST);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mcp_http_auth_session_is_server_issued_and_client_isolated(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        Box::pin(assert_mcp_http_auth_session_is_server_issued_and_client_isolated()).await
+    }
+
+    async fn assert_mcp_http_auth_session_is_server_issued_and_client_isolated(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (state, _temp) = build_test_state_with_mcp_auth(Some("secret-token")).await?;
+        let init_a = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "auth_token": "secret-token",
+                "agent_id": "agent-a",
+                "agent_model": "model-a"
+            }
+        });
+        let response_a =
+            mcp_request_handler(State(state.clone()), HeaderMap::new(), Json(init_a)).await;
+        let status_a = response_a.status();
+        let session_a_header = response_a
+            .headers()
+            .get(MCP_SESSION_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let legacy_session_a = response_a
+            .headers()
+            .get(LEGACY_SESSION_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let body_a = response_a.into_body().collect().await?.to_bytes();
+        assert!(
+            status_a.is_success(),
+            "expected authenticated initialize success, got {status_a}: {}",
+            String::from_utf8_lossy(&body_a)
+        );
+        let session_a = session_a_header.expect("session-a header");
+        assert_eq!(legacy_session_a.as_deref(), Some(session_a.as_str()));
+        let value_a: Value = serde_json::from_slice(&body_a)?;
+        assert!(value_a.get("result").is_some());
+
+        let tools_payload = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {}
+        });
+        let no_header = mcp_request_handler(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(tools_payload.clone()),
+        )
+        .await;
+        assert!(no_header.status().is_success());
+        let no_header_body = no_header.into_body().collect().await?.to_bytes();
+        let no_header_value: Value = serde_json::from_slice(&no_header_body)?;
+        assert_eq!(
+            no_header_value
+                .pointer("/error/data/code")
+                .and_then(Value::as_str),
+            Some("unauthorized"),
+            "an ephemeral request must not inherit initialize authorization"
+        );
+
+        let mut forged_headers = HeaderMap::new();
+        forged_headers.insert(MCP_SESSION_HEADER, HeaderValue::from_static("mcp-forged"));
+        let forged = mcp_request_handler(
+            State(state.clone()),
+            forged_headers,
+            Json(tools_payload.clone()),
+        )
+        .await;
+        assert_eq!(forged.status(), StatusCode::BAD_REQUEST);
+
+        let mut session_a_headers = HeaderMap::new();
+        session_a_headers.insert(MCP_SESSION_HEADER, HeaderValue::from_str(&session_a)?);
+        let tools_a = mcp_request_handler(
+            State(state.clone()),
+            session_a_headers,
+            Json(tools_payload.clone()),
+        )
+        .await;
+        assert!(tools_a.status().is_success());
+        let tools_a_body = tools_a.into_body().collect().await?.to_bytes();
+        let tools_a_value: Value = serde_json::from_slice(&tools_a_body)?;
+        assert!(tools_a_value.pointer("/result/tools").is_some());
+
+        let init_b = json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "initialize",
+            "params": {
+                "auth_token": "secret-token",
+                "agent_id": "agent-b",
+                "agent_model": "model-b"
+            }
+        });
+        let response_b =
+            mcp_request_handler(State(state.clone()), HeaderMap::new(), Json(init_b)).await;
+        assert!(response_b.status().is_success());
+        let session_b = response_b
+            .headers()
+            .get(MCP_SESSION_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .expect("session-b header")
+            .to_string();
+        assert_ne!(session_a, session_b);
+        let body_b = response_b.into_body().collect().await?.to_bytes();
+        let value_b: Value = serde_json::from_slice(&body_b)?;
+        assert!(value_b.get("result").is_some());
+
+        let router = state.mcp_router.as_ref().expect("mcp router");
+        assert_eq!(
+            router.session_state_for_tests(&session_a).await,
+            Some((
+                true,
+                Some("agent-a".to_string()),
+                Some("model-a".to_string())
+            ))
+        );
+        assert_eq!(
+            router.session_state_for_tests(&session_b).await,
+            Some((
+                true,
+                Some("agent-b".to_string()),
+                Some("model-b".to_string())
+            ))
+        );
+
+        let mut session_b_headers = HeaderMap::new();
+        session_b_headers.insert(LEGACY_SESSION_HEADER, HeaderValue::from_str(&session_b)?);
+        let tools_b = mcp_request_handler(
+            State(state.clone()),
+            session_b_headers,
+            Json(tools_payload.clone()),
+        )
+        .await;
+        assert!(tools_b.status().is_success());
+        let tools_b_body = tools_b.into_body().collect().await?.to_bytes();
+        let tools_b_value: Value = serde_json::from_slice(&tools_b_body)?;
+        assert!(tools_b_value.pointer("/result/tools").is_some());
+
+        let mut conflict_headers = HeaderMap::new();
+        conflict_headers.insert(MCP_SESSION_HEADER, HeaderValue::from_str(&session_a)?);
+        conflict_headers.insert(LEGACY_SESSION_HEADER, HeaderValue::from_str(&session_b)?);
+        let conflict = mcp_request_handler(
+            State(state.clone()),
+            conflict_headers,
+            Json(tools_payload.clone()),
+        )
+        .await;
+        assert_eq!(conflict.status(), StatusCode::BAD_REQUEST);
+
+        let rejected_initialize = mcp_request_handler(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(json!({
+                "jsonrpc": "2.0",
+                "id": 40,
+                "method": "initialize",
+                "params": { "auth_token": "wrong-token" }
+            })),
+        )
+        .await;
+        assert!(rejected_initialize.status().is_success());
+        assert!(rejected_initialize
+            .headers()
+            .get(MCP_SESSION_HEADER)
+            .is_none());
+        assert!(rejected_initialize
+            .headers()
+            .get(LEGACY_SESSION_HEADER)
+            .is_none());
+        let rejected_body = rejected_initialize.into_body().collect().await?.to_bytes();
+        let rejected_value: Value = serde_json::from_slice(&rejected_body)?;
+        assert_eq!(
+            rejected_value
+                .pointer("/error/data/code")
+                .and_then(Value::as_str),
+            Some("unauthorized")
+        );
+
+        let mut reinitialize_headers = HeaderMap::new();
+        reinitialize_headers.insert(MCP_SESSION_HEADER, HeaderValue::from_str(&session_a)?);
+        let reinitialize = mcp_request_handler(
+            State(state),
+            reinitialize_headers,
+            Json(json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "initialize",
+                "params": { "auth_token": "secret-token" }
+            })),
+        )
+        .await;
+        assert_eq!(reinitialize.status(), StatusCode::BAD_REQUEST);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mcp_http_batch_rejects_initialize_without_leaking_session_state(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (state, _temp) = build_test_state_with_mcp_auth(Some("secret-token")).await?;
+        let payload = json!([
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "auth_token": "secret-token" }
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/list",
+                "params": {}
+            }
+        ]);
+        let response = mcp_request_handler(State(state), HeaderMap::new(), Json(payload)).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(response.headers().get(MCP_SESSION_HEADER).is_none());
+        assert!(response.headers().get(LEGACY_SESSION_HEADER).is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mcp_http_multi_repo_initialize_without_root_fails_closed(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (mut state, _temp) = build_test_state().await?;
+        state.require_repo_id = true;
+        let init_payload = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {}
+        });
+
+        let response =
+            mcp_request_handler(State(state), HeaderMap::new(), Json(init_payload)).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response.into_body().collect().await?.to_bytes();
+        let value: serde_json::Value = serde_json::from_slice(&body)?;
+        assert_eq!(
+            value.pointer("/error/code").and_then(Value::as_str),
+            Some("missing_repo")
+        );
+        Ok(())
+    }
 }
 
 fn resolve_repo_for_mcp(state: &AppState, root_uri: Option<String>) -> Result<PathBuf, AppError> {
-    let mut root_uri = root_uri;
-    if root_uri.is_none() && state.require_repo_id {
-        // Allow MCP clients that omit rootUri (e.g. Codex) to initialize in daemon mode.
-        root_uri = Some(state.indexer.repo_root().to_string_lossy().to_string());
-    }
     if let Some(root_uri) = root_uri.as_deref() {
         let candidate = parse_root_uri(root_uri)?;
         if !candidate.exists() {

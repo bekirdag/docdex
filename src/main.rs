@@ -25,5 +25,9 @@ fn run_with_runtime() -> Result<(), anyhow::Error> {
         .enable_all()
         .build()
         .map_err(anyhow::Error::from)?;
-    runtime.block_on(docdexd::cli::run())
+    let result = runtime.block_on(docdexd::cli::run());
+    // Detached blocking work must not keep a terminating daemon resident
+    // indefinitely after its bounded HTTP drain and resource cleanup complete.
+    runtime.shutdown_timeout(std::time::Duration::from_secs(2));
+    result
 }

@@ -14,11 +14,16 @@ use crate::web::cache;
 use crate::web::chrome::ChromeFetchResult;
 use crate::web::ddg::{DdgDiscovery, WebDiscoveryResponse, WebDiscoveryResult};
 use crate::web::normalize::{dedupe_urls, unwrap_ddg_redirect};
+use crate::web::policy::{
+    host_matches_blocklist, public_dns_resolver, send_with_outbound_policy, validate_outbound_url,
+    validate_outbound_url_structure,
+};
 use crate::web::readability::extract_readable_text;
 use crate::web::scraper::ScraperEngine;
 use crate::web::status::fetch_status;
 use crate::web::WebConfig;
 use anyhow::{anyhow, Context};
+use futures::StreamExt;
 use once_cell::sync::Lazy;
 use reqwest::header::{HeaderValue, ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
@@ -51,8 +56,11 @@ const WEB_BATCH_SIZE: usize = 10;
 const WEB_MAX_BATCHES: usize = 2;
 const WEB_FETCH_BUDGET_DEFAULT_MS: u64 = 45_000;
 const WEB_FETCH_BUDGET_MIN_MS: u64 = 5_000;
+const WEB_FETCH_BUDGET_MAX_MS: u64 = 5 * 60_000;
 const WEB_FETCH_MIN_REMAINING_MS: u64 = 1_000;
 const WEB_DIRECT_FETCH_MAX_BYTES_DEFAULT: usize = 1_500_000;
+const WEB_DIRECT_FETCH_MAX_BYTES_HARD_LIMIT: usize = 16 * 1024 * 1024;
+const MSWARM_ANSWER_CACHE_MAX_BYTES: usize = 2 * 1024 * 1024;
 const MAX_CODE_BLOCKS: usize = 4;
 const MAX_CODE_BLOCK_CHARS: usize = 1800;
 const WEB_GOOD_RELEVANCE_SCORE: f32 = 0.7;
@@ -1615,26 +1623,6 @@ pub(crate) fn evaluate_gate_status(
         };
     }
 
-    if !gate.browser_available {
-        let message = match gate.browser_hint.as_deref() {
-            Some(hint) => format!("web browser not available: {hint}; run `docdexd browser setup`"),
-            None => "web browser not available; run `docdexd browser setup`".to_string(),
-        };
-        let unavailable =
-            Tier2Unavailable::new(Tier2UnavailableReason::StartupFailed, message.clone())
-                .with_correlation_id(request_id);
-        return WebDiscoveryStatus {
-            status: WebDiscoveryStatusCode::Unavailable,
-            reason: Some("missing_dependency".to_string()),
-            message: Some(message),
-            unavailable: Some(unavailable),
-            discovery: None,
-            fetches: None,
-            debug: None,
-            gate: gate_meta,
-        };
-    }
-
     let unavailable = Tier2Unavailable::new(
         Tier2UnavailableReason::StartupFailed,
         "web discovery is not configured",
@@ -1796,32 +1784,6 @@ async fn run_web_discovery(
         };
     }
 
-    if !gate.browser_available {
-        let message = match gate.browser_hint.as_deref() {
-            Some(hint) => format!("web browser not available: {hint}; run `docdexd browser setup`"),
-            None => "web browser not available; run `docdexd browser setup`".to_string(),
-        };
-        let unavailable =
-            Tier2Unavailable::new(Tier2UnavailableReason::StartupFailed, message.clone())
-                .with_correlation_id(request_id);
-        return WebDiscoveryStatus {
-            status: WebDiscoveryStatusCode::Unavailable,
-            reason: Some("missing_dependency".to_string()),
-            message: Some(message),
-            unavailable: Some(unavailable),
-            discovery: None,
-            fetches: None,
-            debug: None,
-            gate: build_gate_meta(
-                gate,
-                top_score,
-                top_score_normalized,
-                local_match_ratio,
-                force_web,
-            ),
-        };
-    }
-
     let discovery = match DdgDiscovery::new(config.clone()) {
         Ok(discovery) => discovery,
         Err(err) => {
@@ -1964,15 +1926,10 @@ async fn run_web_discovery(
                 llm_agent,
             )
             .await;
-            let message = if gate.browser_available {
-                None
-            } else {
-                Some("web discovery complete; browser unavailable for fetch".to_string())
-            };
             WebDiscoveryStatus {
                 status: WebDiscoveryStatusCode::Served,
                 reason: Some("discovery".to_string()),
-                message,
+                message: None,
                 unavailable: None,
                 discovery: Some(discovery_response),
                 fetches: if fetches.is_empty() {
@@ -2031,8 +1988,12 @@ async fn lookup_mswarm_answer_cache(
         .mswarm_base_url
         .join("/v1/swarm/web/answer-cache/lookup")
         .ok()?;
+    validate_outbound_url(&url).await.ok()?;
     let client = reqwest::Client::builder()
+        .dns_resolver(public_dns_resolver())
+        .no_proxy()
         .timeout(Duration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .ok()?;
     let response = client
@@ -2049,10 +2010,27 @@ async fn lookup_mswarm_answer_cache(
     if !response.status().is_success() {
         return None;
     }
-    let payload = response
-        .json::<MswarmAnswerCacheLookupResponse>()
-        .await
-        .ok()?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MSWARM_ANSWER_CACHE_MAX_BYTES as u64)
+    {
+        return None;
+    }
+    let mut body = Vec::with_capacity(
+        response
+            .content_length()
+            .unwrap_or_default()
+            .min(MSWARM_ANSWER_CACHE_MAX_BYTES as u64) as usize,
+    );
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.ok()?;
+        if body.len().saturating_add(chunk.len()) > MSWARM_ANSWER_CACHE_MAX_BYTES {
+            return None;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let payload = serde_json::from_slice::<MswarmAnswerCacheLookupResponse>(&body).ok()?;
     if !payload.found {
         return None;
     }
@@ -2322,23 +2300,7 @@ fn is_allowed_url(raw: &str, blocklist: &[String]) -> bool {
         Ok(url) => url,
         Err(_) => return false,
     };
-    let host = match url.host_str() {
-        Some(host) => host.trim().to_ascii_lowercase(),
-        None => return false,
-    };
-    if host.is_empty() {
-        return false;
-    }
-    for entry in blocklist {
-        let trimmed = entry.trim().trim_start_matches('.').to_ascii_lowercase();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if host == trimmed || host.ends_with(&format!(".{trimmed}")) {
-            return false;
-        }
-    }
-    true
+    validate_outbound_url_structure(&url).is_ok() && !host_matches_blocklist(&url, blocklist)
 }
 
 fn url_contains_any(haystack: &str, needles: &[&str]) -> bool {
@@ -2614,25 +2576,9 @@ async fn fetch_web_documents(
     let summary_client = load_web_summary_client(llm_model, llm_agent);
     let debug_enabled = env_boolish("DOCDEX_WEB_DEBUG").unwrap_or(false);
     let early_stop_score = early_stop_score.clamp(0.0, 1.0);
-    let scraper = match ScraperEngine::from_web_config(config) {
-        Ok(scraper) => scraper,
-        Err(err) => {
-            return vec![WebFetchResult {
-                url: String::new(),
-                status: None,
-                fetched_at_epoch_ms: None,
-                cached: false,
-                content: None,
-                ai_digested_content: None,
-                ai_digested_kind: None,
-                relevance_score: None,
-                debug_html: None,
-                debug_dom_text: None,
-                error: Some(err.to_string()),
-                debug: None,
-            }];
-        }
-    };
+    let mut scraper: Option<ScraperEngine> = None;
+    let mut scraper_resolution_attempted = false;
+    let mut scraper_unavailable_reason: Option<String> = None;
     let boilerplate_phrases = &config.boilerplate_phrases;
 
     let mut all_results = Vec::new();
@@ -2683,6 +2629,25 @@ async fn fetch_web_documents(
                 Ok(url) => url,
                 Err(_) => continue,
             };
+            if validate_outbound_url_structure(&url).is_err()
+                || host_matches_blocklist(&url, &config.blocklist)
+            {
+                push_result!(WebFetchResult {
+                    url: url.to_string(),
+                    status: None,
+                    fetched_at_epoch_ms: None,
+                    cached: false,
+                    content: None,
+                    ai_digested_content: None,
+                    ai_digested_kind: None,
+                    relevance_score: None,
+                    debug_html: None,
+                    debug_dom_text: None,
+                    error: Some("url blocked by outbound request policy".to_string()),
+                    debug: None,
+                });
+                continue;
+            }
             if debug_enabled {
                 info!("web fetch start url={}", url.as_str());
             }
@@ -2723,6 +2688,35 @@ async fn fetch_web_documents(
             }
 
             if content.is_none() {
+                let validation = match remaining_budget(deadline) {
+                    Some(remaining)
+                        if remaining <= Duration::from_millis(WEB_FETCH_MIN_REMAINING_MS) =>
+                    {
+                        budget_exhausted = true;
+                        break;
+                    }
+                    Some(remaining) => {
+                        tokio::time::timeout(remaining, validate_outbound_url(&url)).await
+                    }
+                    None => Ok(validate_outbound_url(&url).await),
+                };
+                if !matches!(validation, Ok(Ok(()))) {
+                    push_result!(WebFetchResult {
+                        url: url.to_string(),
+                        status: None,
+                        fetched_at_epoch_ms: None,
+                        cached: false,
+                        content: None,
+                        ai_digested_content: None,
+                        ai_digested_kind: None,
+                        relevance_score: None,
+                        debug_html: debug_html.clone(),
+                        debug_dom_text: debug_dom_text.clone(),
+                        error: Some("url blocked by outbound request policy".to_string()),
+                        debug: None,
+                    });
+                    continue;
+                }
                 let now_ms = now_epoch_ms_u64();
                 if let Some(layout) = layout.as_ref() {
                     if let Some(until_ms) = domain_in_cooldown(layout, &host, now_ms) {
@@ -2752,7 +2746,20 @@ async fn fetch_web_documents(
                         continue;
                     }
                 }
-                crate::web::fetch::enforce_domain_delay(&url, config.fetch_delay).await;
+                if let Some(remaining) = remaining_budget(deadline) {
+                    if tokio::time::timeout(
+                        remaining,
+                        crate::web::fetch::enforce_domain_delay(&url, config.fetch_delay),
+                    )
+                    .await
+                    .is_err()
+                    {
+                        budget_exhausted = true;
+                        break;
+                    }
+                } else {
+                    crate::web::fetch::enforce_domain_delay(&url, config.fetch_delay).await;
+                }
                 fetched_at_epoch_ms = Some(now_epoch_ms());
                 let status_timeout = match remaining_budget(deadline) {
                     Some(remaining) => config.request_timeout.min(remaining),
@@ -2762,7 +2769,15 @@ async fn fetch_web_documents(
                     budget_exhausted = true;
                     break;
                 }
-                let status_probe = fetch_status(&url, &config.user_agent, status_timeout).await;
+                let status_probe = match tokio::time::timeout(
+                    status_timeout,
+                    fetch_status(&url, &config.user_agent, status_timeout),
+                )
+                .await
+                {
+                    Ok(status) => status,
+                    Err(_) => None,
+                };
                 if should_skip_status(status_probe) {
                     if debug_enabled {
                         info!(
@@ -2795,13 +2810,32 @@ async fn fetch_web_documents(
                     budget_exhausted = true;
                     break;
                 }
-                let mut dom_result = if deadline.is_some() {
-                    match tokio::time::timeout(dom_timeout, scraper.fetch_dom(&url)).await {
-                        Ok(result) => result,
-                        Err(_) => Err(anyhow!("web fetch timed out")),
+                if !scraper_resolution_attempted {
+                    scraper_resolution_attempted = true;
+                    scraper = ScraperEngine::from_web_config_if_available(config);
+                    if scraper.is_none() {
+                        scraper_unavailable_reason = Some(
+                            "chromium browser is unavailable; managed installation was scheduled"
+                                .to_string(),
+                        );
+                    }
+                }
+                let mut dom_result = if let Some(scraper) = scraper.as_ref() {
+                    if deadline.is_some() {
+                        match tokio::time::timeout(dom_timeout, scraper.fetch_dom(&url)).await {
+                            Ok(result) => result,
+                            Err(_) => Err(anyhow!("web fetch timed out")),
+                        }
+                    } else {
+                        scraper.fetch_dom(&url).await
                     }
                 } else {
-                    scraper.fetch_dom(&url).await
+                    Err(anyhow!(
+                        "{}",
+                        scraper_unavailable_reason
+                            .as_deref()
+                            .unwrap_or("chromium browser is unavailable")
+                    ))
                 };
                 if dom_result.is_err() {
                     let direct_timeout = match remaining_budget(deadline) {
@@ -2809,11 +2843,14 @@ async fn fetch_web_documents(
                         None => config.request_timeout,
                     };
                     if direct_timeout > Duration::from_millis(WEB_FETCH_MIN_REMAINING_MS) {
-                        if let Ok(direct_result) = fetch_dom_direct(
-                            &url,
-                            &config.user_agent,
+                        if let Ok(Ok(direct_result)) = tokio::time::timeout(
                             direct_timeout,
-                            direct_max_bytes,
+                            fetch_dom_direct(
+                                &url,
+                                &config.user_agent,
+                                direct_timeout,
+                                direct_max_bytes,
+                            ),
                         )
                         .await
                         {
@@ -3416,22 +3453,31 @@ async fn fetch_dom_direct(
         return Err(anyhow!("direct fetch timeout is zero"));
     }
     let client = reqwest::Client::builder()
+        .dns_resolver(public_dns_resolver())
+        .no_proxy()
         .user_agent(user_agent.to_string())
         .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .context("build direct fetch client")?;
-    let resp = client
-        .get(url.clone())
-        .header(
-            ACCEPT,
-            HeaderValue::from_static(
-                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            ),
-        )
-        .header(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.9"))
-        .send()
-        .await
-        .context("direct fetch request failed")?;
+    let resp = send_with_outbound_policy(
+        &client,
+        reqwest::Method::GET,
+        url.clone(),
+        |client, method, url| {
+            client
+                .request(method, url)
+                .header(
+                    ACCEPT,
+                    HeaderValue::from_static(
+                        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    ),
+                )
+                .header(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.9"))
+        },
+    )
+    .await
+    .context("direct fetch request failed")?;
     let status = resp.status();
     if !status.is_success() {
         return Err(anyhow!("direct fetch failed with status {status}"));
@@ -3458,14 +3504,17 @@ async fn fetch_dom_direct(
         }
     }
     let final_url = resp.url().to_string();
-    let bytes = resp.bytes().await.context("read direct fetch body")?;
-    if bytes.len() > max_bytes {
-        return Err(anyhow!(
-            "direct fetch body size {} exceeds max {max_bytes}",
-            bytes.len()
-        ));
+    let mut body =
+        Vec::with_capacity(resp.content_length().unwrap_or(0).min(max_bytes as u64) as usize);
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("read direct fetch body")?;
+        if body.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(anyhow!("direct fetch body size exceeds max {max_bytes}"));
+        }
+        body.extend_from_slice(&chunk);
     }
-    let html = String::from_utf8_lossy(&bytes).to_string();
+    let html = String::from_utf8_lossy(&body).to_string();
     if html.trim().is_empty() {
         return Err(anyhow!("direct fetch returned empty body"));
     }
@@ -5303,7 +5352,7 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_gate_status_reports_unavailable_without_browser() {
+    fn browser_absence_is_capability_metadata_not_a_tier2_gate() {
         let gate = WebGateConfig {
             enabled: true,
             trigger_threshold: 0.45,
@@ -5313,8 +5362,21 @@ mod tests {
         };
         let status = evaluate_gate_status("req", &gate, Some(0.1), Some(0.1), None, false, false);
         assert_eq!(status.status, WebDiscoveryStatusCode::Unavailable);
-        assert_eq!(status.reason.as_deref(), Some("missing_dependency"));
-        assert!(status.message.as_deref().unwrap().contains("chromium"));
+        assert_eq!(status.reason.as_deref(), Some("not_configured"));
+        assert!(!gate.browser_available);
+    }
+
+    #[test]
+    fn discovery_url_filter_applies_shared_outbound_policy() {
+        assert!(!is_allowed_url("file:///etc/passwd", &[]));
+        assert!(!is_allowed_url("http://127.0.0.1/admin", &[]));
+        assert!(!is_allowed_url("https://user:pass@example.com", &[]));
+        assert!(!is_allowed_url("https://metadata.google.internal/", &[]));
+        assert!(!is_allowed_url(
+            "https://docs.example.com/",
+            &["example.com".to_string()]
+        ));
+        assert!(is_allowed_url("https://example.com/docs", &[]));
     }
 
     #[test]
@@ -5353,6 +5415,19 @@ mod tests {
         let resolved = resolve_llm_client_from_config(&config, Some("qwen2.5-coder:latest"), None)
             .expect("model override client");
         assert_eq!(resolved.label, "qwen2.5-coder:latest");
+    }
+
+    #[test]
+    fn direct_fetch_limit_clamps_environment_overrides() {
+        assert_eq!(
+            clamp_direct_fetch_max_bytes(None),
+            WEB_DIRECT_FETCH_MAX_BYTES_DEFAULT
+        );
+        assert_eq!(clamp_direct_fetch_max_bytes(Some(1)), 1_024);
+        assert_eq!(
+            clamp_direct_fetch_max_bytes(Some(usize::MAX)),
+            WEB_DIRECT_FETCH_MAX_BYTES_HARD_LIMIT
+        );
     }
 }
 
@@ -5404,9 +5479,13 @@ fn env_string(key: &str) -> Option<String> {
 }
 
 fn resolve_direct_fetch_max_bytes() -> usize {
-    env_usize("DOCDEX_WEB_DIRECT_FETCH_MAX_BYTES")
+    clamp_direct_fetch_max_bytes(env_usize("DOCDEX_WEB_DIRECT_FETCH_MAX_BYTES"))
+}
+
+fn clamp_direct_fetch_max_bytes(configured: Option<usize>) -> usize {
+    configured
         .unwrap_or(WEB_DIRECT_FETCH_MAX_BYTES_DEFAULT)
-        .max(1024)
+        .clamp(1024, WEB_DIRECT_FETCH_MAX_BYTES_HARD_LIMIT)
 }
 
 fn resolve_web_llm_concurrency() -> usize {
@@ -5506,10 +5585,9 @@ fn resolve_fetch_url_limit(target_count: usize, total: usize) -> usize {
 fn resolve_web_fetch_budget(config: &WebConfig, target_count: usize) -> Option<Duration> {
     let env_ms = env_u64("DOCDEX_WEB_FETCH_BUDGET_MS");
     if let Some(ms) = env_ms {
-        if ms == 0 {
-            return None;
-        }
-        return Some(Duration::from_millis(ms.max(WEB_FETCH_BUDGET_MIN_MS)));
+        return Some(Duration::from_millis(
+            ms.clamp(WEB_FETCH_BUDGET_MIN_MS, WEB_FETCH_BUDGET_MAX_MS),
+        ));
     }
     let per_item_ms = config
         .request_timeout

@@ -578,6 +578,26 @@ impl ImpactGraphStore {
             .cloned())
     }
 
+    /// Read the current graph for a write operation. A missing graph is the
+    /// valid initial state for the first incremental ingest into a new index;
+    /// query-facing reads intentionally continue to report `missing_index`.
+    pub(crate) fn read_snapshot_for_update(
+        &self,
+    ) -> Result<(Vec<ImpactGraphEdge>, HashMap<String, ImpactDiagnostics>)> {
+        match self.read_parsed_graph() {
+            Ok(graph) => Ok((graph.edges, graph.diagnostics_map)),
+            Err(err)
+                if err
+                    .downcast_ref::<AppError>()
+                    .is_some_and(|app| app.code == ERR_MISSING_INDEX) =>
+            {
+                invalidate_impact_graph_cache(&self.path);
+                Ok((Vec::new(), HashMap::new()))
+            }
+            Err(err) => Err(err),
+        }
+    }
+
     pub fn write_graph(
         &self,
         repo_id: &str,

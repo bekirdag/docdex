@@ -68,7 +68,7 @@ impl McpServer {
         query: Option<Vec<(&str, String)>>,
         body: Option<Value>,
     ) -> Result<Value> {
-        let base_url = resolve_docdexd_base_url()?;
+        let base_url = resolve_docdexd_base_url(self.docdex_http_base_url.as_deref())?;
         let client = docdexd_http_client()?;
         let url = format!(
             "{}/{}",
@@ -107,7 +107,7 @@ impl McpServer {
     }
 
     pub(super) async fn call_index_endpoint(&self, path: &str, body: Value) -> Result<Value> {
-        let base_url = resolve_docdexd_base_url()?;
+        let base_url = resolve_docdexd_base_url(self.docdex_http_base_url.as_deref())?;
         let client = docdexd_http_client()?;
         let url = format!(
             "{}/{}",

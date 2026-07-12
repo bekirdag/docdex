@@ -1572,6 +1572,8 @@ pub struct PersonalPreferencesTranscriptScanSummary {
 }
 
 pub(super) const DB_FILE: &str = "personal_preferences.db";
+// The 0.2.86 migration changes startup coordination, not the persisted schema.
+// Keep v9 so rollback to 0.2.85 does not cross a storage-version boundary.
 pub(super) const SCHEMA_VERSION: u32 = 9;
 pub(super) const DIGEST_STATUS_PENDING: &str = "pending";
 pub(super) const DIGEST_STATUS_PROCESSING: &str = "processing";

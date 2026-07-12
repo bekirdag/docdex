@@ -23,31 +23,21 @@ pub(crate) fn apply_browser_defaults(config: &mut AppConfig) -> bool {
         .as_deref()
         .map(|kind| kind.trim())
         .unwrap_or("");
-    if browser_kind.is_empty() || !browser_kind.eq_ignore_ascii_case("chromium") {
+    if browser_kind.is_empty() {
         config.web.scraper.browser_kind = Some("chromium".to_string());
         updated = true;
     }
-    if let Some(path) = config.web.scraper.chrome_binary_path.as_ref() {
-        if !path.is_file() {
-            config.web.scraper.chrome_binary_path = None;
+    let configured_path_is_valid = config
+        .web
+        .scraper
+        .chrome_binary_path
+        .as_ref()
+        .is_some_and(|path| path.is_file());
+    if !configured_path_is_valid {
+        let resolved = crate::web::browser_install::resolve_installed_browser();
+        if config.web.scraper.chrome_binary_path != resolved {
+            config.web.scraper.chrome_binary_path = resolved;
             updated = true;
-        }
-    }
-
-    let resolved = crate::web::browser_install::resolve_installed_browser();
-
-    match resolved {
-        Some(path) => {
-            if config.web.scraper.chrome_binary_path.as_ref() != Some(&path) {
-                config.web.scraper.chrome_binary_path = Some(path);
-                updated = true;
-            }
-        }
-        None => {
-            if config.web.scraper.chrome_binary_path.is_some() {
-                config.web.scraper.chrome_binary_path = None;
-                updated = true;
-            }
         }
     }
 

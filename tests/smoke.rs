@@ -18,6 +18,23 @@ fn docdex_bin() -> PathBuf {
     assert_cmd::cargo::cargo_bin!("docdexd").to_path_buf()
 }
 
+fn isolated_docdex_command(state_root: &Path) -> Command {
+    let home = state_root.join("home");
+    let xdg_config = state_root.join("xdg-config");
+    let app_data = state_root.join("app-data");
+    fs::create_dir_all(&home).expect("create isolated test home");
+    fs::create_dir_all(&xdg_config).expect("create isolated test XDG config root");
+    fs::create_dir_all(&app_data).expect("create isolated test app-data root");
+    let mut command = Command::new(docdex_bin());
+    command
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .env("XDG_CONFIG_HOME", &xdg_config)
+        .env("APPDATA", &app_data)
+        .env("DOCDEX_DISABLE_MCODA_CLI", "1");
+    command
+}
+
 fn write_fixture_repo(repo_root: &Path) -> Result<(), Box<dyn Error>> {
     let docs_dir = repo_root.join("docs");
     fs::create_dir_all(&docs_dir)?;
@@ -85,7 +102,7 @@ where
     S: AsRef<std::ffi::OsStr>,
 {
     let config_path = state_root.join("config.toml");
-    let output = Command::new(docdex_bin())
+    let output = isolated_docdex_command(state_root)
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env_remove("DOCDEX_ENABLE_SYMBOL_EXTRACTION")
@@ -108,7 +125,7 @@ fn inspect_repo_state(state_root: &Path, repo_root: &Path) -> Result<Value, Box<
     let repo_str = repo_root.to_string_lossy().to_string();
     let state_root_str = state_root.to_string_lossy().to_string();
     let config_path = state_root.join("config.toml");
-    let output = Command::new(docdex_bin())
+    let output = isolated_docdex_command(state_root)
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_CONFIG_PATH", config_path)
@@ -171,6 +188,31 @@ fn wait_for_health_with_token(
     let url = format!("http://{host}:{port}/healthz");
     let deadline = Instant::now() + Duration::from_secs(20);
     while Instant::now() < deadline {
+        let mut request = client.get(&url);
+        if let Some(token) = token {
+            request = request.header("Authorization", format!("Bearer {token}"));
+        }
+        match request.send() {
+            Ok(resp) if resp.status().is_success() => return Ok(()),
+            _ => thread::sleep(Duration::from_millis(200)),
+        }
+    }
+    Err("docdexd healthz endpoint did not respond in time".into())
+}
+
+fn wait_for_child_health(
+    child: &mut Child,
+    host: &str,
+    port: u16,
+    token: Option<&str>,
+) -> Result<(), Box<dyn Error>> {
+    let client = Client::builder().timeout(Duration::from_secs(1)).build()?;
+    let url = format!("http://{host}:{port}/healthz");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < deadline {
+        if let Some(status) = child.try_wait()? {
+            return Err(format!("docdexd exited before healthz was ready: {status}").into());
+        }
         let mut request = client.get(&url);
         if let Some(token) = token {
             request = request.header("Authorization", format!("Bearer {token}"));
@@ -494,7 +536,9 @@ fn spawn_server_with_args(
         "warn",
     ];
     args.extend_from_slice(extra_args);
-    let child = Command::new(docdex_bin())
+    let stderr_path = state_root.join(format!("server-{port}.stderr.log"));
+    let stderr_file = fs::File::create(&stderr_path)?;
+    let mut child = isolated_docdex_command(state_root)
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root)
@@ -504,9 +548,29 @@ fn spawn_server_with_args(
         .env("DOCDEX_TEST_ALLOW_MULTI_DAEMON", "1")
         .args(args)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::from(stderr_file))
         .spawn()?;
-    wait_for_health_with_token(host, port, health_token)?;
+    let health_started = Instant::now();
+    if let Err(err) = wait_for_child_health(&mut child, host, port, health_token) {
+        if child.try_wait()?.is_none() {
+            child.kill().ok();
+            child.wait().ok();
+        }
+        let stderr = fs::read_to_string(&stderr_path).unwrap_or_default();
+        return Err(format!(
+            "{err}; daemon stderr: {}",
+            stderr.trim().chars().take(2_000).collect::<String>()
+        )
+        .into());
+    }
+    if std::env::var_os("DOCDEX_TEST_SHOW_SERVER_LOGS").is_some() {
+        let stderr = fs::read_to_string(&stderr_path).unwrap_or_default();
+        eprintln!(
+            "docdexd test server on port {port} became ready in {:?}; stderr: {}",
+            health_started.elapsed(),
+            stderr.trim()
+        );
+    }
     Ok(child)
 }
 
@@ -848,7 +912,7 @@ fn non_loopback_plain_http_requires_tls_or_opt_out() -> Result<(), Box<dyn Error
     let token = "secret-token";
     let lock_path = state_root.path().join("daemon.lock");
     let config_path = state_root.path().join("config.toml");
-    let failure = Command::new(docdex_bin())
+    let failure = isolated_docdex_command(state_root.path())
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root.path())
@@ -912,7 +976,7 @@ fn non_loopback_plain_http_requires_tls_or_opt_out() -> Result<(), Box<dyn Error
     let Some(opt_out_port) = pick_free_port() else {
         return Ok(());
     };
-    let mut child = Command::new(docdex_bin())
+    let mut child = isolated_docdex_command(state_root.path())
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root.path())
@@ -1422,7 +1486,7 @@ fn self_check_reports_sensitive_terms() -> Result<(), Box<dyn Error>> {
     run_docdex(state_root.path(), ["index", "--repo", repo_str.as_str()])?;
 
     // Self-check should fail when sensitive term is present.
-    let failure = Command::new(docdex_bin())
+    let failure = isolated_docdex_command(state_root.path())
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root.path())
@@ -1445,7 +1509,7 @@ fn self_check_reports_sensitive_terms() -> Result<(), Box<dyn Error>> {
     );
 
     // Self-check passes when term is absent.
-    let success = Command::new(docdex_bin())
+    let success = isolated_docdex_command(state_root.path())
         .env("DOCDEX_WEB_ENABLED", "0")
         .env("DOCDEX_ENABLE_MEMORY", "0")
         .env("DOCDEX_STATE_DIR", state_root.path())

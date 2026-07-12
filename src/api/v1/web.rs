@@ -6,7 +6,6 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::warn;
-use url::Url;
 
 use crate::dag::logging as dag_logging;
 use crate::error::{ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT, ERR_MISSING_DEPENDENCY};
@@ -15,11 +14,13 @@ use crate::memory::repo_state_root_from_state_dir;
 use crate::search::{AppState, RequestId};
 use crate::util;
 use crate::web;
+use crate::web::policy::{parse_and_validate_outbound_url, OutboundUrlError};
 use crate::web::readability::extract_readable_text;
 use crate::web::scraper::ScraperEngine;
 use crate::web::status::fetch_status;
 
 const DAG_SESSION_HEADER: &str = "x-docdex-dag-session";
+const URL_POLICY_ERROR_MESSAGE: &str = "url is not allowed by outbound request policy";
 
 #[derive(Deserialize)]
 pub struct WebSearchRequest {
@@ -182,15 +183,9 @@ pub async fn web_fetch_handler(
             "url is required",
         );
     }
-    let url = match Url::parse(url_raw) {
+    let url = match parse_and_validate_outbound_url(url_raw).await {
         Ok(value) => value,
-        Err(err) => {
-            return json_error(
-                StatusCode::BAD_REQUEST,
-                ERR_INVALID_ARGUMENT,
-                format!("invalid url: {err}"),
-            )
-        }
+        Err(_) => return url_policy_error_response(),
     };
 
     let config = web::WebConfig::from_env();
@@ -234,7 +229,7 @@ pub async fn web_fetch_handler(
         }
     }
 
-    let scraper = match ScraperEngine::from_web_config(&config) {
+    let scraper = match ScraperEngine::from_web_config(&config).await {
         Ok(scraper) => scraper,
         Err(_err) => {
             return json_error_with_details(
@@ -252,6 +247,9 @@ pub async fn web_fetch_handler(
         Err(err) => {
             state.metrics.inc_error();
             warn!(target: "docdexd", error = ?err, "web fetch failed");
+            if err.chain().any(|cause| cause.is::<OutboundUrlError>()) {
+                return url_policy_error_response();
+            }
             return json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 ERR_INTERNAL_ERROR,
@@ -310,6 +308,14 @@ pub async fn web_fetch_handler(
     Json(entry).into_response()
 }
 
+fn url_policy_error_response() -> Response {
+    json_error(
+        StatusCode::BAD_REQUEST,
+        ERR_INVALID_ARGUMENT,
+        URL_POLICY_ERROR_MESSAGE,
+    )
+}
+
 pub async fn web_cache_flush_handler(State(state): State<AppState>) -> Response {
     let Some(layout) = web::cache::cache_layout_from_config() else {
         return Json(serde_json::json!({
@@ -358,7 +364,7 @@ fn browser_missing_details(config: &web::WebConfig) -> serde_json::Value {
     let manifest = util::read_chromium_manifest();
     let browser = manifest
         .as_ref()
-        .filter(|manifest| manifest.path.is_file())
+        .filter(|manifest| util::chromium_manifest_is_usable(manifest))
         .map(|manifest| {
             serde_json::json!({
                 "version": manifest.version,
@@ -373,4 +379,21 @@ fn browser_missing_details(config: &web::WebConfig) -> serde_json::Value {
         "manifest_path": manifest_path.map(|path| path.to_string_lossy().to_string()),
         "chromium": browser,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn blocked_url_response_has_stable_invalid_argument_shape() {
+        let response = url_policy_error_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), 16 * 1024)
+            .await
+            .expect("error body");
+        let value: serde_json::Value = serde_json::from_slice(&body).expect("error json");
+        assert_eq!(value["error"]["code"], ERR_INVALID_ARGUMENT);
+        assert_eq!(value["error"]["message"], URL_POLICY_ERROR_MESSAGE);
+    }
 }

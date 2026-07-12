@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::env;
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -251,12 +252,16 @@ impl McpProxy {
             .await
             .clone()
             .ok_or_else(|| anyhow!("mcp proxy shutdown"))?;
-        let request = async {
+        // McpService's generated dispatch future is intentionally boxed at the
+        // proxy boundary. Inlining it into every caller made McpProxy::call's
+        // debug future exceed the default 2 MiB Rust test-thread stack on
+        // Linux with Rust 1.97, and the same oversized future is unnecessary
+        // per-request state in production tasks.
+        let request: Pin<Box<dyn Future<Output = Result<Option<Value>>> + Send + '_>> =
             match session_id {
-                Some(session_id) => service.handle_json_for_session(session_id, request).await,
-                None => service.handle_json(request).await,
-            }
-        };
+                Some(session_id) => Box::pin(service.handle_json_for_session(session_id, request)),
+                None => Box::pin(service.handle_json(request)),
+            };
         timeout_result(timeout, request).await
     }
 
@@ -778,6 +783,21 @@ mod tests {
             McpProxy::new_with_limits(service, max_inflight, max_pending_per_session),
             temp,
         ))
+    }
+
+    #[tokio::test]
+    async fn call_future_stays_well_below_the_default_test_thread_stack(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (proxy, _temp) = build_test_proxy(1)?;
+        let request = tools_list_request(1);
+        let future = proxy.call(None, request);
+        let future_size = std::mem::size_of_val(&future);
+        assert!(
+            future_size <= 256 * 1024,
+            "McpProxy::call future grew to {future_size} bytes"
+        );
+        drop(future);
+        Ok(())
     }
 
     #[test]

@@ -3,7 +3,7 @@
 Thanks for your interest in improving Docdex! Here’s how to get started.
 
 ## Prereqs
-- Rust toolchain (stable), Node.js >= 18, npm.
+- Rustup (the repository pins and installs its Rust toolchain), Node.js >= 18, npm.
 - On macOS/Linux, ensure you can build the Rust binary: `cargo test --locked --all`.
 
 ## Setup

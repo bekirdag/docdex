@@ -6,10 +6,7 @@ on:
       - main
   workflow_dispatch:
 
-permissions:
-  contents: write
-  issues: write
-  pull-requests: write
+permissions: {}
 
 jobs:
   release-please:
@@ -24,7 +21,7 @@ jobs:
           echo "This repository's GitHub Actions token cannot create release PRs under current settings."
       - name: Run release-please
         if: ${{ env.RELEASE_PLEASE_TOKEN != '' }}
-        uses: googleapis/release-please-action@v4
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5
         with:
           token: ${{ env.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json

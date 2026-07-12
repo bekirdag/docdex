@@ -31,15 +31,16 @@ jobs:
       release_tag: ${{ steps.release.outputs.release_tag }}
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
           fetch-depth: 1
 
       - name: Setup Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 24
+          package-manager-cache: false
 
       - name: Download and verify immutable release asset
         id: release
@@ -116,7 +117,7 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
       - name: Upload verified release binary
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: docdexd-linux-x64-release
           path: |
@@ -136,7 +137,7 @@ jobs:
       - docdex-deploy
     steps:
       - name: Download release binary
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: docdexd-linux-x64-release
           path: dist

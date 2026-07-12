@@ -419,6 +419,86 @@ with open(os.environ["DOCDEX_FEATURE_MATRIX_LANE_EVIDENCE"], "w", encoding="utf-
                 )
                 self.assertEqual(text.count("persist-credentials: false"), checkout_count)
 
+    def test_all_workflow_actions_are_commit_pinned(self) -> None:
+        workflow_dir = SCRIPT_DIR.parent / ".github/workflows"
+        workflows = sorted(
+            {*workflow_dir.glob("*.yml"), *workflow_dir.glob("*.yaml")}
+        )
+        self.assertTrue(workflows)
+
+        def step_tail(lines: list[str], index: int) -> tuple[int, list[str]]:
+            uses_indent = len(lines[index]) - len(lines[index].lstrip())
+            tail: list[str] = []
+            for candidate in lines[index + 1 :]:
+                if not candidate.strip() or candidate.lstrip().startswith("#"):
+                    continue
+                indent = len(candidate) - len(candidate.lstrip())
+                if indent < uses_indent:
+                    break
+                tail.append(candidate)
+            return uses_indent, tail
+
+        setup_node_count = 0
+        rust_toolchain_count = 0
+        for workflow in workflows:
+            with self.subTest(workflow=workflow.name):
+                text = workflow.read_text(encoding="utf-8")
+                lines = text.splitlines()
+                action_lines = [line.strip() for line in lines if "uses:" in line]
+                for line in action_lines:
+                    self.assertRegex(
+                        line,
+                        r"^uses: [^@\s]+@[0-9a-f]{40}(?:\s+#\s+\S+)?$",
+                    )
+                for index, line in enumerate(lines):
+                    stripped = line.strip()
+                    if stripped.startswith("uses: actions/setup-node@"):
+                        setup_node_count += 1
+                        uses_indent, tail = step_tail(lines, index)
+                        self.assertIn(
+                            " " * (uses_indent + 2)
+                            + "package-manager-cache: false",
+                            tail,
+                        )
+                    if stripped.startswith("uses: dtolnay/rust-toolchain@"):
+                        rust_toolchain_count += 1
+                        uses_indent, tail = step_tail(lines, index)
+                        self.assertIn(
+                            " " * (uses_indent + 2) + 'toolchain: "1.97.0"',
+                            tail,
+                        )
+        self.assertGreater(setup_node_count, 0)
+        self.assertGreater(rust_toolchain_count, 0)
+
+        toolchain = (SCRIPT_DIR.parent / "rust-toolchain.toml").read_text(
+            encoding="utf-8"
+        )
+        self.assertEqual(
+            re.findall(r'^channel\s*=\s*"([^"]+)"\s*$', toolchain, re.MULTILINE),
+            ["1.97.0"],
+        )
+        self.assertRegex(
+            toolchain,
+            re.compile(r'^profile\s*=\s*"minimal"\s*$', re.MULTILINE),
+        )
+        self.assertRegex(
+            toolchain,
+            re.compile(
+                r'^components\s*=\s*\["rustfmt"\]\s*$',
+                re.MULTILINE,
+            ),
+        )
+
+        release_please = (
+            SCRIPT_DIR.parent / ".github/workflows/release-please.yml"
+        ).read_text(encoding="utf-8")
+        permission_declarations = []
+        for line in release_please.splitlines():
+            match = re.match(r"^(\s*)permissions:\s*(.*?)\s*$", line)
+            if match:
+                permission_declarations.append((len(match.group(1)), match.group(2)))
+        self.assertEqual(permission_declarations, [(0, "{}")])
+
     def test_harness_keeps_exact_offline_local_inventory(self) -> None:
         text = (SCRIPT_DIR / "test_release_feature_matrix.sh").read_text(
             encoding="utf-8"

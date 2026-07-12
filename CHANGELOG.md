@@ -28,7 +28,9 @@
 - Distinguish daemon startup-in-progress locks from healthy already-running daemons so `docdexd daemon` tells clients to wait for `/healthz` and `/v1/mcp` readiness instead of advertising an unavailable MCP endpoint.
 - Harden npm postinstall daemon readiness checks by requiring both `/healthz` and the streamable MCP `/v1/mcp` route before treating a started or reused daemon as ready.
 - Make daemon singleton and mcoda registry tests deterministic by using a bounded full health response read, disabling cloud refresh for registry-only assertions, and allowing slower daemon binds in local/CI environments with `DOCDEX_DAEMON_AUTO_START_TIMEOUT_SECS`.
-- Pin GitHub Actions npm upgrades to npm 11.18.0 so trusted publishing remains compatible with the workflow's Node 20 runtime.
+- Pin GitHub Actions npm upgrades to npm 11.18.0 so trusted publishing remains compatible with the workflow's Node 24 runtime.
+- Box MCP service dispatch futures at the proxy boundary so Rust 1.97 debug builds remain well below Linux's default test-thread stack while preserving per-session fairness, cancellation, and timeouts.
+- Pin the Rust 1.97.0 toolchain and Node 24 GitHub Actions by immutable commit across CI, nightly, release, and deployment workflows.
 - Bump release metadata to 0.2.84.
 
 ## 0.2.81

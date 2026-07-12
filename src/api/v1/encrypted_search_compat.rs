@@ -61,6 +61,26 @@ pub(crate) struct IndexCompatRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub(crate) struct IndexDeleteCompatRequest {
+    #[serde(default)]
+    repo_id: Option<String>,
+    #[serde(default)]
+    paths: Vec<String>,
+    #[serde(default)]
+    delete_source: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) struct IndexDeleteCompatResponse {
+    repo_id: String,
+    paths_total: usize,
+    paths_deleted: usize,
+    paths_failed: usize,
+    errors: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub(crate) struct IndexJobQuery {
     #[serde(default)]
     repo_id: Option<String>,
@@ -315,6 +335,71 @@ pub(crate) async fn index_compat_handler(
         state.metrics.clone(),
     );
     Json(status).into_response()
+}
+
+pub(crate) async fn index_delete_compat_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<IndexDeleteCompatRequest>,
+) -> Response {
+    let repo = match resolve_repo_context(&state, &headers, None, payload.repo_id.as_deref(), false)
+    {
+        Ok(repo) => repo,
+        Err(err) => return repo_error_response(err),
+    };
+    let paths = match normalize_index_paths(&payload.paths) {
+        Ok(paths) => paths,
+        Err(response) => return response,
+    };
+    if paths.is_empty() {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            ERR_INVALID_ARGUMENT,
+            "paths must include at least one repo-relative path",
+        );
+    }
+
+    let mut response = IndexDeleteCompatResponse {
+        repo_id: repo.repo_id.clone(),
+        paths_total: paths.len(),
+        paths_deleted: 0,
+        paths_failed: 0,
+        errors: Vec::new(),
+    };
+    let repo_root = repo.indexer.repo_root().to_path_buf();
+    for rel_path in paths {
+        let full_path = repo_root.join(&rel_path);
+        if payload.delete_source {
+            match tokio::fs::remove_file(&full_path).await {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    state.metrics.inc_error();
+                    response.paths_failed += 1;
+                    response.errors.push(format!(
+                        "{}: failed to remove source file: {}",
+                        rel_path.display(),
+                        err
+                    ));
+                    continue;
+                }
+            }
+        }
+        match repo.indexer.delete_file(full_path).await {
+            Ok(()) => response.paths_deleted += 1,
+            Err(err) => {
+                state.metrics.inc_error();
+                response.paths_failed += 1;
+                response.errors.push(format!(
+                    "{}: {}",
+                    rel_path.display(),
+                    safe_error_message(&err)
+                ));
+            }
+        }
+    }
+
+    Json(response).into_response()
 }
 
 pub(crate) async fn index_job_handler(
@@ -1201,7 +1286,7 @@ fn safe_segment(value: &str) -> Option<String> {
     Some(trimmed.to_string())
 }
 
-fn safe_error_message(err: &anyhow::Error) -> String {
+fn safe_error_message(err: &impl std::fmt::Display) -> String {
     err.to_string().chars().take(240).collect()
 }
 

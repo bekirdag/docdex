@@ -872,6 +872,10 @@ pub fn router(state: AppState) -> Router {
             post(crate::api::v1::encrypted_search_compat::index_compat_handler),
         )
         .route(
+            "/v1/index/delete",
+            post(crate::api::v1::encrypted_search_compat::index_delete_compat_handler),
+        )
+        .route(
             "/v1/index/jobs/:job_id",
             get(crate::api::v1::encrypted_search_compat::index_job_handler),
         )

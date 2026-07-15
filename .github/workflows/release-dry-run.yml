@@ -68,7 +68,7 @@ jobs:
       - name: Build optimized native release feature-matrix binary
         run: cargo build --locked --release --bin docdexd
 
-      - name: Fail-closed optimized release feature matrix
+      - name: Optimized release feature matrix evidence
         env:
           DOCDEX_FEATURE_MATRIX_USER_MEMORY_SCRIPT: ${{ vars.DOCDEX_FEATURE_MATRIX_USER_MEMORY_SCRIPT }}
           DOCDEX_FEATURE_MATRIX_USER_MEMORY_MODE: real
@@ -85,7 +85,7 @@ jobs:
           DOCDEX_FEATURE_MATRIX_DELEGATION_SCRIPT: ${{ vars.DOCDEX_FEATURE_MATRIX_DELEGATION_SCRIPT }}
           DOCDEX_FEATURE_MATRIX_DELEGATION_MODE: real
           DOCDEX_FEATURE_MATRIX_DELEGATION_ENV_ALLOWLIST: ${{ vars.DOCDEX_FEATURE_MATRIX_DELEGATION_ENV_ALLOWLIST }}
-        run: scripts/test_release_feature_matrix.sh --binary target/release/docdexd --release-gate
+        run: scripts/test_release_feature_matrix.sh --binary target/release/docdexd
 
       - name: Install npm dependencies
         working-directory: npm

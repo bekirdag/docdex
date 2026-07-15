@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.88
+- Keep packaged tag-triggered release publication from failing when optional external feature-matrix adapters are not configured, while still recording blocked external lanes in the uploaded evidence ledger.
+- Retain the stricter external `--release-gate` for explicitly configured validation runs.
+- Bump packaged release metadata to 0.2.88.
+
 ## 0.2.87
 - Harden packaged profile, DAG, conversation, knowledge, repo-memory, and personal-preferences SQLite connection setup behind a shared 5-second busy-timeout policy so concurrent agents tolerate transient local database writer contention.
 - Move packaged DAG logging to WAL mode and add regression coverage for memory-adjacent stores that previously opened SQLite with no busy timeout.

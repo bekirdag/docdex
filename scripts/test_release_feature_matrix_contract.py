@@ -235,13 +235,17 @@ with open(os.environ["DOCDEX_FEATURE_MATRIX_LANE_EVIDENCE"], "w", encoding="utf-
                 with self.assertRaises(contract.ContractError):
                     contract.parse_env_allowlist(raw)
 
-    def test_release_workflows_use_the_optimized_fail_closed_gate(self) -> None:
+    def test_release_workflows_use_the_optimized_feature_matrix(self) -> None:
         root = SCRIPT_DIR.parent
         for relative in (".github/workflows/release.yml", ".github/workflows/release-dry-run.yml"):
             with self.subTest(workflow=relative):
                 text = (root / relative).read_text(encoding="utf-8")
                 self.assertIn("cargo build --locked --release --bin docdexd", text)
                 self.assertIn(
+                    "scripts/test_release_feature_matrix.sh --binary target/release/docdexd",
+                    text,
+                )
+                self.assertNotIn(
                     "scripts/test_release_feature_matrix.sh "
                     "--binary target/release/docdexd --release-gate",
                     text,

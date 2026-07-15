@@ -22,15 +22,7 @@ pub(super) fn write_meta_i64(db_path: &Path, key: &str, value: i64) -> Result<()
 }
 
 pub(super) fn open_db(path: &Path) -> Result<Connection> {
-    let conn = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE
-            | OpenFlags::SQLITE_OPEN_CREATE
-            | OpenFlags::SQLITE_OPEN_FULL_MUTEX,
-    )
-    .with_context(|| format!("open {}", path.display()))?;
-    conn.busy_timeout(std::time::Duration::from_secs(5))?;
-    Ok(conn)
+    crate::sqlite::open_rw_create_full_mutex(path, "personal preferences")
 }
 
 pub(super) fn count_query(conn: &Connection, sql: &str) -> Result<usize> {

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use fs4::FileExt;
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
@@ -27,13 +27,7 @@ pub fn log_node(
         .unwrap_or_else(|| repo_state_dir.join("locks"));
     crate::state_layout::ensure_state_dir_secure(&lock_dir)?;
     let _lock = DagLock::acquire(&lock_path)?;
-    let db_path = dag_repo::dag_db_path(repo_state_dir);
-    let conn = Connection::open_with_flags(
-        &db_path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
-    )
-    .with_context(|| format!("open {}", db_path.display()))?;
-    ensure_schema(&conn)?;
+    let conn = open_connection(repo_state_dir)?;
     conn.execute(
         "INSERT INTO nodes (session_id, type, payload, created_at) VALUES (?1, ?2, ?3, ?4)",
         params![
@@ -64,14 +58,16 @@ pub fn check_access(repo_state_dir: &Path) -> Result<()> {
         .unwrap_or_else(|| repo_state_dir.join("locks"));
     crate::state_layout::ensure_state_dir_secure(&lock_dir)?;
     let _lock = DagLock::acquire(&lock_path)?;
-    let db_path = dag_repo::dag_db_path(repo_state_dir);
-    let conn = Connection::open_with_flags(
-        &db_path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
-    )
-    .with_context(|| format!("open {}", db_path.display()))?;
-    ensure_schema(&conn)?;
+    let _conn = open_connection(repo_state_dir)?;
     Ok(())
+}
+
+fn open_connection(repo_state_dir: &Path) -> Result<Connection> {
+    let db_path = dag_repo::dag_db_path(repo_state_dir);
+    let conn = crate::sqlite::open_rw_create_full_mutex(&db_path, "dag")?;
+    crate::sqlite::enable_wal_and_foreign_keys(&conn, "dag")?;
+    ensure_schema(&conn)?;
+    Ok(conn)
 }
 
 fn current_timestamp_ms() -> i64 {
@@ -271,6 +267,21 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn connection_enables_wal_and_busy_timeout() -> Result<()> {
+        let temp = TempDir::new()?;
+        let repo_dir = temp.path().join("repo");
+        std::fs::create_dir_all(&repo_dir)?;
+
+        let conn = open_connection(&repo_dir)?;
+        let journal_mode: String = conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+        let busy_timeout_ms: i64 = conn.query_row("PRAGMA busy_timeout", [], |row| row.get(0))?;
+
+        assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
+        assert!(busy_timeout_ms >= (crate::sqlite::SQLITE_BUSY_TIMEOUT_SECS as i64) * 1000);
         Ok(())
     }
 }

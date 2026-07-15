@@ -4,7 +4,7 @@ use crate::memory::ops::{
 };
 use anyhow::{Context, Result};
 use fs4::FileExt;
-use rusqlite::{params, params_from_iter, Connection, OpenFlags, OptionalExtension};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::fs::OpenOptions;
@@ -17,7 +17,6 @@ use uuid::Uuid;
 
 const MEMORY_WARN_ROWS: i64 = 50_000;
 const MEMORY_PRUNE_TARGET_ROWS: i64 = 45_000;
-const MEMORY_BUSY_TIMEOUT_SECS: u64 = 5;
 const MEMORY_META_EMBED_DIM: &str = "embedding_dim";
 const MEMORY_META_SCHEMA_VERSION: &str = "schema_version";
 const MEMORY_SCHEMA_VERSION: u32 = 1;
@@ -60,15 +59,7 @@ impl MemoryStore {
 
     fn open_connection(&self, embedding_dim: Option<usize>) -> Result<(Connection, Option<usize>)> {
         ensure_vec_extension_loaded()?;
-        let conn = Connection::open_with_flags(
-            &self.path,
-            OpenFlags::SQLITE_OPEN_READ_WRITE
-                | OpenFlags::SQLITE_OPEN_CREATE
-                | OpenFlags::SQLITE_OPEN_FULL_MUTEX,
-        )
-        .with_context(|| format!("open {}", self.path.display()))?;
-        conn.busy_timeout(std::time::Duration::from_secs(MEMORY_BUSY_TIMEOUT_SECS))
-            .context("set memory database busy timeout")?;
+        let conn = crate::sqlite::open_rw_create_full_mutex(&self.path, "memory")?;
         let stored_dim = ensure_schema(&conn, embedding_dim)?;
         Ok((conn, stored_dim))
     }
@@ -719,7 +710,7 @@ mod tests {
         let busy_timeout_ms: i64 = conn.query_row("PRAGMA busy_timeout", [], |row| row.get(0))?;
 
         assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
-        assert!(busy_timeout_ms >= (MEMORY_BUSY_TIMEOUT_SECS as i64) * 1000);
+        assert!(busy_timeout_ms >= (crate::sqlite::SQLITE_BUSY_TIMEOUT_SECS as i64) * 1000);
 
         Ok(())
     }

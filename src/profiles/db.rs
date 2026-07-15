@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
 use std::path::Path;
 use std::sync::Once;
@@ -18,15 +18,8 @@ pub struct ProfileDbInit {
 
 pub fn init_profile_db(path: &Path, embedding_dim: Option<usize>) -> Result<ProfileDbInit> {
     ensure_vec_extension_loaded()?;
-    let mut conn = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE
-            | OpenFlags::SQLITE_OPEN_CREATE
-            | OpenFlags::SQLITE_OPEN_FULL_MUTEX,
-    )
-    .with_context(|| format!("open {}", path.display()))?;
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
-        .context("enable WAL mode")?;
+    let mut conn = crate::sqlite::open_rw_create_full_mutex(path, "profile")?;
+    crate::sqlite::enable_wal_and_foreign_keys(&conn, "profile")?;
     let stored_dim = ensure_schema(&conn, embedding_dim)?;
     if let Some(dim) = stored_dim {
         seed_defaults(&mut conn, dim)?;
@@ -420,6 +413,20 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(dim, "4");
+        Ok(())
+    }
+
+    #[test]
+    fn init_enables_wal_and_busy_timeout() -> Result<()> {
+        let dir = tempdir()?;
+        let path = dir.path().join("profile.db");
+        let ProfileDbInit { conn, .. } = init_profile_db(&path, Some(4))?;
+
+        let journal_mode: String = conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+        let busy_timeout_ms: i64 = conn.query_row("PRAGMA busy_timeout", [], |row| row.get(0))?;
+
+        assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
+        assert!(busy_timeout_ms >= (crate::sqlite::SQLITE_BUSY_TIMEOUT_SECS as i64) * 1000);
         Ok(())
     }
 

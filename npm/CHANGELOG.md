@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.87
+- Harden packaged profile, DAG, conversation, knowledge, repo-memory, and personal-preferences SQLite connection setup behind a shared 5-second busy-timeout policy so concurrent agents tolerate transient local database writer contention.
+- Move packaged DAG logging to WAL mode and add regression coverage for memory-adjacent stores that previously opened SQLite with no busy timeout.
+- Bump packaged release metadata to 0.2.87.
+
 ## 0.2.86
 - Enforce a packaged fail-closed outbound web policy across HTTP, CLI, discovery, and Chromium paths, keep browser sandboxing enabled by default, cap responses, restore bounded transient discovery retries, and shut down owned browser processes deterministically.
 - Pin packaged Chromium TCP egress through a bounded host/IP allowlisting proxy, secure DevTools with an owned ephemeral endpoint and recursive target interception, deny service-worker/cache/download bypasses, and make managed-browser refresh, rollback, locking, and Windows process identity fail safe.

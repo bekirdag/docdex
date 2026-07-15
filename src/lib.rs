@@ -44,6 +44,7 @@ pub mod repo_encryption;
 pub mod repo_manager;
 pub mod search;
 pub mod setup;
+pub(crate) mod sqlite;
 pub mod state_layout;
 pub mod state_paths;
 pub mod symbols;

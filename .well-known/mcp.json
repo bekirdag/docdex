@@ -1,10 +1,10 @@
 {
-  "version": "0.2.86",
+  "version": "0.2.87",
   "protocolVersion": "2025-06-18",
   "serverInfo": {
     "name": "docdex",
     "title": "Docdex – Repo Docs + Code Index & Search",
-    "version": "0.2.86"
+    "version": "0.2.87"
   },
   "description": "Per-repo docs + code indexer and MCP server for local search, chat, and code intelligence.",
   "iconUrl": "https://docdex.org/assets/docdex.png",

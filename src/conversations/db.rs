@@ -11,7 +11,7 @@ use crate::conversations::types::{
 use anyhow::{Context, Result};
 use fs4::FileExt;
 use parking_lot::Mutex;
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
@@ -765,13 +765,7 @@ impl ConversationStore {
         if let Some(parent) = self.lock_path.parent() {
             crate::state_layout::ensure_state_dir_secure(parent)?;
         }
-        let conn = Connection::open_with_flags(
-            &self.path,
-            OpenFlags::SQLITE_OPEN_READ_WRITE
-                | OpenFlags::SQLITE_OPEN_CREATE
-                | OpenFlags::SQLITE_OPEN_FULL_MUTEX,
-        )
-        .with_context(|| format!("open {}", self.path.display()))?;
+        let conn = crate::sqlite::open_rw_create_full_mutex(&self.path, "conversation")?;
         ensure_schema(&conn)?;
         Ok(conn)
     }
@@ -2300,6 +2294,20 @@ mod tests {
         assert!(!first.deduplicated);
         assert!(second.deduplicated);
         assert_eq!(first.session_id, second.session_id);
+        Ok(())
+    }
+
+    #[test]
+    fn open_connection_enables_wal_and_busy_timeout() -> Result<()> {
+        let dir = tempdir()?;
+        let store = ConversationStore::new(dir.path());
+        let conn = store.open_connection()?;
+
+        let journal_mode: String = conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+        let busy_timeout_ms: i64 = conn.query_row("PRAGMA busy_timeout", [], |row| row.get(0))?;
+
+        assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
+        assert!(busy_timeout_ms >= (crate::sqlite::SQLITE_BUSY_TIMEOUT_SECS as i64) * 1000);
         Ok(())
     }
 

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.89
+- Let the packaged tag-triggered release asset job publish with the workflow `GITHUB_TOKEN` by removing an admin-only immutable-release repository API precheck while retaining remote-tag and asset verification.
+- Bump packaged release metadata to 0.2.89.
+
 ## 0.2.88
 - Keep packaged tag-triggered release publication from failing when optional external feature-matrix adapters are not configured, while still recording blocked external lanes in the uploaded evidence ledger.
 - Retain the stricter external `--release-gate` for explicitly configured validation runs.

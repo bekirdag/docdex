@@ -274,7 +274,6 @@ with open(os.environ["DOCDEX_FEATURE_MATRIX_LANE_EVIDENCE"], "w", encoding="utf-
         self.assertIn("Smoke test install from exact tarball", prepare)
         self.assertIn("npm install \"$PACK_PATH\"", prepare)
         self.assertIn("DOCDEX_DOWNLOAD_BASE=", prepare)
-        self.assertIn("immutable-releases", prepare)
         self.assertIn("gh release create", prepare)
         self.assertIn("--draft=false", prepare)
         self.assertNotIn("id-token: write", prepare)
@@ -312,6 +311,7 @@ with open(os.environ["DOCDEX_FEATURE_MATRIX_LANE_EVIDENCE"], "w", encoding="utf-
             "verify_remote_tag\n          gh release edit",
             release,
         )
+        self.assertNotIn("immutable-releases", release)
         self.assertIn(
             'test "${IMMUTABLE_RELEASE_VERIFIED}" = "1"\n'
             "          verify_remote_tag",

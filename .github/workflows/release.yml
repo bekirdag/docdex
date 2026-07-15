@@ -483,8 +483,6 @@ jobs:
             test "${resolved_sha}" = "${GITHUB_SHA}"
           }
 
-          test "$(gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/${GITHUB_REPOSITORY}/immutable-releases" --jq '.enabled')" = "true"
           verify_remote_tag
           test "$(jq -r '.sourceCommit' artifacts/docdex-release-manifest.json)" = "${GITHUB_SHA}"
 

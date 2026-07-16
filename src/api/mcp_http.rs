@@ -3,7 +3,8 @@ use crate::auth::RepoOperation;
 use crate::error::status_for_app_error;
 use crate::error::{
     repo_resolution_details, AppError, ERR_INTERNAL_ERROR, ERR_INVALID_ARGUMENT,
-    ERR_MISSING_DEPENDENCY, ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED, ERR_SCOPE_DENIED,
+    ERR_MISSING_DEPENDENCY, ERR_MISSING_REPO, ERR_MISSING_REPO_PATH, ERR_RATE_LIMITED,
+    ERR_SCOPE_DENIED,
 };
 use crate::http_api::{app_error_response, json_error};
 use crate::search::AppState;
@@ -12,7 +13,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Json, Response};
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::task::{Context as TaskContext, Poll};
@@ -326,6 +327,58 @@ fn mcp_proxy_failure_response(err: anyhow::Error) -> Response {
     )
 }
 
+fn is_unbound_capability_request(method: Option<&str>) -> bool {
+    matches!(
+        method,
+        Some(
+            "tools/list"
+                | "prompts/list"
+                | "prompts/get"
+                | "resources/list"
+                | "resources/templates/list"
+                | "ping"
+        )
+    )
+}
+
+async fn call_unbound_capability(
+    router: &std::sync::Arc<crate::mcp::McpProxyRouter>,
+    payload: Value,
+) -> Result<McpCallOutcome, Response> {
+    match extract_method(&payload) {
+        Some("resources/list") => Ok(McpCallOutcome {
+            response: Some(jsonrpc_result_response(
+                &payload,
+                json!({ "resources": [] }),
+            )),
+            issued_session_id: None,
+        }),
+        Some("ping") => Ok(McpCallOutcome {
+            response: Some(jsonrpc_result_response(&payload, json!({}))),
+            issued_session_id: None,
+        }),
+        _ => {
+            let bootstrap_root = router.bootstrap_repo_root();
+            let response = router
+                .call(Some(bootstrap_root.as_path()), None, payload)
+                .await
+                .map_err(mcp_proxy_failure_response)?;
+            Ok(McpCallOutcome {
+                response: Some(response),
+                issued_session_id: None,
+            })
+        }
+    }
+}
+
+fn jsonrpc_result_response(payload: &Value, result: Value) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": payload.get("id").cloned().unwrap_or(Value::Null),
+        "result": result,
+    })
+}
+
 fn header_session_id(headers: &HeaderMap) -> Result<Option<String>, &'static str> {
     let standard = session_header_value(headers, MCP_SESSION_HEADER)?;
     let legacy = session_header_value(headers, LEGACY_SESSION_HEADER)?;
@@ -496,7 +549,8 @@ async fn handle_mcp_single(
             ));
         }
         normalize_initialize_payload(&mut payload);
-        let resolved = match extract_init_root(&payload) {
+        let init_root = extract_init_root(&payload);
+        let resolved = match init_root.clone() {
             Some(root_uri) => resolve_repo_for_mcp(state, Some(root_uri)),
             None => resolve_repo_for_mcp(state, None),
         };
@@ -504,6 +558,48 @@ async fn handle_mcp_single(
             Ok(root) => {
                 ensure_initialize_root(&mut payload, &root);
                 root
+            }
+            Err(err) if init_root.is_none() && err.code == ERR_MISSING_REPO => {
+                let issued_session_id = router.create_direct_session().await.map_err(|err| {
+                    json_error(
+                        StatusCode::TOO_MANY_REQUESTS,
+                        ERR_RATE_LIMITED,
+                        format!("mcp session unavailable: {err}"),
+                    )
+                })?;
+                let bootstrap_root = router.bootstrap_repo_root();
+                let response = match router
+                    .call(Some(bootstrap_root.as_path()), None, payload.clone())
+                    .await
+                {
+                    Ok(response) => response,
+                    Err(err) => {
+                        router.remove_session(&issued_session_id).await;
+                        return Err(mcp_proxy_failure_response(err));
+                    }
+                };
+                if response.get("result").is_none() || response.get("error").is_some() {
+                    router.remove_session(&issued_session_id).await;
+                    return Ok(McpCallOutcome {
+                        response: Some(response),
+                        issued_session_id: None,
+                    });
+                }
+                if let Err(err) = router
+                    .set_pending_initialize(&issued_session_id, payload)
+                    .await
+                {
+                    router.remove_session(&issued_session_id).await;
+                    return Err(json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        ERR_INTERNAL_ERROR,
+                        format!("mcp proxy failed: {err}"),
+                    ));
+                }
+                return Ok(McpCallOutcome {
+                    response: Some(response),
+                    issued_session_id: Some(issued_session_id),
+                });
             }
             Err(err) => return Err(app_error_response(&err)),
         };
@@ -544,12 +640,56 @@ async fn handle_mcp_single(
     }
 
     if let Some(session_id) = session_id {
-        let Some(bound_root) = router.session_repo_root(session_id).await else {
-            return Err(json_error(
-                StatusCode::BAD_REQUEST,
-                ERR_INVALID_ARGUMENT,
-                "unknown or expired MCP session",
-            ));
+        let bound_root = match router.session_repo_root(session_id).await {
+            Some(bound_root) => bound_root,
+            None => {
+                if !router.session_exists(session_id).await {
+                    return Err(json_error(
+                        StatusCode::BAD_REQUEST,
+                        ERR_INVALID_ARGUMENT,
+                        "unknown or expired MCP session",
+                    ));
+                }
+                if notification {
+                    return Ok(McpCallOutcome {
+                        response: None,
+                        issued_session_id: None,
+                    });
+                }
+                if is_unbound_capability_request(method.as_deref()) {
+                    return call_unbound_capability(router, payload).await;
+                }
+                let Some(root_uri) =
+                    extract_stateless_routing_root(&payload, state.require_repo_id)
+                else {
+                    return Err(json_error(
+                        StatusCode::BAD_REQUEST,
+                        ERR_MISSING_REPO,
+                        "missing repo binding (call initialize with rootUri or include project_root/repo_path in tool arguments)",
+                    ));
+                };
+                let repo_root = resolve_repo_for_mcp(state, Some(root_uri))
+                    .map_err(|err| app_error_response(&err))?;
+                if let Err(err) = router.bind_session(session_id, &repo_root).await {
+                    return Err(json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        ERR_INTERNAL_ERROR,
+                        format!("mcp proxy failed: {err}"),
+                    ));
+                }
+                if let Some(mut pending_initialize) =
+                    router.take_pending_initialize(session_id).await
+                {
+                    ensure_initialize_root(&mut pending_initialize, &repo_root);
+                    if let Err(err) = router
+                        .call_for_session(session_id, pending_initialize)
+                        .await
+                    {
+                        return Err(mcp_proxy_failure_response(err));
+                    }
+                }
+                repo_root
+            }
         };
         if let Some(root_uri) = extract_project_root(&payload) {
             let requested_root = resolve_repo_for_mcp(state, Some(root_uri))
@@ -1544,7 +1684,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mcp_http_multi_repo_initialize_without_root_fails_closed(
+    async fn mcp_http_multi_repo_initialize_without_root_allows_startup_but_not_repo_tools(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let (mut state, _temp) = build_test_state().await?;
         state.require_repo_id = true;
@@ -1556,12 +1696,61 @@ mod tests {
         });
 
         let response =
-            mcp_request_handler(State(state), HeaderMap::new(), Json(init_payload)).await;
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            mcp_request_handler(State(state.clone()), HeaderMap::new(), Json(init_payload)).await;
+        assert!(response.status().is_success());
+        let session_id = response
+            .headers()
+            .get(MCP_SESSION_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .expect("initialize session header")
+            .to_string();
         let body = response.into_body().collect().await?.to_bytes();
         let value: serde_json::Value = serde_json::from_slice(&body)?;
+        assert!(value.get("result").is_some());
+
+        let mut headers = HeaderMap::new();
+        headers.insert(MCP_SESSION_HEADER, HeaderValue::from_str(&session_id)?);
+        let tools_response = mcp_request_handler(
+            State(state.clone()),
+            headers.clone(),
+            Json(json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/list",
+                "params": {}
+            })),
+        )
+        .await;
+        assert!(tools_response.status().is_success());
+        let tools_body = tools_response.into_body().collect().await?.to_bytes();
+        let tools_value: serde_json::Value = serde_json::from_slice(&tools_body)?;
+        assert!(tools_value.pointer("/result/tools").is_some());
+
+        let missing_repo_response = mcp_request_handler(
+            State(state),
+            headers,
+            Json(json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "docdex_stats",
+                    "arguments": {}
+                }
+            })),
+        )
+        .await;
+        assert_eq!(missing_repo_response.status(), StatusCode::BAD_REQUEST);
+        let missing_repo_body = missing_repo_response
+            .into_body()
+            .collect()
+            .await?
+            .to_bytes();
+        let missing_repo_value: serde_json::Value = serde_json::from_slice(&missing_repo_body)?;
         assert_eq!(
-            value.pointer("/error/code").and_then(Value::as_str),
+            missing_repo_value
+                .pointer("/error/code")
+                .and_then(Value::as_str),
             Some("missing_repo")
         );
         Ok(())

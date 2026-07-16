@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.90
+- Fix packaged Streamable HTTP MCP startup for multi-repo daemons without a default repo by allowing unbound initialize/tool discovery and binding a repo only when repo-scoped tools run.
+- Preserve packaged fail-closed behavior for repo tool calls that still omit `project_root` or `repo_path`, returning `missing_repo` instead of leaking an arbitrary mounted repo.
+- Bump packaged release metadata to 0.2.90.
+
 ## 0.2.89
 - Let the packaged tag-triggered release asset job publish with the workflow `GITHUB_TOKEN` by removing an admin-only immutable-release repository API precheck while retaining remote-tag and asset verification.
 - Bump packaged release metadata to 0.2.89.

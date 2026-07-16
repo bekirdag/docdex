@@ -78,6 +78,7 @@ struct RouterSession {
     sender: Option<mpsc::Sender<Value>>,
     last_active: Instant,
     binding: Option<SessionBinding>,
+    pending_initialize: Option<Value>,
     bind_lock: Arc<Mutex<()>>,
     next_binding_generation: u64,
 }
@@ -120,6 +121,7 @@ impl McpProxyRouter {
                 sender: Some(tx),
                 last_active: Instant::now(),
                 binding: None,
+                pending_initialize: None,
                 bind_lock: Arc::new(Mutex::new(())),
                 next_binding_generation: 0,
             },
@@ -139,6 +141,7 @@ impl McpProxyRouter {
                 sender: None,
                 last_active: Instant::now(),
                 binding: None,
+                pending_initialize: None,
                 bind_lock: Arc::new(Mutex::new(())),
                 next_binding_generation: 0,
             },
@@ -227,6 +230,31 @@ impl McpProxyRouter {
             self.evict_child(&previous.repo_root, false).await;
         }
         Ok(())
+    }
+
+    pub async fn set_pending_initialize(&self, session_id: &str, payload: Value) -> Result<()> {
+        let mut sessions = self.sessions.write().await;
+        let entry = sessions
+            .get_mut(session_id)
+            .ok_or_else(|| anyhow!("unknown mcp session"))?;
+        entry.last_active = Instant::now();
+        entry.pending_initialize = Some(payload);
+        Ok(())
+    }
+
+    pub async fn take_pending_initialize(&self, session_id: &str) -> Option<Value> {
+        let mut sessions = self.sessions.write().await;
+        let entry = sessions.get_mut(session_id)?;
+        entry.last_active = Instant::now();
+        entry.pending_initialize.take()
+    }
+
+    pub async fn session_exists(&self, session_id: &str) -> bool {
+        self.sessions.read().await.contains_key(session_id)
+    }
+
+    pub(crate) fn bootstrap_repo_root(&self) -> PathBuf {
+        self.config.repo.repo_root()
     }
 
     pub async fn enqueue_for_session(

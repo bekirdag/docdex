@@ -341,7 +341,24 @@ fn is_unbound_capability_request(method: Option<&str>) -> bool {
     )
 }
 
-async fn call_unbound_capability(
+fn is_unbound_global_tool_request(payload: &Value) -> bool {
+    let method = extract_method(payload);
+    if matches!(
+        method,
+        Some("docdex_get_profile" | "docdex_save_preference")
+    ) {
+        return true;
+    }
+    if method != Some("tools/call") {
+        return false;
+    }
+    matches!(
+        payload.pointer("/params/name").and_then(Value::as_str),
+        Some("docdex_get_profile" | "docdex_save_preference")
+    )
+}
+
+async fn call_unbound_request(
     router: &std::sync::Arc<crate::mcp::McpProxyRouter>,
     payload: Value,
 ) -> Result<McpCallOutcome, Response> {
@@ -656,8 +673,10 @@ async fn handle_mcp_single(
                         issued_session_id: None,
                     });
                 }
-                if is_unbound_capability_request(method.as_deref()) {
-                    return call_unbound_capability(router, payload).await;
+                if is_unbound_capability_request(method.as_deref())
+                    || is_unbound_global_tool_request(&payload)
+                {
+                    return call_unbound_request(router, payload).await;
                 }
                 let Some(root_uri) =
                     extract_stateless_routing_root(&payload, state.require_repo_id)
@@ -1726,12 +1745,52 @@ mod tests {
         let tools_value: serde_json::Value = serde_json::from_slice(&tools_body)?;
         assert!(tools_value.pointer("/result/tools").is_some());
 
+        for (id, name, arguments) in [
+            (
+                3,
+                "docdex_save_preference",
+                json!({
+                    "agent_id": "unbound-profile-test",
+                    "category": "workflow",
+                    "content": "Profile tools remain global in multi-repo mode."
+                }),
+            ),
+            (
+                4,
+                "docdex_get_profile",
+                json!({ "agent_id": "unbound-profile-test" }),
+            ),
+        ] {
+            let profile_response = mcp_request_handler(
+                State(state.clone()),
+                headers.clone(),
+                Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": "tools/call",
+                    "params": { "name": name, "arguments": arguments }
+                })),
+            )
+            .await;
+            assert!(profile_response.status().is_success(), "{name}");
+            let profile_body = profile_response.into_body().collect().await?.to_bytes();
+            let profile_value: serde_json::Value = serde_json::from_slice(&profile_body)?;
+            assert!(
+                profile_value.get("result").is_some(),
+                "{name}: {profile_value}"
+            );
+            assert!(
+                profile_value.get("error").is_none(),
+                "{name}: {profile_value}"
+            );
+        }
+
         let missing_repo_response = mcp_request_handler(
             State(state),
             headers,
             Json(json!({
                 "jsonrpc": "2.0",
-                "id": 3,
+                "id": 5,
                 "method": "tools/call",
                 "params": {
                     "name": "docdex_stats",

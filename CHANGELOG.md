@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.91
+- Prevent CLI auto-start probes from killing a live daemon when a short health check times out; wait for the lock-owning daemon to become ready instead, preserving active MCP sessions under load.
+- Allow global `docdex_get_profile` and `docdex_save_preference` calls in unbound multi-repo Streamable HTTP MCP sessions while repo-scoped tools remain fail-closed with `missing_repo`.
+- Add focused regression coverage for slow live-daemon handling and unbound global profile tools.
+- Bump release metadata to 0.2.91.
+
 ## 0.2.90
 - Fix Streamable HTTP MCP startup for multi-repo daemons without a default repo by allowing unbound initialize/tool discovery and binding a repo only when repo-scoped tools run.
 - Preserve fail-closed behavior for repo tool calls that still omit `project_root` or `repo_path`, returning `missing_repo` instead of leaking an arbitrary mounted repo.

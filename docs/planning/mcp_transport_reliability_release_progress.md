@@ -2,7 +2,7 @@
 
 ## Status
 
-Implementation and local release validation complete; publication in progress.
+Complete. Version 0.2.91 is published to npm, GitHub Releases, and the MCP Registry.
 
 ## Evidence
 
@@ -30,12 +30,15 @@ Implementation and local release validation complete; publication in progress.
 - Runtime MCP smoke: an unbound source-built multi-repo session successfully saved/read a global profile preference, while unbound `docdex_stats` returned HTTP 400 `missing_repo`.
 - GitHub release attempt 1 failed in the new MCP regression because the unit test invoked the profile handler's HTTP callback without a daemon in CI. The test was made hermetic by asserting the routing predicate directly; the separate source-built runtime smoke continues to cover the end-to-end save/read behavior.
 - Hermetic regression validation passed with `DOCDEX_HTTP_BASE_URL=http://127.0.0.1:1`; the complete 742-test Rust suite, formatting, and diff checks also passed after the repair.
+- Release commit/tag: `3f11dbe1ebbb5dbe2aee9f4f9463f621acff2a75` / `v0.2.91`.
+- GitHub Actions release run `29846228744` completed successfully, including preflight, all six native builds, immutable asset publication, exact npm tarball smoke testing/publication, and MCP Registry publication.
+- GitHub release: `https://github.com/bekirdag/docdex/releases/tag/v0.2.91`, with six native archives, per-archive checksums, release manifest, and aggregate checksum files.
+- Registry verification: `docdex@0.2.91` is published and the npm `latest` dist-tag resolves to `0.2.91`; npm returned integrity metadata for the published tarball.
 
 ## Remaining
 
-- Commit/tag/push the validated release and publish npm 0.2.91.
-- Verify the published package and update this record.
+- None.
 
 ## Blockers
 
-- None yet.
+- None.

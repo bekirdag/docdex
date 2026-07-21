@@ -28,6 +28,8 @@ Implementation and local release validation complete; publication in progress.
 - `scripts/security_audit.sh` passed; Rust/npm audit and SBOM artifacts were generated, with zero npm vulnerabilities.
 - Runtime lifecycle smoke: a source-built daemon was suspended beyond the 300 ms health probe; a CLI call timed out after the configured 1 second, the original daemon PID survived, and health recovered after resume.
 - Runtime MCP smoke: an unbound source-built multi-repo session successfully saved/read a global profile preference, while unbound `docdex_stats` returned HTTP 400 `missing_repo`.
+- GitHub release attempt 1 failed in the new MCP regression because the unit test invoked the profile handler's HTTP callback without a daemon in CI. The test was made hermetic by asserting the routing predicate directly; the separate source-built runtime smoke continues to cover the end-to-end save/read behavior.
+- Hermetic regression validation passed with `DOCDEX_HTTP_BASE_URL=http://127.0.0.1:1`; the complete 742-test Rust suite, formatting, and diff checks also passed after the repair.
 
 ## Remaining
 

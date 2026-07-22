@@ -2,7 +2,7 @@
 
 ## Status
 
-Implementation and local release validation complete; publication in progress.
+Complete. Version `0.2.92` is published and independently verified.
 
 ## Evidence
 
@@ -26,11 +26,15 @@ Implementation and local release validation complete; publication in progress.
 - `scripts/security_audit.sh` passed, including Cargo audit, npm audit, and Rust/npm SBOM generation.
 - The optimized release binary built successfully and passed all 24 verified release feature-matrix checks with zero failures.
 - A black-box source-built runtime smoke test returned HTTP 200 for a fresh MCP initialize and HTTP 404 with `unknown or expired MCP session` for a forged stale session ID.
+- The staged Docdex pre-commit hook passed before release commit `3d99210` was pushed and tagged as `v0.2.92`.
+- GitHub Actions release run `29901070034` completed successfully: preflight, all six native target builds, immutable asset verification, npm pack/smoke/publish, and MCP Registry publication all passed.
+- The public GitHub release is `https://github.com/bekirdag/docdex/releases/tag/v0.2.92` with six native archives, per-archive checksums, release manifest checksums, and aggregate checksum files.
+- npm independently reports `docdex@0.2.92` as `latest` with integrity `sha512-WAMb25R/q2ATiaNerMFX3h/6b4byA9mXGAWoVlceYPVZZWm6cbM20Iy59AxlFkKrjrYAs7nE5CR8OeAaJqASxQ==`.
+- Remote `main` and `refs/tags/v0.2.92` both resolved to release commit `3d9921086c2ec2e09c5fa7ea7dc3afe414988b6f` at verification time.
 
 ## Remaining
 
-- Run the staged pre-commit gate.
-- Publish and verify `v0.2.92`.
+- None.
 
 ## Blockers
 

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.92
+- Return HTTP 404 for unknown, expired, or already deleted packaged Streamable HTTP MCP sessions so clients automatically initialize replacements.
+- Preserve HTTP 400 for missing required MCP session headers and add focused recovery regression coverage.
+- Bump packaged release metadata to 0.2.92.
+
 ## 0.2.91
 - Prevent packaged CLI auto-start probes from killing a live daemon when a short health check times out, preserving active MCP sessions under load.
 - Allow global profile reads and preference writes in unbound multi-repo Streamable HTTP MCP sessions while repo-scoped tools remain fail-closed.

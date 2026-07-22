@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.92
+- Return HTTP 404 for supplied Streamable HTTP MCP session IDs that are unknown, expired, or already deleted so conforming clients automatically initialize a replacement session.
+- Preserve HTTP 400 for malformed requests and requests that omit a required MCP session header.
+- Add regression coverage for expired-session POST recovery and repeated DELETE behavior.
+- Bump release metadata to 0.2.92.
+
 ## 0.2.91
 - Prevent CLI auto-start probes from killing a live daemon when a short health check times out; wait for the lock-owning daemon to become ready instead, preserving active MCP sessions under load.
 - Allow global `docdex_get_profile` and `docdex_save_preference` calls in unbound multi-repo Streamable HTTP MCP sessions while repo-scoped tools remain fail-closed with `missing_repo`.

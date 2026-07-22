@@ -83,6 +83,14 @@ impl McpCallOutcome {
     }
 }
 
+fn unknown_or_expired_mcp_session_response() -> Response {
+    json_error(
+        StatusCode::NOT_FOUND,
+        ERR_INVALID_ARGUMENT,
+        "unknown or expired MCP session",
+    )
+}
+
 pub async fn mcp_request_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -139,11 +147,7 @@ pub async fn mcp_delete_handler(State(state): State<AppState>, headers: HeaderMa
     if router.remove_session(&session_id).await {
         StatusCode::NO_CONTENT.into_response()
     } else {
-        json_error(
-            StatusCode::BAD_REQUEST,
-            ERR_INVALID_ARGUMENT,
-            "unknown or expired MCP session",
-        )
+        unknown_or_expired_mcp_session_response()
     }
 }
 
@@ -661,11 +665,7 @@ async fn handle_mcp_single(
             Some(bound_root) => bound_root,
             None => {
                 if !router.session_exists(session_id).await {
-                    return Err(json_error(
-                        StatusCode::BAD_REQUEST,
-                        ERR_INVALID_ARGUMENT,
-                        "unknown or expired MCP session",
-                    ));
+                    return Err(unknown_or_expired_mcp_session_response());
                 }
                 if notification {
                     return Ok(McpCallOutcome {
@@ -1313,7 +1313,34 @@ mod tests {
         assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
         assert_eq!(router.session_count_for_tests().await, 0);
         let repeated = mcp_delete_handler(State(state), headers).await;
-        assert_eq!(repeated.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(repeated.status(), StatusCode::NOT_FOUND);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mcp_unknown_or_expired_session_returns_not_found_for_client_recovery(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (state, _temp) = build_test_state().await?;
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            MCP_SESSION_HEADER,
+            HeaderValue::from_static("mcp-expired-for-test"),
+        );
+        let response = mcp_request_handler(
+            State(state.clone()),
+            headers,
+            Json(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list",
+                "params": {}
+            })),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let missing = mcp_delete_handler(State(state), HeaderMap::new()).await;
+        assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
         Ok(())
     }
 
@@ -1550,7 +1577,7 @@ mod tests {
             Json(tools_payload.clone()),
         )
         .await;
-        assert_eq!(forged.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(forged.status(), StatusCode::NOT_FOUND);
 
         let mut session_a_headers = HeaderMap::new();
         session_a_headers.insert(MCP_SESSION_HEADER, HeaderValue::from_str(&session_a)?);

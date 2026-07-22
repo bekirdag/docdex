@@ -6,12 +6,12 @@
     "url": "https://github.com/bekirdag/docdex",
     "source": "github"
   },
-  "version": "0.2.91",
+  "version": "0.2.92",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "docdex",
-      "version": "0.2.91",
+      "version": "0.2.92",
       "transport": {
         "type": "streamable-http",
         "url": "http://127.0.0.1:28491/v1/mcp",

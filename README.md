@@ -1,3 +1,5 @@
+[![MCP Toplist](https://mcptoplist.com/badge/io.github.bekirdag%2Fdocdex.svg)](https://mcptoplist.com/server/io.github.bekirdag%2Fdocdex)
+
 [![Website](https://img.shields.io/badge/website-docdex.org-blue)](https://docdex.org)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/bekirdag/docdex/release.yml?branch=main)
 ![GitHub License](https://img.shields.io/github/license/bekirdag/docdex)

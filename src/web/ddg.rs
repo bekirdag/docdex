@@ -61,6 +61,8 @@ static MARKDOWN_LINK_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"\((https?://[^\s)]+)\)"#).expect("valid markdown link regex"));
 static DDG_CLIENTS: Lazy<Mutex<HashMap<String, reqwest::Client>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+static SEARXNG_CLIENTS: Lazy<Mutex<HashMap<String, reqwest::Client>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 static DDG_PREFETCHED_HOSTS: Lazy<Mutex<HashSet<String>>> =
     Lazy::new(|| Mutex::new(HashSet::new()));
 
@@ -68,6 +70,7 @@ pub struct DdgDiscovery {
     config: WebConfig,
     pacer: Mutex<DdgDiscoveryPacer>,
     client: reqwest::Client,
+    searxng_client: reqwest::Client,
     blocklist: Vec<String>,
     cache_layout: Option<crate::state_layout::StateLayout>,
 }
@@ -234,6 +237,7 @@ impl FallbackChain {
 impl DdgDiscovery {
     pub fn new(config: WebConfig) -> Result<Self> {
         let client = resolve_ddg_client(&config)?;
+        let searxng_client = resolve_searxng_client(&config)?;
         let pacer_config = DdgDiscoveryPolicyConfig {
             min_spacing: config.policy.min_spacing,
             jitter_ms: config.policy.jitter_ms,
@@ -248,6 +252,7 @@ impl DdgDiscovery {
             pacer: Mutex::new(DdgDiscoveryPacer::new(pacer_config)),
             config,
             client,
+            searxng_client,
             blocklist,
             cache_layout,
         })
@@ -919,7 +924,7 @@ impl DdgDiscovery {
         cache_key: &str,
     ) -> Result<Option<WebDiscoveryResponse>> {
         let url = build_searxng_url(base_url, query)?;
-        let resp = self.client.get(url).send().await?;
+        let resp = self.searxng_client.get(url).send().await?;
         if !resp.status().is_success() {
             return Ok(None);
         }
@@ -1719,6 +1724,38 @@ fn build_ddg_client(config: &WebConfig) -> Result<reqwest::Client> {
     builder.build().context("build ddg client")
 }
 
+fn resolve_searxng_client(config: &WebConfig) -> Result<reqwest::Client> {
+    let key = format!(
+        "{}|{}",
+        config.user_agent,
+        config.request_timeout.as_millis()
+    );
+    if let Some(existing) = SEARXNG_CLIENTS.lock().get(&key) {
+        return Ok(existing.clone());
+    }
+    let client = build_searxng_client(config)?;
+    SEARXNG_CLIENTS.lock().insert(key, client.clone());
+    Ok(client)
+}
+
+fn build_searxng_client(config: &WebConfig) -> Result<reqwest::Client> {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        ACCEPT,
+        HeaderValue::from_static("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),
+    );
+    headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.9"));
+    reqwest::Client::builder()
+        .default_headers(headers)
+        .user_agent(config.user_agent.clone())
+        .timeout(config.request_timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .cookie_store(true)
+        .build()
+        .context("build searxng client")
+}
+
 fn typing_delay_for_query(query: &str) -> Duration {
     let chars = query.chars().count().max(1) as u64;
     let mut seed = random_seed() ^ hash_query(query);
@@ -2158,6 +2195,45 @@ mod tests {
         assert_eq!(ddg_requests.load(Ordering::SeqCst), 1);
         assert_eq!(searxng_requests.load(Ordering::SeqCst), 1);
         assert_eq!(brave_requests.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn searxng_uses_system_dns_for_operator_configured_hostnames() {
+        let searxng_body = r#"{"results":[{"url":"https://example.com/from-private-searxng"}]}"#;
+        let (mut searxng_url, requests, stop, server) =
+            spawn_raw_http_server(vec![status_response(
+                "200 OK",
+                "application/json",
+                searxng_body,
+            )]);
+        searxng_url
+            .set_host(Some("localhost"))
+            .expect("replace loopback IP with localhost");
+
+        let config =
+            retry_test_config(Url::parse(DDG_LITE_FALLBACK_URL).expect("valid DDG URL"), 1);
+        let mut discovery = DdgDiscovery::new(config).expect("discovery");
+        discovery.cache_layout = None;
+        let response = discovery
+            .try_searxng_discovery(
+                &searxng_url,
+                "private service hostname",
+                1,
+                1,
+                "searxng-system-dns-test",
+            )
+            .await
+            .expect("configured SearXNG hostname resolves with system DNS")
+            .expect("SearXNG returns a result");
+
+        let _ = stop.send(());
+        server.join().expect("join SearXNG server");
+        assert_eq!(response.provider, SEARXNG_PROVIDER);
+        assert_eq!(
+            response.results[0].url,
+            "https://example.com/from-private-searxng"
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
     }
 
     #[test]

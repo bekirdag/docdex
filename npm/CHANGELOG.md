@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.94
+- Resolve packaged SearXNG endpoints through system DNS so private deployment hostnames work without weakening DuckDuckGo's public-DNS protections.
+- Add private-hostname regression coverage and bump packaged release metadata to 0.2.94.
+
 ## 0.2.93
 - Add packaged SearXNG fallback configuration and setup support with the owned `se.overrid.com` endpoint as the default.
 - Keep DuckDuckGo first, SearXNG second, and paid Brave last unless Brave is explicitly selected.

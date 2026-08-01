@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.94
+- Resolve configured SearXNG endpoints with the system DNS client so Docker Compose service hostnames work, while preserving public-only DNS hardening for DuckDuckGo and API providers.
+- Add regression coverage for a configured SearXNG hostname that resolves to a local service.
+- Bump release metadata to 0.2.94.
+
 ## 0.2.93
 - Add a typed SearXNG fallback setting to config and interactive setup, defaulting to `https://se.overrid.com/search` while preserving both environment aliases.
 - Enforce free-first discovery ordering so DuckDuckGo falls back to SearXNG before API providers and Brave remains last unless explicitly selected.

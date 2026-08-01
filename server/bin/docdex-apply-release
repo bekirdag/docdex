@@ -281,6 +281,8 @@ ensure_env_default DOCDEX_PERSONAL_PREFERENCES_PROCESS_IN_BACKGROUND true
 ensure_env_default DOCDEX_PERSONAL_PREFERENCES_CONTEXT_INJECTION_ENABLED true
 ensure_env_default DOCDEX_PERSONAL_PREFERENCES_AUTO_PROJECT_SAFE_TO_PROFILE true
 ensure_env_default DOCDEX_PERSONAL_PREFERENCES_SECRET_SCRUBBER_ENABLED true
+ensure_env_default DOCDEX_WEB_DISCOVERY_PROVIDER duckduckgo_lite
+ensure_env_default DOCDEX_WEB_SEARXNG_URLS https://se.overrid.com/search
 
 if [[ -f /etc/docdex/docdex.env ]]; then
   set -a

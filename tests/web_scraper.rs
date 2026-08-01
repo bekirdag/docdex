@@ -46,6 +46,7 @@ fn base_config(chrome_binary_path: Option<PathBuf>, headless: bool) -> WebConfig
         user_agent: "docdex-test-agent".to_string(),
         ddg_base_url: Url::parse("https://html.duckduckgo.com/html/").expect("valid url"),
         ddg_proxy_base_url: None,
+        searxng_urls: Vec::new(),
         mswarm_base_url: Url::parse("http://127.0.0.1:8080").expect("valid url"),
         mswarm_api_key: None,
         request_timeout: Duration::from_millis(1000),

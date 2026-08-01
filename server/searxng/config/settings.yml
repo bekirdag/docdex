@@ -1,0 +1,20 @@
+use_default_settings: true
+
+general:
+  debug: false
+  instance_name: Overrid SearXNG
+
+search:
+  safe_search: 0
+  formats:
+    - html
+    - json
+
+server:
+  base_url: https://se.overrid.com/
+  limiter: true
+  public_instance: true
+  secret_key: overridden-by-SEARXNG_SECRET
+
+valkey:
+  url: valkey://valkey:6379/0

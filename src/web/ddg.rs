@@ -42,11 +42,6 @@ const DDG_TYPING_MAX_TOTAL_MS: u64 = 2_000;
 const DDG_LITE_FALLBACK_URL: &str = "https://lite.duckduckgo.com/lite/";
 const DDG_BLOCK_WINDOW_SECS: u64 = 86_400;
 const DDG_BLOCK_CACHE_KEY: &str = "ddg:block";
-const DEFAULT_SEARXNG_URLS: &[&str] = &[
-    "https://searx.be/search",
-    "https://searx.tiekoetter.com/search",
-    "https://searx.si/search",
-];
 const BRAVE_API_URL: &str = "https://api.search.brave.com/res/v1/web/search";
 const GOOGLE_CSE_API_URL: &str = "https://www.googleapis.com/customsearch/v1";
 const BING_API_URL: &str = "https://api.bing.microsoft.com/v7.0/search";
@@ -136,12 +131,11 @@ struct FallbackChain {
     providers: Vec<FallbackProvider>,
     next_index: usize,
     skip_ddg: bool,
-    prefer_api: bool,
     preferred_provider: Option<String>,
 }
 
 impl FallbackChain {
-    fn new(config: &WebConfig, prefer_api: bool, preferred_provider: Option<&str>) -> Self {
+    fn new(config: &WebConfig, _prefer_api: bool, preferred_provider: Option<&str>) -> Self {
         let mut providers = Vec::new();
         if is_duckduckgo_host(&config.ddg_base_url) {
             if let Some(ddg_lite) = ddg_lite_fallback_base(&config.ddg_base_url) {
@@ -150,9 +144,9 @@ impl FallbackChain {
         }
 
         let mut api_providers = Vec::new();
-        let mut free_providers = Vec::new();
+        let mut brave_provider = None;
 
-        free_providers.extend(searxng_fallbacks());
+        providers.extend(searxng_fallbacks(config));
 
         if let Some(api_key) = config.mswarm_api_key.as_deref().and_then(nonempty_value) {
             api_providers.push(FallbackProvider::Mswarm {
@@ -164,7 +158,7 @@ impl FallbackChain {
             let base_url = url_from_env("DOCDEX_BRAVE_API_URL")
                 .or_else(|| Url::parse(BRAVE_API_URL).ok())
                 .unwrap_or_else(|| Url::parse(BRAVE_API_URL).expect("default brave url"));
-            api_providers.push(FallbackProvider::Brave { api_key, base_url });
+            brave_provider = Some(FallbackProvider::Brave { api_key, base_url });
         }
         if let (Some(api_key), Some(cx)) = (
             config
@@ -201,12 +195,9 @@ impl FallbackChain {
             api_providers.push(FallbackProvider::Exa { api_key, base_url });
         }
 
-        if prefer_api {
-            providers.extend(api_providers);
-            providers.extend(free_providers);
-        } else {
-            providers.extend(free_providers);
-            providers.extend(api_providers);
+        providers.extend(api_providers);
+        if let Some(brave_provider) = brave_provider {
+            providers.push(brave_provider);
         }
         if let Some(preferred_provider) = preferred_provider {
             prioritize_fallback_provider(&mut providers, preferred_provider);
@@ -215,7 +206,6 @@ impl FallbackChain {
             providers,
             next_index: 0,
             skip_ddg: false,
-            prefer_api,
             preferred_provider: preferred_provider.map(|value| value.to_string()),
         }
     }
@@ -234,10 +224,6 @@ impl FallbackChain {
 
     fn skip_ddg(&mut self) {
         self.skip_ddg = true;
-    }
-
-    fn prefer_api(&self) -> bool {
-        self.prefer_api
     }
 
     fn preferred_provider(&self) -> Option<&str> {
@@ -324,11 +310,7 @@ impl DdgDiscovery {
         if let Some(preferred_provider) = preferred_fallback_provider {
             if let Some(response) = self
                 .maybe_fallback_discovery(
-                    self.fallback_chain_for(
-                        &mut fallback_chain,
-                        provider_prefers_api(preferred_provider),
-                        Some(preferred_provider),
-                    ),
+                    self.fallback_chain_for(&mut fallback_chain, false, Some(preferred_provider)),
                     query,
                     limit,
                     cache_limit,
@@ -753,10 +735,7 @@ impl DdgDiscovery {
         preferred_provider: Option<&str>,
     ) -> &'a mut FallbackChain {
         let replace = match chain.as_ref() {
-            Some(existing) => {
-                existing.prefer_api() != prefer_api
-                    || existing.preferred_provider() != preferred_provider
-            }
+            Some(existing) => existing.preferred_provider() != preferred_provider,
             None => true,
         };
         if replace {
@@ -1371,12 +1350,16 @@ fn is_loopback_url(url: &Url) -> bool {
 }
 
 fn discovery_cache_key(config: &WebConfig, provider: &str, query: &str) -> String {
-    let origin = if provider == MSWARM_PROVIDER {
-        config.mswarm_base_url.as_str()
-    } else {
-        config.ddg_base_url.as_str()
-    };
-    format!("discovery:{provider}:{origin}:{query}")
+    let searxng_origins = config
+        .searxng_urls
+        .iter()
+        .map(Url::as_str)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "discovery:{provider}:ddg={}:searxng={searxng_origins}:mswarm={}:q={query}",
+        config.ddg_base_url, config.mswarm_base_url
+    )
 }
 
 fn ddg_block_entry(layout: &StateLayout) -> std::path::PathBuf {
@@ -1624,18 +1607,6 @@ fn normalized_provider_name(raw: &str) -> String {
     }
 }
 
-fn provider_prefers_api(provider: &str) -> bool {
-    matches!(
-        provider,
-        BRAVE_PROVIDER
-            | GOOGLE_CSE_PROVIDER
-            | BING_PROVIDER
-            | TAVILY_PROVIDER
-            | EXA_PROVIDER
-            | MSWARM_PROVIDER
-    )
-}
-
 fn fallback_provider_name(provider: &FallbackProvider) -> &'static str {
     match provider {
         FallbackProvider::DdgLite(_) => DDG_LITE_PROVIDER,
@@ -1838,32 +1809,13 @@ fn is_url_allowed(raw: &str, blocklist: &[String]) -> bool {
     validate_outbound_url_structure(&parsed).is_ok() && !host_matches_blocklist(&parsed, blocklist)
 }
 
-fn searxng_fallbacks() -> Vec<FallbackProvider> {
-    let mut urls = env_url_list("DOCDEX_WEB_SEARXNG_URLS");
-    if urls.is_empty() {
-        urls = env_url_list("DOCDEX_SEARXNG_URLS");
-    }
-    if urls.is_empty() {
-        for entry in DEFAULT_SEARXNG_URLS {
-            if let Ok(url) = Url::parse(entry) {
-                urls.push(url);
-            }
-        }
-    }
-    urls.into_iter()
+fn searxng_fallbacks(config: &WebConfig) -> Vec<FallbackProvider> {
+    config
+        .searxng_urls
+        .iter()
+        .cloned()
         .map(FallbackProvider::SearxngJson)
         .collect()
-}
-
-fn env_url_list(key: &str) -> Vec<Url> {
-    env_nonempty(key)
-        .map(|value| {
-            value
-                .split(',')
-                .filter_map(|entry| Url::parse(entry.trim()).ok())
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 fn url_from_env(key: &str) -> Option<Url> {
@@ -1915,6 +1867,7 @@ mod tests {
             ),
             ddg_base_url: base_url,
             ddg_proxy_base_url: None,
+            searxng_urls: Vec::new(),
             mswarm_base_url: Url::parse("http://127.0.0.1:1").expect("valid mswarm url"),
             mswarm_api_key: None,
             request_timeout: Duration::from_secs(1),
@@ -2042,6 +1995,37 @@ mod tests {
         .into_bytes()
     }
 
+    fn status_response(status: &str, content_type: &str, body: &str) -> Vec<u8> {
+        format!(
+            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .into_bytes()
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.as_deref() {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
     async fn fetch_single_raw_response(response: Vec<u8>) -> reqwest::Response {
         let (base_url, _requests, stop_tx, server) = spawn_raw_http_server(vec![response]);
         let client = reqwest::Client::builder()
@@ -2098,6 +2082,82 @@ mod tests {
         let _ = stop_tx.send(());
         server.join().expect("join test server");
         (result, requests.load(Ordering::SeqCst))
+    }
+
+    #[test]
+    fn fallback_chain_keeps_searxng_before_brave_for_legacy_order_flags() {
+        let mut config =
+            retry_test_config(Url::parse(DDG_LITE_FALLBACK_URL).expect("valid DDG URL"), 1);
+        config.searxng_urls =
+            vec![Url::parse("https://se.overrid.com/search").expect("valid SearXNG URL")];
+        config.brave_api_key = Some("test-brave-key".to_string());
+
+        for prefer_api in [false, true] {
+            let chain = FallbackChain::new(&config, prefer_api, None);
+            let names = chain
+                .providers
+                .iter()
+                .map(fallback_provider_name)
+                .collect::<Vec<_>>();
+            assert_eq!(names, vec![SEARXNG_PROVIDER, BRAVE_PROVIDER]);
+        }
+
+        let explicitly_selected = FallbackChain::new(&config, true, Some(BRAVE_PROVIDER));
+        assert_eq!(
+            explicitly_selected
+                .providers
+                .first()
+                .map(fallback_provider_name),
+            Some(BRAVE_PROVIDER)
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ddg_block_uses_searxng_without_calling_brave() {
+        static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+        let _env_lock = ENV_LOCK.lock();
+        let (ddg_url, ddg_requests, ddg_stop, ddg_server) =
+            spawn_raw_http_server(vec![status_response(
+                "403 Forbidden",
+                "text/plain",
+                "blocked",
+            )]);
+        let searxng_body = r#"{"results":[{"url":"https://example.com/from-searxng"}]}"#;
+        let (searxng_url, searxng_requests, searxng_stop, searxng_server) = spawn_raw_http_server(
+            vec![status_response("200 OK", "application/json", searxng_body)],
+        );
+        let (brave_url, brave_requests, brave_stop, brave_server) =
+            spawn_raw_http_server(vec![status_response(
+                "200 OK",
+                "application/json",
+                searxng_body,
+            )]);
+        let _brave_url = EnvGuard::set("DOCDEX_BRAVE_API_URL", brave_url.as_str());
+        DDG_PREFETCHED_HOSTS.lock().insert("127.0.0.1".to_string());
+
+        let mut config = retry_test_config(ddg_url, 1);
+        config.searxng_urls = vec![searxng_url];
+        config.brave_api_key = Some("test-brave-key".to_string());
+        let mut discovery = DdgDiscovery::new(config).expect("discovery");
+        discovery.cache_layout = None;
+
+        let response = discovery
+            .discover("ordered fallback", 1)
+            .await
+            .expect("SearXNG fallback succeeds");
+
+        let _ = ddg_stop.send(());
+        let _ = searxng_stop.send(());
+        let _ = brave_stop.send(());
+        ddg_server.join().expect("join DDG server");
+        searxng_server.join().expect("join SearXNG server");
+        brave_server.join().expect("join Brave server");
+
+        assert_eq!(response.provider, SEARXNG_PROVIDER);
+        assert_eq!(response.results[0].url, "https://example.com/from-searxng");
+        assert_eq!(ddg_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(searxng_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(brave_requests.load(Ordering::SeqCst), 0);
     }
 
     #[test]

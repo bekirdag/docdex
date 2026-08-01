@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.2.93
+- Add a typed SearXNG fallback setting to config and interactive setup, defaulting to `https://se.overrid.com/search` while preserving both environment aliases.
+- Enforce free-first discovery ordering so DuckDuckGo falls back to SearXNG before API providers and Brave remains last unless explicitly selected.
+- Include configured SearXNG origins in discovery cache identity, add production server defaults, and ship pinned Wodomini SearXNG deployment assets.
+- Add regression coverage proving a successful SearXNG fallback does not call Brave.
+- Raise the Ammonia HTML sanitizer floor to 3.3.3 to address RUSTSEC-2026-0213.
+- Bump release metadata to 0.2.93.
+
 ## 0.2.92
 - Return HTTP 404 for supplied Streamable HTTP MCP session IDs that are unknown, expired, or already deleted so conforming clients automatically initialize a replacement session.
 - Preserve HTTP 400 for malformed requests and requests that omit a required MCP session header.

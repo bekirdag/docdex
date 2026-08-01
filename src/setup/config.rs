@@ -204,6 +204,10 @@ pub struct WebProviderKeysUpdate {
     pub bing_api_key: Option<String>,
 }
 
+pub struct SearxngConfigUpdate {
+    pub urls: Option<String>,
+}
+
 pub struct MswarmConfigUpdate {
     pub api_key: Option<String>,
     pub base_url: Option<String>,
@@ -269,6 +273,24 @@ pub fn set_web_provider_keys(update: WebProviderKeysUpdate) -> Result<bool> {
         config::write_config(&config_path, &config_data).context("write config")?;
     }
     Ok(changed)
+}
+
+pub fn set_searxng_config(update: SearxngConfigUpdate) -> Result<bool> {
+    let Some(raw_urls) = update.urls else {
+        return Ok(false);
+    };
+    std::env::set_var("DOCDEX_BROWSER_AUTO_INSTALL", "0");
+    let config_path = config::default_config_path()?;
+    let mut config_data = load_config_no_browser(&config_path)?;
+    let values = vec![raw_urls];
+    let normalized = config::normalize_searxng_urls(&values);
+    let next_urls = normalized;
+    if config_data.web.searxng_urls == next_urls {
+        return Ok(false);
+    }
+    config_data.web.searxng_urls = next_urls;
+    config::write_config(&config_path, &config_data).context("write config")?;
+    Ok(true)
 }
 
 pub fn set_mswarm_config(update: MswarmConfigUpdate) -> Result<bool> {
@@ -984,6 +1006,28 @@ local_agent_id = "custom-general-agent"
         assert!(contents.contains("google-key"));
         assert!(contents.contains("cx-id"));
         assert!(contents.contains("bing-key"));
+
+        std::env::remove_var("DOCDEX_CONFIG_PATH");
+        Ok(())
+    }
+
+    #[test]
+    fn set_searxng_config_persists_endpoints_without_changing_primary_provider() -> Result<()> {
+        let _guard = ENV_LOCK.lock();
+        let dir = TempDir::new()?;
+        let path = dir.path().join("config.toml");
+        std::env::set_var("DOCDEX_CONFIG_PATH", &path);
+
+        let changed = set_searxng_config(SearxngConfigUpdate {
+            urls: Some("https://one.example, https://two.example/private/, not-a-url".to_string()),
+        })?;
+        assert!(changed);
+
+        let contents = std::fs::read_to_string(&path)?;
+        assert!(contents.contains("https://one.example/search"));
+        assert!(contents.contains("https://two.example/private/search"));
+        assert!(contents.contains("discovery_provider = \"duckduckgo_lite\""));
+        assert!(!contents.contains("not-a-url"));
 
         std::env::remove_var("DOCDEX_CONFIG_PATH");
         Ok(())

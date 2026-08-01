@@ -1,4 +1,4 @@
----- START OF DOCDEX INFO V0.2.92 ----
+---- START OF DOCDEX INFO V0.2.93 ----
 Docdex URL: http://127.0.0.1:28491
 Use this base URL for Docdex HTTP endpoints.
 Health check endpoint: `GET /healthz` (not `/v1/health`).
@@ -71,6 +71,8 @@ Standard retrieval. The daemon automatically handles the waterfall (Local -> Web
 | docdex_web_research | Explicitly trigger Tier 2 web discovery (configured provider + Headless Chrome). Use when you need external docs not present locally. |
 
 When `DOCDEX_WEB_DISCOVERY_PROVIDER=mswarm` or `[web].discovery_provider = "mswarm"`, Docdex's runtime web-discovery adapter sends `POST {base_url}/v1/swarm/web/search` using `[integrations.mswarm].base_url`, adds the `x-api-key` header from `[integrations.mswarm].api_key`, and sends JSON shaped like `{ "query": "<search query>", "tool_id": "docdex" }`. Treat this as a runtime integration detail: agents should normally configure and invoke Docdex search/web tools rather than calling the raw mswarm endpoint directly unless they are debugging the integration itself.
+
+With the default `duckduckgo_lite` provider, Docdex uses a free-first discovery chain: local DuckDuckGo/Chromium, configured SearXNG JSON endpoints, then API providers with Brave last unless it was explicitly selected. Configure SearXNG through `[web].searxng_urls` or `DOCDEX_WEB_SEARXNG_URLS` (`DOCDEX_SEARXNG_URLS` remains a compatibility alias).
 
 ### B. Code Intelligence (AST & Graph)
 

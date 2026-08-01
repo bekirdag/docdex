@@ -114,6 +114,11 @@ pub(crate) fn apply_env_overrides(config: &mut AppConfig) {
     if let Some(value) = env_trimmed("DOCDEX_WEB_DISCOVERY_PROVIDER") {
         config.web.discovery_provider = value;
     }
+    let searxng_urls = env_searxng_urls("DOCDEX_WEB_SEARXNG_URLS")
+        .or_else(|| env_searxng_urls("DOCDEX_SEARXNG_URLS"));
+    if let Some(searxng_urls) = searxng_urls {
+        config.web.searxng_urls = searxng_urls;
+    }
     if let Some(value) = env_bool("DOCDEX_DELEGATION_ENABLED") {
         config.llm.delegation.enabled = value;
     }
@@ -354,6 +359,13 @@ pub(crate) fn apply_env_overrides(config: &mut AppConfig) {
         config.repo_encryption.web_discovery_enabled = value;
     }
     config.repo_encryption.apply_defaults();
+}
+
+fn env_searxng_urls(key: &str) -> Option<Vec<String>> {
+    std::env::var_os(key).map(|raw| {
+        let values = vec![raw.to_string_lossy().into_owned()];
+        normalize_searxng_urls(&values)
+    })
 }
 
 pub fn write_config(path: &Path, config: &AppConfig) -> Result<()> {

@@ -1,0 +1,43 @@
+name: docdex-searxng
+
+services:
+  valkey:
+    image: docker.io/valkey/valkey:8.1-alpine
+    command: valkey-server --save 30 1 --loglevel warning
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.50
+    networks:
+      searxng:
+        ipv4_address: 172.30.84.11
+    volumes:
+      - valkey-data:/data
+
+  searxng:
+    image: docker.io/searxng/searxng:${SEARXNG_VERSION:?set SEARXNG_VERSION}
+    depends_on:
+      - valkey
+    restart: unless-stopped
+    mem_limit: 1g
+    cpus: 2.0
+    ports:
+      - "127.0.0.1:${SEARXNG_PORT:-8888}:8080"
+    environment:
+      SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-https://se.overrid.com/}
+      SEARXNG_SECRET: ${SEARXNG_SECRET:?set SEARXNG_SECRET}
+    networks:
+      searxng:
+        ipv4_address: 172.30.84.10
+    volumes:
+      - ./config:/etc/searxng:rw
+      - searxng-cache:/var/cache/searxng:rw
+
+networks:
+  searxng:
+    ipam:
+      config:
+        - subnet: 172.30.84.0/24
+
+volumes:
+  searxng-cache:
+  valkey-data:

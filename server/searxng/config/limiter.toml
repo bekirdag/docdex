@@ -1,0 +1,7 @@
+[botdetection]
+trusted_proxies = ["127.0.0.0/8", "::1", "172.30.84.0/24"]
+
+[botdetection.ip_lists]
+# Wodomini, Suku, and local Docdex currently share this public egress. Keep
+# this list narrow: passlisted clients bypass SearXNG's API limiter.
+pass_ip = ["127.0.0.0/8", "::1", "172.30.84.1/32", "95.70.192.142/32"]

@@ -16,6 +16,7 @@ pub struct WebConfig {
     pub user_agent: String,
     pub ddg_base_url: Url,
     pub ddg_proxy_base_url: Option<Url>,
+    pub searxng_urls: Vec<Url>,
     pub mswarm_base_url: Url,
     pub mswarm_api_key: Option<String>,
     pub request_timeout: Duration,
@@ -64,6 +65,10 @@ impl WebConfig {
             .and_then(|value| normalize_nonempty(value))
             .or_else(config_ddg_proxy_base_url)
             .and_then(|value| Url::parse(&value).ok());
+        let searxng_urls = env_searxng_urls("DOCDEX_WEB_SEARXNG_URLS")
+            .or_else(|| env_searxng_urls("DOCDEX_SEARXNG_URLS"))
+            .or_else(config_searxng_urls)
+            .unwrap_or_else(default_runtime_searxng_urls);
         let mswarm_base_url = env::var("DOCDEX_MSWARM_BASE_URL")
             .ok()
             .and_then(|value| normalize_nonempty(value))
@@ -138,6 +143,7 @@ impl WebConfig {
             user_agent,
             ddg_base_url,
             ddg_proxy_base_url,
+            searxng_urls,
             mswarm_base_url,
             mswarm_api_key,
             request_timeout: Duration::from_millis(request_timeout_ms),
@@ -243,6 +249,41 @@ fn config_ddg_proxy_base_url() -> Option<String> {
     }
     let config = config::load_config_from_path(&path).ok()?;
     config.web.ddg_proxy_base_url.and_then(normalize_nonempty)
+}
+
+fn config_searxng_urls() -> Option<Vec<Url>> {
+    let path = config::default_config_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let text = fs::read_to_string(path).ok()?;
+    let mut config = config::parse_config_text(&text).ok()?;
+    config.apply_defaults().ok()?;
+    Some(
+        config::normalize_searxng_urls(&config.web.searxng_urls)
+            .into_iter()
+            .filter_map(|value| Url::parse(&value).ok())
+            .collect(),
+    )
+}
+
+fn env_searxng_urls(key: &str) -> Option<Vec<Url>> {
+    env::var_os(key).map(|raw| runtime_searxng_urls(&raw.to_string_lossy()))
+}
+
+fn runtime_searxng_urls(raw: &str) -> Vec<Url> {
+    let values = vec![raw.to_string()];
+    config::normalize_searxng_urls(&values)
+        .into_iter()
+        .filter_map(|value| Url::parse(&value).ok())
+        .collect()
+}
+
+fn default_runtime_searxng_urls() -> Vec<Url> {
+    config::default_searxng_urls()
+        .into_iter()
+        .filter_map(|value| Url::parse(&value).ok())
+        .collect()
 }
 
 fn config_brave_api_key() -> Option<String> {
@@ -606,6 +647,62 @@ mod tests {
             Url::parse("https://api.mswarm.org/").expect("valid url")
         );
         assert_eq!(web_config.mswarm_api_key.as_deref(), Some("mswarm-key"));
+        Ok(())
+    }
+
+    #[test]
+    fn web_config_resolves_searxng_precedence_and_ignores_invalid_urls(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp = TempDir::new()?;
+        let config_path = temp.path().join("config.toml");
+
+        let mut config = config::AppConfig::default();
+        config.web.searxng_urls = vec!["https://typed.example".to_string()];
+        config.apply_defaults()?;
+        config::write_config(&config_path, &config)?;
+
+        let env = EnvSnapshot::new(&[
+            "DOCDEX_CONFIG_PATH",
+            "DOCDEX_BROWSER_AUTO_INSTALL",
+            "DOCDEX_WEB_SEARXNG_URLS",
+            "DOCDEX_SEARXNG_URLS",
+        ]);
+        env.set("DOCDEX_CONFIG_PATH", config_path.to_string_lossy().as_ref());
+        env.set("DOCDEX_BROWSER_AUTO_INSTALL", "0");
+        env.clear("DOCDEX_WEB_SEARXNG_URLS");
+        env.clear("DOCDEX_SEARXNG_URLS");
+        let _ = config::load_config_from_path(&config_path)?;
+        env.set(
+            "DOCDEX_WEB_SEARXNG_URLS",
+            "https://primary.example, ftp://invalid.example",
+        );
+        env.set("DOCDEX_SEARXNG_URLS", "https://legacy.example/base");
+
+        assert_eq!(
+            WebConfig::from_env().searxng_urls,
+            vec![Url::parse("https://primary.example/search")?]
+        );
+
+        env.clear("DOCDEX_WEB_SEARXNG_URLS");
+        assert_eq!(
+            WebConfig::from_env().searxng_urls,
+            vec![Url::parse("https://legacy.example/base/search")?]
+        );
+
+        env.clear("DOCDEX_SEARXNG_URLS");
+        assert_eq!(
+            WebConfig::from_env().searxng_urls,
+            vec![Url::parse("https://typed.example/search")?]
+        );
+
+        env.set(
+            "DOCDEX_WEB_SEARXNG_URLS",
+            "not-a-url, ftp://invalid.example",
+        );
+        assert!(WebConfig::from_env().searxng_urls.is_empty());
+
+        env.set("DOCDEX_WEB_SEARXNG_URLS", "");
+        assert!(WebConfig::from_env().searxng_urls.is_empty());
         Ok(())
     }
 }

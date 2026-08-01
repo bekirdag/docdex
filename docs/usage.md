@@ -794,6 +794,20 @@ startup_timeout_sec = 300
 - `DOCDEX_WEB_ENABLED=1` to enable (daemon sets this by default unless overridden).
 - `DOCDEX_OFFLINE=1` to force offline.
 - `DOCDEX_WEB_DISCOVERY_PROVIDER` or `[web].discovery_provider` to choose the discovery backend (`duckduckgo_lite` by default, `mswarm` when configured).
+- With the default `duckduckgo_lite` provider, discovery tries DuckDuckGo first,
+  configured SearXNG JSON endpoints second, and paid/API providers afterward;
+  Brave is the final fallback unless explicitly selected as the primary provider.
+- Configure SearXNG with a comma-separated `DOCDEX_WEB_SEARXNG_URLS` value
+  (`DOCDEX_SEARXNG_URLS` remains a compatibility alias) or a typed list in
+  `config.toml`. Bare instance URLs are normalized to `/search`:
+  ```toml
+  [web]
+  searxng_urls = ["https://se.overrid.com/search"]
+  ```
+  Set `searxng_urls = []` (or an explicitly empty
+  `DOCDEX_WEB_SEARXNG_URLS`) to disable this fallback. Invalid explicit values
+  fail closed to an empty SearXNG list instead of silently sending queries to
+  the default endpoint.
 - `DOCDEX_WEB_*` knobs for thresholds, timeouts, cache TTL, and backoff.
 - `DOCDEX_WEB_BROWSER` / `DOCDEX_CHROME_PATH` to set a Chromium binary.
 - `web.scraper.engine` in `config.toml` is `chromium` (only supported engine).

@@ -4,6 +4,7 @@ use anyhow::{anyhow, Context, Result};
 use clap::{ArgAction, Args};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
+use url::Url;
 
 #[path = "config/env_overrides.rs"]
 mod env_overrides;
@@ -59,6 +60,7 @@ const DEFAULT_DISCOVERY_PROVIDER: &str = "duckduckgo_lite";
 const DEFAULT_WEB_ENGINE: &str = "chromium";
 const DEFAULT_MSWARM_BASE_URL: &str = "https://api.mswarm.org/";
 const DEFAULT_MSWARM_CLIENT_TYPE: &str = "free_docdex_client";
+pub const DEFAULT_SEARXNG_SEARCH_URL: &str = "https://se.overrid.com/search";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -201,6 +203,7 @@ impl AppConfig {
         if self.web.user_agent.trim().is_empty() {
             self.web.user_agent = default_web_user_agent();
         }
+        self.web.searxng_urls = normalize_searxng_urls(&self.web.searxng_urls);
         if self.integrations.mswarm.base_url.trim().is_empty() {
             self.integrations.mswarm.base_url = default_mswarm_base_url();
         }
@@ -765,6 +768,8 @@ pub struct WebConfigSection {
     pub ddg_base_url: Option<String>,
     #[serde(default)]
     pub ddg_proxy_base_url: Option<String>,
+    #[serde(default = "default_searxng_urls")]
+    pub searxng_urls: Vec<String>,
     #[serde(default = "default_web_min_spacing_ms")]
     pub min_spacing_ms: u64,
     #[serde(default = "default_web_cache_ttl_secs")]
@@ -788,6 +793,7 @@ impl Default for WebConfigSection {
             user_agent: default_web_user_agent(),
             ddg_base_url: None,
             ddg_proxy_base_url: None,
+            searxng_urls: default_searxng_urls(),
             min_spacing_ms: default_web_min_spacing_ms(),
             cache_ttl_secs: default_web_cache_ttl_secs(),
             blocklist: Vec::new(),
@@ -1721,6 +1727,43 @@ pub(crate) fn default_discovery_provider() -> String {
     DEFAULT_DISCOVERY_PROVIDER.to_string()
 }
 
+pub fn default_searxng_urls() -> Vec<String> {
+    vec![DEFAULT_SEARXNG_SEARCH_URL.to_string()]
+}
+
+pub fn normalize_searxng_urls(values: &[String]) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for value in values.iter().flat_map(|value| value.split(',')) {
+        let Some(url) = normalize_searxng_url(value) else {
+            continue;
+        };
+        if !normalized.contains(&url) {
+            normalized.push(url);
+        }
+    }
+    normalized
+}
+
+fn normalize_searxng_url(raw: &str) -> Option<String> {
+    let mut url = Url::parse(raw.trim()).ok()?;
+    if !matches!(url.scheme(), "http" | "https") || url.host().is_none() {
+        return None;
+    }
+    url.set_query(None);
+    url.set_fragment(None);
+
+    let path = url.path().trim_end_matches('/');
+    let search_path = if path.is_empty() {
+        "/search".to_string()
+    } else if path.ends_with("/search") {
+        path.to_string()
+    } else {
+        format!("{path}/search")
+    };
+    url.set_path(&search_path);
+    Some(url.to_string())
+}
+
 pub(crate) fn default_web_user_agent() -> String {
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36".to_string()
 }
@@ -1748,6 +1791,76 @@ fn default_web_cache_ttl_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn searxng_config_defaults_and_normalizes_search_endpoints() {
+        let config = AppConfig::default();
+        assert_eq!(
+            config.web.searxng_urls,
+            vec![DEFAULT_SEARXNG_SEARCH_URL.to_string()]
+        );
+
+        let values = vec![
+            "https://one.example, https://two.example/internal/".to_string(),
+            "https://one.example/search?stale=1".to_string(),
+            "ftp://invalid.example, not-a-url".to_string(),
+        ];
+        assert_eq!(
+            normalize_searxng_urls(&values),
+            vec![
+                "https://one.example/search".to_string(),
+                "https://two.example/internal/search".to_string(),
+            ]
+        );
+
+        let mut disabled = AppConfig::default();
+        disabled.web.searxng_urls.clear();
+        disabled.apply_defaults().expect("defaults");
+        assert!(disabled.web.searxng_urls.is_empty());
+
+        let mut invalid = AppConfig::default();
+        invalid.web.searxng_urls = vec!["ftp://invalid.example".to_string()];
+        invalid.apply_defaults().expect("defaults");
+        assert!(invalid.web.searxng_urls.is_empty());
+    }
+
+    #[test]
+    fn searxng_env_override_prefers_web_name_then_legacy_name() {
+        let _guard = crate::setup::test_support::ENV_LOCK.lock();
+        std::env::set_var("DOCDEX_WEB_SEARXNG_URLS", "https://primary.example");
+        std::env::set_var("DOCDEX_SEARXNG_URLS", "https://legacy.example");
+
+        let mut config = AppConfig::default();
+        config.web.searxng_urls = vec!["https://typed.example/search".to_string()];
+        apply_env_overrides(&mut config);
+        assert_eq!(
+            config.web.searxng_urls,
+            vec!["https://primary.example/search".to_string()]
+        );
+
+        std::env::remove_var("DOCDEX_WEB_SEARXNG_URLS");
+        let mut config = AppConfig::default();
+        config.web.searxng_urls = vec!["https://typed.example/search".to_string()];
+        apply_env_overrides(&mut config);
+        assert_eq!(
+            config.web.searxng_urls,
+            vec!["https://legacy.example/search".to_string()]
+        );
+
+        std::env::remove_var("DOCDEX_SEARXNG_URLS");
+        let mut config = AppConfig::default();
+        config.web.searxng_urls = vec!["https://typed.example/search".to_string()];
+        apply_env_overrides(&mut config);
+        assert_eq!(
+            config.web.searxng_urls,
+            vec!["https://typed.example/search".to_string()]
+        );
+
+        std::env::set_var("DOCDEX_WEB_SEARXNG_URLS", "not-a-url");
+        apply_env_overrides(&mut config);
+        assert!(config.web.searxng_urls.is_empty());
+        std::env::remove_var("DOCDEX_WEB_SEARXNG_URLS");
+    }
 
     #[test]
     fn default_personal_preferences_storage_follows_explicit_global_state_without_legacy_data() {

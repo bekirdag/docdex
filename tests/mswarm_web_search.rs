@@ -167,6 +167,7 @@ fn discovery_uses_mswarm_web_search() -> Result<(), Box<dyn Error>> {
         user_agent: "docdexd-test".to_string(),
         ddg_base_url: Url::parse("https://lite.duckduckgo.com/lite/").expect("valid url"),
         ddg_proxy_base_url: None,
+        searxng_urls: Vec::new(),
         mswarm_base_url: server.base_url(),
         mswarm_api_key: Some("mswarm-key".to_string()),
         request_timeout: Duration::from_millis(500),

@@ -37,6 +37,7 @@ use crate::web::browser_install;
 use std::env;
 
 const MSWARM_TERMS: &str = include_str!("../../docs/mswarm-data-collection-terms.md");
+const WEB_PROVIDER_TOTAL: usize = 5;
 const MENU_STEPS: [StepKey; 5] = [
     StepKey::Ollama,
     StepKey::EmbedModel,
@@ -106,6 +107,7 @@ pub trait WizardServices {
     fn install_chromium(&self) -> Result<browser_install::BrowserInstallResult>;
     fn set_browser_path(&self, path: &Path, kind: &str) -> Result<()>;
     fn set_web_provider_keys(&self, update: config::WebProviderKeysUpdate) -> Result<bool>;
+    fn set_searxng_config(&self, update: config::SearxngConfigUpdate) -> Result<bool>;
     fn set_mswarm_config(&self, update: config::MswarmConfigUpdate) -> Result<bool>;
     fn ensure_mswarm_consent(
         &self,
@@ -187,6 +189,10 @@ impl WizardServices for RealServices {
 
     fn set_web_provider_keys(&self, update: config::WebProviderKeysUpdate) -> Result<bool> {
         config::set_web_provider_keys(update)
+    }
+
+    fn set_searxng_config(&self, update: config::SearxngConfigUpdate) -> Result<bool> {
+        config::set_searxng_config(update)
     }
 
     fn set_mswarm_config(&self, update: config::MswarmConfigUpdate) -> Result<bool> {
@@ -639,7 +645,7 @@ fn build_menu_details<S: WizardServices>(
     let config = load_summary_config();
     let provider_status = resolve_web_provider_status(config.as_ref());
     let provider_count = provider_status.configured_count();
-    let providers_detail = Some(format!("{provider_count}/4 configured"));
+    let providers_detail = Some(format!("{provider_count}/{WEB_PROVIDER_TOTAL} configured"));
     let providers_status = if provider_count > 0 {
         StepStatus::Done
     } else {
@@ -795,7 +801,17 @@ fn build_menu_details<S: WizardServices>(
     }
 
     let mut web_body = String::new();
-    let _ = writeln!(web_body, "Web search API keys:");
+    let _ = writeln!(web_body, "Web search providers:");
+    let _ = writeln!(
+        web_body,
+        "- SearXNG: {} endpoint(s){}",
+        provider_status.searxng_endpoint_count,
+        if provider_status.searxng_urls.from_env {
+            " (env)"
+        } else {
+            ""
+        }
+    );
     let _ = writeln!(
         web_body,
         "- Brave Search: {}",
@@ -825,7 +841,7 @@ fn build_menu_details<S: WizardServices>(
             "no"
         }
     );
-    web_body.push_str("\nSelect this section to add or update API keys.");
+    web_body.push_str("\nSelect this section to update provider settings.");
 
     let embed_options = if embed_models.is_empty() {
         None
@@ -1404,14 +1420,25 @@ fn configure_web_providers_section<I: WizardInput, S: WizardServices>(
     state.set_current(StepKey::WebProviders);
     let config = load_summary_config();
     let current = resolve_web_provider_status(config.as_ref());
-    let current_detail = format!("{}/4 configured", current.configured_count());
+    let current_detail = format!(
+        "{}/{} configured",
+        current.configured_count(),
+        WEB_PROVIDER_TOTAL
+    );
 
+    let searxng_current = current.searxng_urls.value.clone();
     let brave_current = current_key_display(&current.brave, true);
     let google_api_current = current_key_display(&current.google_cse_key, true);
     let google_cse_current = current_key_display(&current.google_cse_cx, false);
     let bing_current = current_key_display(&current.bing, true);
     let mswarm_key_current = current_key_display(&current.mswarm_api_key, true);
     let mswarm_base_url_current = current_key_display(&current.mswarm_base_url, false);
+    let searxng_urls = input.prompt_text(
+        state,
+        "SearXNG search endpoints (comma-separated; DuckDuckGo remains primary)",
+        searxng_current.as_deref(),
+        false,
+    )?;
     let brave_key = input.prompt_text(
         state,
         "Brave Search API key (X-Subscription-Token)",
@@ -1454,7 +1481,8 @@ fn configure_web_providers_section<I: WizardInput, S: WizardServices>(
         current.mswarm_selected_for_web,
     )?;
 
-    if brave_key.is_none()
+    if searxng_urls.is_none()
+        && brave_key.is_none()
         && google_api_key.is_none()
         && google_cse_cx.is_none()
         && bing_key.is_none()
@@ -1477,13 +1505,20 @@ fn configure_web_providers_section<I: WizardInput, S: WizardServices>(
         google_cse_cx: google_cse_cx.clone(),
         bing_api_key: bing_key.clone(),
     })?;
+    services.set_searxng_config(config::SearxngConfigUpdate {
+        urls: searxng_urls.clone(),
+    })?;
     services.set_mswarm_config(config::MswarmConfigUpdate {
         api_key: mswarm_api_key.clone(),
         base_url: mswarm_base_url.clone(),
         use_for_web_search: Some(use_mswarm_for_web),
     })?;
     let refreshed = resolve_web_provider_status(load_summary_config().as_ref());
-    let configured_detail = format!("{}/4 configured", refreshed.configured_count());
+    let configured_detail = format!(
+        "{}/{} configured",
+        refreshed.configured_count(),
+        WEB_PROVIDER_TOTAL
+    );
     let status = if refreshed.configured_count() > 0 {
         StepStatus::Done
     } else {
@@ -2233,6 +2268,8 @@ struct ProviderKeyStatus {
 
 #[derive(Clone, Default)]
 struct WebProviderStatus {
+    searxng_urls: ProviderKeyStatus,
+    searxng_endpoint_count: usize,
     brave: ProviderKeyStatus,
     google_cse_key: ProviderKeyStatus,
     google_cse_cx: ProviderKeyStatus,
@@ -2245,6 +2282,9 @@ struct WebProviderStatus {
 impl WebProviderStatus {
     fn configured_count(&self) -> usize {
         let mut count = 0;
+        if self.searxng_urls.configured {
+            count += 1;
+        }
         if self.brave.configured {
             count += 1;
         }
@@ -2262,7 +2302,16 @@ impl WebProviderStatus {
 }
 
 fn resolve_web_provider_status(config: Option<&app_config::AppConfig>) -> WebProviderStatus {
+    let searxng_urls = resolve_searxng_status(config);
+    let searxng_endpoint_count = searxng_urls
+        .value
+        .as_deref()
+        .map(|value| vec![value.to_string()])
+        .map(|values| app_config::normalize_searxng_urls(&values).len())
+        .unwrap_or_default();
     WebProviderStatus {
+        searxng_urls,
+        searxng_endpoint_count,
         brave: resolve_key_status(config, "DOCDEX_BRAVE_API_KEY", |cfg| {
             cfg.web.providers.brave_api_key.as_ref()
         }),
@@ -2283,6 +2332,40 @@ fn resolve_web_provider_status(config: Option<&app_config::AppConfig>) -> WebPro
         }),
         mswarm_selected_for_web: resolve_discovery_provider(config).eq_ignore_ascii_case("mswarm"),
     }
+}
+
+fn resolve_searxng_status(config: Option<&app_config::AppConfig>) -> ProviderKeyStatus {
+    let env_value = env::var("DOCDEX_WEB_SEARXNG_URLS")
+        .ok()
+        .and_then(|value| normalized_searxng_display(&value))
+        .or_else(|| {
+            env::var("DOCDEX_SEARXNG_URLS")
+                .ok()
+                .and_then(|value| normalized_searxng_display(&value))
+        });
+    if let Some(value) = env_value {
+        return ProviderKeyStatus {
+            configured: true,
+            from_env: true,
+            value: Some(value),
+        };
+    }
+
+    let config_value = config
+        .map(|config| config.web.searxng_urls.clone())
+        .unwrap_or_else(app_config::default_searxng_urls);
+    let value = normalized_searxng_display(&config_value.join(","));
+    ProviderKeyStatus {
+        configured: value.is_some(),
+        from_env: false,
+        value,
+    }
+}
+
+fn normalized_searxng_display(raw: &str) -> Option<String> {
+    let values = vec![raw.to_string()];
+    let urls = app_config::normalize_searxng_urls(&values);
+    (!urls.is_empty()).then(|| urls.join(", "))
 }
 
 fn resolve_discovery_provider(config: Option<&app_config::AppConfig>) -> String {
@@ -3220,6 +3303,10 @@ mod tests {
             Ok(false)
         }
 
+        fn set_searxng_config(&self, _update: config::SearxngConfigUpdate) -> Result<bool> {
+            Ok(false)
+        }
+
         fn set_mswarm_config(&self, _update: config::MswarmConfigUpdate) -> Result<bool> {
             Ok(false)
         }
@@ -3330,6 +3417,10 @@ mod tests {
             Ok(false)
         }
 
+        fn set_searxng_config(&self, _update: config::SearxngConfigUpdate) -> Result<bool> {
+            Ok(false)
+        }
+
         fn set_mswarm_config(&self, update: config::MswarmConfigUpdate) -> Result<bool> {
             self.api_key_updates
                 .lock()
@@ -3362,6 +3453,34 @@ mod tests {
         let value = input.prompt_text(&state, "Prompt", None, false)?;
         assert_eq!(value.as_deref(), Some("hello"));
         Ok(())
+    }
+
+    #[test]
+    fn web_provider_status_counts_default_and_environment_searxng_endpoints() {
+        let _guard = ENV_LOCK.lock();
+        let _primary = EnvGuard::clear("DOCDEX_WEB_SEARXNG_URLS");
+        let _legacy = EnvGuard::clear("DOCDEX_SEARXNG_URLS");
+        let config = app_config::AppConfig::default();
+
+        let status = resolve_web_provider_status(Some(&config));
+        assert_eq!(status.searxng_endpoint_count, 1);
+        assert_eq!(status.configured_count(), 1);
+        assert!(!status.searxng_urls.from_env);
+        assert_eq!(WEB_PROVIDER_TOTAL, 5);
+
+        std::env::set_var(
+            "DOCDEX_WEB_SEARXNG_URLS",
+            "https://one.example, https://two.example/search, not-a-url",
+        );
+        std::env::set_var("DOCDEX_SEARXNG_URLS", "https://legacy.example");
+        let status = resolve_web_provider_status(Some(&config));
+        assert_eq!(status.searxng_endpoint_count, 2);
+        assert_eq!(status.configured_count(), 1);
+        assert!(status.searxng_urls.from_env);
+        assert_eq!(
+            status.searxng_urls.value.as_deref(),
+            Some("https://one.example/search, https://two.example/search")
+        );
     }
 
     #[test]

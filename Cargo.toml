@@ -1,6 +1,6 @@
 [package]
 name = "docdexd"
-version = "0.2.92"
+version = "0.2.93"
 edition = "2021"
 
 [dependencies]
@@ -32,7 +32,7 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 hyper-util = { version = "0.1", features = ["server", "tokio", "http1", "http2", "service"] }
 hyper = { version = "1", features = ["server", "http1", "http2"] }
 tower = "0.4"
-ammonia = "3"
+ammonia = "3.3.3"
 aes-gcm = "0.10"
 base64 = "0.22"
 html2text = "0.13"

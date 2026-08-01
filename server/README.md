@@ -12,7 +12,9 @@ daemon. It is intentionally separate from the client/runtime source tree.
   `/mnt/docdex`.
 - Web discovery is enabled for the hosted daemon, including encrypted-repo
   search policy, and release activation attempts to install Docdex-managed
-  Chromium under `/mnt/docdex/state` so link fetches work.
+  Chromium under `/mnt/docdex/state` so link fetches work. Discovery defaults
+  to local DuckDuckGo first, `https://se.overrid.com/search` second, and paid
+  providers such as Brave only after those free paths fail.
 - Repo memory, conversation memory, profile memory, personal preferences, and
   mind-clone context are enabled for hosted/company-wide chat clients. The
   shared personal-preferences store lives at `/mnt/docdex/personal_preferences`.

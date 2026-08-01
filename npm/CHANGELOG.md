@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.2.93
+- Add packaged SearXNG fallback configuration and setup support with the owned `se.overrid.com` endpoint as the default.
+- Keep DuckDuckGo first, SearXNG second, and paid Brave last unless Brave is explicitly selected.
+- Add fallback-order, setup, configuration-precedence, and no-paid-call regression coverage.
+- Ship the native core with the patched Ammonia HTML sanitizer floor for RUSTSEC-2026-0213.
+- Bump packaged release metadata to 0.2.93.
+
 ## 0.2.92
 - Return HTTP 404 for unknown, expired, or already deleted packaged Streamable HTTP MCP sessions so clients automatically initialize replacements.
 - Preserve HTTP 400 for missing required MCP session headers and add focused recovery regression coverage.

@@ -38,16 +38,16 @@ flowchart TD
         X -->|no| W2[Unavailable: missing_dependency]
         X -->|yes| Y[Init DdgDiscovery + pacer]
         Y --> Z{DDG blocked (24h)?}
-        Z -->|yes| AA[Fallback chain (prefer API)]
+        Z -->|yes| AA[Free-first fallback chain]
         Z -->|no| AB[DDG Lite discovery]
         AB -->|blocked| AC[Mark DDG blocked + fallback]
         AB -->|ok| AD[Discovery response]
-        AA --> AE[Try SearxNG JSON]
-        AA --> AG[Try Brave API]
-        AA --> AH[Try Google CSE]
-        AA --> AI[Try Bing API]
-        AA --> AJ[Try Tavily API]
-        AA --> AK[Try Exa API]
+        AA --> AE[Try configured SearXNG JSON endpoints]
+        AE -->|empty/error| AH[Try mSwarm if configured]
+        AH -->|empty/error| AI[Try Google CSE]
+        AI -->|empty/error| AJ[Try Bing]
+        AJ -->|empty/error| AK[Try Tavily then Exa]
+        AK -->|empty/error| AG[Try paid Brave API last]
         AE --> AL{response?}
         AG --> AL
         AH --> AL

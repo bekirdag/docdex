@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- Make dedicated-server deployments select SearXNG first, followed by local DuckDuckGo and paid providers last.
+- Keep the owned SearXNG instance useful when default upstreams are suspended by enabling Bing, Seznam, and Search.ch as additional free engines.
 
 ## 0.2.94
 - Resolve configured SearXNG endpoints with the system DNS client so Docker Compose service hostnames work, while preserving public-only DNS hardening for DuckDuckGo and API providers.

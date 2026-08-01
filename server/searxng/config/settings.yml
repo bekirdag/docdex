@@ -16,5 +16,15 @@ server:
   public_instance: true
   secret_key: overridden-by-SEARXNG_SECRET
 
+engines:
+  # Keep several free general-search engines active so one upstream CAPTCHA or
+  # suspension does not make the owned SearXNG service return an empty result.
+  - name: bing
+    disabled: false
+  - name: seznam
+    disabled: false
+  - name: searchch
+    disabled: false
+
 valkey:
   url: valkey://valkey:6379/0

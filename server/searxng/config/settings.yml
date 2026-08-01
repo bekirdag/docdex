@@ -21,6 +21,12 @@ engines:
   # suspension does not make the owned SearXNG service return an empty result.
   - name: bing
     disabled: false
+  - name: qwant
+    disabled: false
+  - name: dogpile
+    disabled: false
+  - name: privacywall
+    disabled: false
   - name: seznam
     disabled: false
   - name: searchch

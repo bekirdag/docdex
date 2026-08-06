@@ -12,6 +12,7 @@
 - Restore the terminal and report a readable error if the setup wizard panics, instead of the window closing silently.
 - Make dedicated-server deployments select SearXNG first, followed by local DuckDuckGo and paid providers last.
 - Keep the owned SearXNG instance useful when default upstreams are suspended by enabling Bing, Qwant, Dogpile, PrivacyWall, Seznam, and Search.ch as additional free engines.
+- Make interrupted-install backup recovery deterministic when two backups share an mtime, so the newer install nonce wins instead of readdir order.
 - Bump release metadata to 0.2.95.
 
 ## 0.2.94

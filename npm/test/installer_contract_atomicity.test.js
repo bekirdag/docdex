@@ -500,6 +500,13 @@ test("installer contract: interrupted run recovers latest backup then no-ops wit
   const newerSha = await sha256File(newerBinary);
   await writeInstallMetadata({ distDir: newerBackup, platformKey, version, targetTriple, binarySha256: newerSha });
 
+  // Filesystems with coarse mtime granularity report identical times for
+  // directories written back to back, so pin both backups to the same mtime and
+  // prove recovery still picks the newer nonce instead of readdir order.
+  const sameMtime = new Date(1_700_000_000_000);
+  await fs.promises.utimes(olderBackup, sameMtime, sameMtime);
+  await fs.promises.utimes(newerBackup, sameMtime, sameMtime);
+
   const leftoverStage = path.join(distBaseDir, `${platformKey}.stage.0.0`);
   const leftoverFailed = path.join(distBaseDir, `${platformKey}.failed.0.0`);
   await ensureDir(leftoverStage);

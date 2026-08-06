@@ -1015,7 +1015,11 @@ async function selectLatestCandidate(fsModule, candidates) {
     try {
       const stat = await fsModule.promises.stat(candidate.path);
       const mtime = typeof stat.mtimeMs === "number" ? stat.mtimeMs : stat.mtime?.getTime?.() ?? 0;
-      if (mtime > latestMtime) {
+      // Filesystems with coarse mtime granularity can report identical times for
+      // directories written back to back. Break ties on the path so recovery is
+      // deterministic instead of following readdir order; install nonces are
+      // `${Date.now()}.${pid}.${rand}`, so the greater path is also the newer run.
+      if (mtime > latestMtime || (mtime === latestMtime && latest && candidate.path > latest.path)) {
         latestMtime = mtime;
         latest = candidate;
       }

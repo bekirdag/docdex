@@ -113,6 +113,8 @@ pub trait WizardServices {
         &self,
         accepted_at_ms: u128,
     ) -> Result<config::MswarmTelemetryConsentStatus>;
+    fn stored_consent(&self) -> Result<config::StoredMswarmConsent>;
+    fn record_local_consent(&self, accepted_at_ms: u128) -> Result<config::StoredMswarmConsent>;
 }
 
 pub struct RealServices;
@@ -121,15 +123,12 @@ impl WizardServices for RealServices {
     fn detect_local_services(&self) -> Result<LocalServiceDetectionReport> {
         let mut config = load_summary_config().unwrap_or_default();
         config.apply_defaults()?;
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("build local LLM detection runtime")?;
-        runtime.block_on(detect_local_service_report(
+        util::block_on_future(detect_local_service_report(
             config.core.global_state_dir.as_deref(),
             &config.llm,
             service_probe_timeout(),
         ))
+        .context("run local LLM detection")?
     }
 
     fn apply_embedding_candidate(&self, candidate: &LocalDefaultCandidate) -> Result<()> {
@@ -205,6 +204,14 @@ impl WizardServices for RealServices {
     ) -> Result<config::MswarmTelemetryConsentStatus> {
         config::ensure_mswarm_telemetry_consent(accepted_at_ms)
     }
+
+    fn stored_consent(&self) -> Result<config::StoredMswarmConsent> {
+        config::stored_mswarm_consent()
+    }
+
+    fn record_local_consent(&self, accepted_at_ms: u128) -> Result<config::StoredMswarmConsent> {
+        config::record_local_mswarm_consent(accepted_at_ms)
+    }
 }
 
 pub trait WizardInput {
@@ -254,10 +261,41 @@ enum ConsentRecoveryAction {
     NotHandled,
 }
 
+/// Map a key press to a confirm answer, or `None` when the key is ignored.
+///
+/// `Enter` follows `default_yes`; only `n`/`N`/`Esc` ever mean "no".
+fn confirm_decision(code: KeyCode, default_yes: bool) -> Option<bool> {
+    match code {
+        KeyCode::Char('y') | KeyCode::Char('Y') => Some(true),
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Some(false),
+        KeyCode::Enter => Some(default_yes),
+        _ => None,
+    }
+}
+
 pub fn run_wizard(context: SetupContext) -> Result<SetupSummary> {
     let mut input = TuiInput::new()?;
     let services = RealServices;
-    run_wizard_with_input(context, &mut input, &services)
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_wizard_with_input(context, &mut input, &services)
+    }));
+    // Leave the alternate screen before any error reaches the user, otherwise a
+    // panic looks like the setup window closing on its own.
+    drop(input);
+    match result {
+        Ok(summary) => summary,
+        Err(payload) => Err(anyhow!("docdex setup crashed: {}", panic_message(&payload))),
+    }
+}
+
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic".to_string()
+    }
 }
 
 pub fn run_wizard_with_input<I: WizardInput, S: WizardServices>(
@@ -411,10 +449,37 @@ fn configure_consent_section<I: WizardInput, S: WizardServices>(
     services: &S,
 ) -> Result<Option<String>> {
     state.set_current(StepKey::Consent);
+
+    // A previous run already recorded acceptance for this policy version, so do
+    // not ask again; go straight to the settings menu.
+    let stored = services.stored_consent().unwrap_or_default();
+    if stored.covers_current_policy() {
+        state.update_step(
+            StepKey::Consent,
+            StepStatus::Done,
+            Some(format!(
+                "{} {} accepted previously ({}, consent_token={})",
+                stored.client_type,
+                stored.client_id,
+                stored.policy_version,
+                if stored.consent_token_set {
+                    "set"
+                } else {
+                    "missing"
+                }
+            )),
+        );
+        if !stored.consent_token_set {
+            refresh_mswarm_registration(state, input, services);
+        }
+        return Ok(None);
+    }
+
     let prompt = format!(
         "{MSWARM_TERMS}\n\nDocdex requires consent to data collection and telemetry before setup can continue.\nAccept these terms and continue?"
     );
-    if !input.confirm(state, &prompt, false)? {
+    // Y/y and Enter accept; only N/n and Esc decline.
+    if !input.confirm(state, &prompt, true)? {
         let message = "mswarm data collection consent is required to use Docdex.".to_string();
         state.update_step(
             StepKey::Consent,
@@ -424,6 +489,33 @@ fn configure_consent_section<I: WizardInput, S: WizardServices>(
         return Ok(Some(message));
     }
 
+    // Persist the answer before touching the network so a failed or slow mswarm
+    // registration cannot lose it and re-ask on the next run.
+    if let Err(err) = services.record_local_consent(now_ms()) {
+        let detail = format!("failed to save consent locally: {err}");
+        state.update_step(StepKey::Consent, StepStatus::Failed, Some(detail.clone()));
+        return Ok(Some(detail));
+    }
+    state.update_step(
+        StepKey::Consent,
+        StepStatus::Done,
+        Some("accepted".to_string()),
+    );
+
+    refresh_mswarm_registration(state, input, services);
+    Ok(None)
+}
+
+/// Register the accepted consent with mswarm.
+///
+/// Consent is already stored locally by this point, so a registration failure is
+/// reported as a warning on the consent step and setup continues into the menu
+/// instead of closing.
+fn refresh_mswarm_registration<I: WizardInput, S: WizardServices>(
+    state: &mut SetupState,
+    input: &mut I,
+    services: &S,
+) {
     loop {
         match services.ensure_mswarm_consent(now_ms()) {
             Ok(status) => {
@@ -439,20 +531,31 @@ fn configure_consent_section<I: WizardInput, S: WizardServices>(
                     }
                 );
                 state.update_step(StepKey::Consent, StepStatus::Done, Some(detail));
-                return Ok(None);
+                return;
             }
-            Err(err) => match recover_mswarm_consent_failure(state, input, services, &err)? {
-                ConsentRecoveryAction::Retry => continue,
-                ConsentRecoveryAction::Abort(message) => {
-                    state.update_step(StepKey::Consent, StepStatus::Failed, Some(message.clone()));
-                    return Ok(Some(message));
+            Err(err) => {
+                let recovery = recover_mswarm_consent_failure(state, input, services, &err)
+                    .unwrap_or(ConsentRecoveryAction::NotHandled);
+                match recovery {
+                    ConsentRecoveryAction::Retry => continue,
+                    ConsentRecoveryAction::Abort(message) => {
+                        state.update_step(
+                            StepKey::Consent,
+                            StepStatus::Done,
+                            Some(format!("accepted; mswarm registration pending: {message}")),
+                        );
+                        return;
+                    }
+                    ConsentRecoveryAction::NotHandled => {
+                        state.update_step(
+                            StepKey::Consent,
+                            StepStatus::Done,
+                            Some(format!("accepted; mswarm registration pending: {err}")),
+                        );
+                        return;
+                    }
                 }
-                ConsentRecoveryAction::NotHandled => {
-                    let detail = err.to_string();
-                    state.update_step(StepKey::Consent, StepStatus::Failed, Some(detail.clone()));
-                    return Ok(Some(detail));
-                }
-            },
+            }
         }
     }
 }
@@ -2691,17 +2794,14 @@ impl WizardInput for TuiInput {
 
     fn confirm(&mut self, state: &SetupState, prompt: &str, default_yes: bool) -> Result<bool> {
         let hint = if default_yes {
-            "Y=yes, N=no, Enter=Yes, Esc=No"
+            "Y/Enter=Yes, N=No, Esc=No"
         } else {
-            "Y=yes, N=no, Enter=No, Esc=No"
+            "Y=Yes, N/Enter=No, Esc=No"
         };
         loop {
             self.draw_prompt(state, prompt, hint, None, state.current)?;
-            match self.read_key()? {
-                KeyCode::Char('y') | KeyCode::Char('Y') => return Ok(true),
-                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => return Ok(false),
-                KeyCode::Enter => return Ok(default_yes),
-                _ => {}
+            if let Some(answer) = confirm_decision(self.read_key()?, default_yes) {
+                return Ok(answer);
             }
         }
     }
@@ -3078,6 +3178,7 @@ mod tests {
     struct ScriptedInput {
         answers: Vec<ScriptedAnswer>,
         index: usize,
+        confirm_defaults: Vec<bool>,
     }
 
     #[derive(Clone)]
@@ -3090,7 +3191,11 @@ mod tests {
 
     impl ScriptedInput {
         fn new(answers: Vec<ScriptedAnswer>) -> Self {
-            Self { answers, index: 0 }
+            Self {
+                answers,
+                index: 0,
+                confirm_defaults: Vec::new(),
+            }
         }
 
         fn next(&mut self) -> ScriptedAnswer {
@@ -3125,6 +3230,7 @@ mod tests {
             _prompt: &str,
             default_yes: bool,
         ) -> Result<bool> {
+            self.confirm_defaults.push(default_yes);
             match self.next() {
                 ScriptedAnswer::Confirm(value) => Ok(value),
                 _ => Ok(default_yes),
@@ -3181,6 +3287,8 @@ mod tests {
         applied_embeddings: Arc<Mutex<Vec<String>>>,
         applied_delegations: Arc<Mutex<Vec<String>>>,
         ollama_install_calls: Arc<Mutex<usize>>,
+        stored_consent: config::StoredMswarmConsent,
+        consent_calls: Arc<Mutex<usize>>,
     }
 
     impl FakeServices {
@@ -3194,12 +3302,23 @@ mod tests {
                 applied_embeddings: Arc::new(Mutex::new(Vec::new())),
                 applied_delegations: Arc::new(Mutex::new(Vec::new())),
                 ollama_install_calls: Arc::new(Mutex::new(0)),
+                stored_consent: config::StoredMswarmConsent::default(),
+                consent_calls: Arc::new(Mutex::new(0)),
             }
         }
 
         fn with_local_report(mut self, local_report: LocalServiceDetectionReport) -> Self {
             self.local_report = local_report;
             self
+        }
+
+        fn with_stored_consent(mut self, stored: config::StoredMswarmConsent) -> Self {
+            self.stored_consent = stored;
+            self
+        }
+
+        fn consent_calls(&self) -> usize {
+            *self.consent_calls.lock().unwrap()
         }
 
         fn applied_embeddings(&self) -> Vec<String> {
@@ -3315,11 +3434,26 @@ mod tests {
             &self,
             _accepted_at_ms: u128,
         ) -> Result<config::MswarmTelemetryConsentStatus> {
+            *self.consent_calls.lock().unwrap() += 1;
             Ok(config::MswarmTelemetryConsentStatus {
                 client_id: "client-1".to_string(),
                 client_type: "free_docdex_client".to_string(),
                 policy_version: "2026-03-18".to_string(),
                 consent_token_set: true,
+            })
+        }
+
+        fn stored_consent(&self) -> Result<config::StoredMswarmConsent> {
+            Ok(self.stored_consent.clone())
+        }
+
+        fn record_local_consent(
+            &self,
+            _accepted_at_ms: u128,
+        ) -> Result<config::StoredMswarmConsent> {
+            Ok(config::StoredMswarmConsent {
+                accepted: true,
+                ..Default::default()
             })
         }
     }
@@ -3443,6 +3577,20 @@ mod tests {
                     consent_token_set: true,
                 }),
             }
+        }
+
+        fn stored_consent(&self) -> Result<config::StoredMswarmConsent> {
+            Ok(config::StoredMswarmConsent::default())
+        }
+
+        fn record_local_consent(
+            &self,
+            _accepted_at_ms: u128,
+        ) -> Result<config::StoredMswarmConsent> {
+            Ok(config::StoredMswarmConsent {
+                accepted: true,
+                ..Default::default()
+            })
         }
     }
 
@@ -3942,5 +4090,121 @@ api_key = "revoked-key"
                 })
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn confirm_decision_maps_accept_and_decline_keys() {
+        for default_yes in [true, false] {
+            assert_eq!(
+                confirm_decision(KeyCode::Char('y'), default_yes),
+                Some(true)
+            );
+            assert_eq!(
+                confirm_decision(KeyCode::Char('Y'), default_yes),
+                Some(true)
+            );
+            assert_eq!(
+                confirm_decision(KeyCode::Char('n'), default_yes),
+                Some(false)
+            );
+            assert_eq!(
+                confirm_decision(KeyCode::Char('N'), default_yes),
+                Some(false)
+            );
+            assert_eq!(confirm_decision(KeyCode::Esc, default_yes), Some(false));
+            assert_eq!(confirm_decision(KeyCode::Char('x'), default_yes), None);
+        }
+        assert_eq!(confirm_decision(KeyCode::Enter, true), Some(true));
+        assert_eq!(confirm_decision(KeyCode::Enter, false), Some(false));
+    }
+
+    #[test]
+    fn consent_prompt_treats_enter_as_accept() -> Result<()> {
+        let _guard = ENV_LOCK.lock();
+        let mut input = ScriptedInput::new(vec![ScriptedAnswer::Confirm(false)]);
+        let services = FakeServices::new(vec![], None);
+        let context = SetupContext {
+            hardware: super::super::hardware::SetupHardware {
+                total_memory_gb: 16.0,
+                free_disk_bytes: 10 * 1024 * 1024 * 1024,
+                cpu_count: 8,
+            },
+            ollama_path: None,
+        };
+        let _ = run_wizard_with_input(context, &mut input, &services)?;
+        assert_eq!(input.confirm_defaults.first().copied(), Some(true));
+        Ok(())
+    }
+
+    #[test]
+    fn consent_accepted_is_saved_before_mswarm_registration() -> Result<()> {
+        let _guard = ENV_LOCK.lock();
+        let mut input = ScriptedInput::new(vec![
+            ScriptedAnswer::Confirm(true),
+            ScriptedAnswer::Menu(None),
+        ]);
+        // Registration keeps failing; setup must still record the acceptance and
+        // stay open on the settings menu.
+        let services = RecoveringFakeServices::new(vec![Err(
+            "mswarm free client registration failed: connection refused".to_string(),
+        )]);
+        let context = SetupContext {
+            hardware: super::super::hardware::SetupHardware {
+                total_memory_gb: 16.0,
+                free_disk_bytes: 10 * 1024 * 1024 * 1024,
+                cpu_count: 8,
+            },
+            ollama_path: None,
+        };
+        let summary = run_wizard_with_input(context, &mut input, &services)?;
+        assert_ne!(summary.status, "failed");
+        let consent = summary
+            .steps
+            .iter()
+            .find(|step| step.key == StepKey::Consent)
+            .expect("consent step");
+        assert_eq!(consent.status, StepStatus::Done);
+        assert!(consent
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("mswarm registration pending"));
+        Ok(())
+    }
+
+    #[test]
+    fn consent_prompt_is_skipped_when_already_accepted() -> Result<()> {
+        let _guard = ENV_LOCK.lock();
+        let mut input = ScriptedInput::new(vec![ScriptedAnswer::Menu(None)]);
+        let services =
+            FakeServices::new(vec![], None).with_stored_consent(config::StoredMswarmConsent {
+                accepted: true,
+                policy_version: crate::mswarm::effective_policy_version(None),
+                client_id: "client-1".to_string(),
+                client_type: "free_docdex_client".to_string(),
+                consent_token_set: true,
+            });
+        let context = SetupContext {
+            hardware: super::super::hardware::SetupHardware {
+                total_memory_gb: 16.0,
+                free_disk_bytes: 10 * 1024 * 1024 * 1024,
+                cpu_count: 8,
+            },
+            ollama_path: None,
+        };
+        let summary = run_wizard_with_input(context, &mut input, &services)?;
+        let consent = summary
+            .steps
+            .iter()
+            .find(|step| step.key == StepKey::Consent)
+            .expect("consent step");
+        assert_eq!(consent.status, StepStatus::Done);
+        assert!(consent
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("accepted previously"));
+        assert_eq!(services.consent_calls(), 0);
+        Ok(())
     }
 }

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.95
+- Fix `docdex setup` closing right after the consent screen was accepted, caused by a nested Tokio runtime panic during local-service detection.
+- Accept `Y`, `y`, and `Enter` as consent; only `n`, `N`, and `Esc` decline.
+- Save consent locally as soon as it is accepted and skip the screen on later runs, so a failed mswarm registration no longer re-asks or ends setup.
+- Bump packaged release metadata to 0.2.95.
+
 ## 0.2.94
 - Resolve packaged SearXNG endpoints through system DNS so private deployment hostnames work without weakening DuckDuckGo's public-DNS protections.
 - Add private-hostname regression coverage and bump packaged release metadata to 0.2.94.

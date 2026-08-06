@@ -169,15 +169,12 @@ fn refresh_local_library_after_setup() -> Result<()> {
     let config = crate::config::AppConfig::load_default().unwrap_or_default();
     let global_state_dir = config.core.global_state_dir.as_deref();
     let llm_config = config.llm;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .context("build tokio runtime")?;
-    runtime.block_on(crate::llm::local_library::refresh_local_library_if_stale(
+    crate::util::block_on_future(crate::llm::local_library::refresh_local_library_if_stale(
         global_state_dir,
         &llm_config,
         true,
-    ))?;
+    ))
+    .context("refresh local model library")??;
     Ok(())
 }
 

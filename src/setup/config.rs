@@ -234,6 +234,78 @@ pub struct MswarmTelemetryConsentStatus {
     pub consent_token_set: bool,
 }
 
+/// Consent already stored on this machine, if any.
+#[derive(Debug, Clone, Default)]
+pub struct StoredMswarmConsent {
+    pub accepted: bool,
+    pub policy_version: String,
+    pub client_id: String,
+    pub client_type: String,
+    pub consent_token_set: bool,
+}
+
+impl StoredMswarmConsent {
+    /// True when the stored acceptance still matches the policy version Docdex
+    /// would ask about now, so setup can skip re-prompting.
+    pub fn covers_current_policy(&self) -> bool {
+        self.accepted
+            && !self.policy_version.trim().is_empty()
+            && self.policy_version == mswarm::effective_policy_version(None)
+    }
+}
+
+pub fn stored_mswarm_consent() -> Result<StoredMswarmConsent> {
+    std::env::set_var("DOCDEX_BROWSER_AUTO_INSTALL", "0");
+    let config_path = config::default_config_path()?;
+    let config_data = load_config_no_browser(&config_path)?;
+    let telemetry = &config_data.integrations.mswarm.telemetry;
+    Ok(StoredMswarmConsent {
+        accepted: telemetry.consent_accepted,
+        policy_version: telemetry.consent_policy_version.trim().to_string(),
+        client_id: telemetry.client_id.clone(),
+        client_type: telemetry.client_type.clone(),
+        consent_token_set: telemetry
+            .consent_token
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty()),
+    })
+}
+
+/// Persist the user's acceptance locally without contacting mswarm.
+///
+/// Setup calls this the moment the user accepts so the answer survives a failed
+/// registration call, and the consent screen is not shown again on the next run.
+pub fn record_local_mswarm_consent(accepted_at_ms: u128) -> Result<StoredMswarmConsent> {
+    std::env::set_var("DOCDEX_BROWSER_AUTO_INSTALL", "0");
+    let config_path = config::default_config_path()?;
+    let mut config_data = load_config_no_browser(&config_path)?;
+    let policy_version = mswarm::effective_policy_version(None);
+    let telemetry = &mut config_data.integrations.mswarm.telemetry;
+    telemetry.required = true;
+    telemetry.consent_accepted = true;
+    telemetry.consent_policy_version = policy_version.clone();
+    if telemetry.client_id.trim().is_empty() {
+        telemetry.client_id = Uuid::new_v4().to_string();
+    }
+    if telemetry.registered_at_ms == 0 {
+        telemetry.registered_at_ms = accepted_at_ms.min(u64::MAX as u128) as u64;
+    }
+    let stored = StoredMswarmConsent {
+        accepted: true,
+        policy_version,
+        client_id: telemetry.client_id.clone(),
+        client_type: telemetry.client_type.clone(),
+        consent_token_set: telemetry
+            .consent_token
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty()),
+    };
+    config::write_config(&config_path, &config_data).context("write config")?;
+    Ok(stored)
+}
+
 pub fn set_web_provider_keys(update: WebProviderKeysUpdate) -> Result<bool> {
     std::env::set_var("DOCDEX_BROWSER_AUTO_INSTALL", "0");
     let config_path = config::default_config_path()?;
@@ -1135,6 +1207,52 @@ api_key = "revoked-key"
 
         std::env::remove_var("DOCDEX_CONFIG_PATH");
         Ok(())
+    }
+
+    #[test]
+    fn record_local_mswarm_consent_persists_without_network() -> Result<()> {
+        let _guard = ENV_LOCK.lock();
+        let dir = TempDir::new()?;
+        let path = dir.path().join("config.toml");
+        std::env::set_var("DOCDEX_CONFIG_PATH", &path);
+
+        assert!(!stored_mswarm_consent()?.covers_current_policy());
+
+        let stored = record_local_mswarm_consent(1_700_000_000_000)?;
+        assert!(stored.accepted);
+        assert!(!stored.client_id.trim().is_empty());
+
+        let contents = std::fs::read_to_string(&path)?;
+        assert!(contents.contains("consent_accepted = true"));
+        assert!(contents.contains(&format!(
+            "consent_policy_version = \"{}\"",
+            mswarm::effective_policy_version(None)
+        )));
+
+        // A later `docdex setup` run must not ask for consent again.
+        let reloaded = stored_mswarm_consent()?;
+        assert!(reloaded.covers_current_policy());
+        assert_eq!(reloaded.client_id, stored.client_id);
+
+        std::env::remove_var("DOCDEX_CONFIG_PATH");
+        Ok(())
+    }
+
+    #[test]
+    fn stored_mswarm_consent_requires_matching_policy_version() {
+        let stale = StoredMswarmConsent {
+            accepted: true,
+            policy_version: "1999-01-01".to_string(),
+            ..Default::default()
+        };
+        assert!(!stale.covers_current_policy());
+
+        let current = StoredMswarmConsent {
+            accepted: true,
+            policy_version: mswarm::effective_policy_version(None),
+            ..Default::default()
+        };
+        assert!(current.covers_current_policy());
     }
 
     #[test]

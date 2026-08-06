@@ -70,6 +70,38 @@ impl BrowserCandidate {
     }
 }
 
+/// Drive `future` to completion from synchronous code.
+///
+/// Synchronous CLI commands such as `docdex setup` are dispatched from inside the
+/// multi-threaded CLI runtime, so building a nested runtime on the calling thread
+/// panics with "Cannot start a runtime from within a runtime". When a runtime is
+/// already active the future is run on a scoped helper thread that owns its own
+/// runtime, which keeps borrowed (non-`'static`) futures working.
+pub fn block_on_future<F>(future: F) -> Result<F::Output>
+where
+    F: std::future::Future + Send,
+    F::Output: Send,
+{
+    if tokio::runtime::Handle::try_current().is_ok() {
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| build_blocking_runtime().map(|runtime| runtime.block_on(future)))
+                .join()
+                .map_err(|_| anyhow::anyhow!("blocking runtime helper thread panicked"))?
+        })
+    } else {
+        Ok(build_blocking_runtime()?.block_on(future))
+    }
+}
+
+fn build_blocking_runtime() -> Result<tokio::runtime::Runtime> {
+    use anyhow::Context;
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("build blocking helper runtime")
+}
+
 pub fn init_logging(level: &str) -> Result<()> {
     let level = if env_boolish("DOCDEX_WEB_DEBUG").unwrap_or(false)
         || env_boolish("DOCDEX_LLM_DEBUG").unwrap_or(false)
@@ -524,5 +556,41 @@ impl Write for StateLogWriter {
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "state log file lock poisoned"))?;
         let _ = self.stderr.flush();
         file.flush()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn block_on_future_runs_outside_a_runtime() {
+        let value = block_on_future(async { 21 * 2 }).expect("run future");
+        assert_eq!(value, 42);
+    }
+
+    #[test]
+    fn block_on_future_runs_inside_an_existing_runtime() {
+        // Regression: `docdex setup` is dispatched from inside the CLI runtime and
+        // used to abort with "Cannot start a runtime from within a runtime" as soon
+        // as consent was accepted and local-service detection started.
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("build runtime");
+        let value = runtime.block_on(async { block_on_future(async { 7 }).expect("run future") });
+        assert_eq!(value, 7);
+    }
+
+    #[test]
+    fn block_on_future_borrows_local_state() {
+        let name = String::from("docdex");
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("build runtime");
+        let len =
+            runtime.block_on(async { block_on_future(async { name.len() }).expect("run future") });
+        assert_eq!(len, 6);
     }
 }

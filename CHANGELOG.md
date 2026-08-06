@@ -1,8 +1,18 @@
 # Changelog
 
 ## Unreleased
+
+## 0.2.95
+- Fix `docdex setup` closing immediately after the data-collection consent screen was accepted: local-service detection built a nested Tokio runtime inside the CLI runtime and panicked with "Cannot start a runtime from within a runtime".
+- Add `util::block_on_future`, which runs blocking futures on a scoped helper thread when a runtime is already active, and use it for setup's local-service detection and post-setup model-library refresh.
+- Accept `Y`, `y`, and `Enter` on the consent screen; only `n`, `N`, and `Esc` decline.
+- Persist consent locally the moment it is accepted, before contacting mswarm, so the answer is never lost by a failed or slow registration call.
+- Skip the consent screen entirely when a previous run already accepted the current policy version.
+- Keep setup open on the settings menu when mswarm registration fails, reporting it as a pending registration on the consent step instead of ending setup.
+- Restore the terminal and report a readable error if the setup wizard panics, instead of the window closing silently.
 - Make dedicated-server deployments select SearXNG first, followed by local DuckDuckGo and paid providers last.
 - Keep the owned SearXNG instance useful when default upstreams are suspended by enabling Bing, Qwant, Dogpile, PrivacyWall, Seznam, and Search.ch as additional free engines.
+- Bump release metadata to 0.2.95.
 
 ## 0.2.94
 - Resolve configured SearXNG endpoints with the system DNS client so Docker Compose service hostnames work, while preserving public-only DNS hardening for DuckDuckGo and API providers.

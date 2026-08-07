@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+
+## 0.2.97
 - Pin `ThrottleInterval` on the macOS LaunchAgent so a daemon that dies at startup cannot spin; launchd has no reliable memory bound, so unlike the Linux unit this limits restart cadence only.
 - Honour the web kill switch in the `web-search` and `web-fetch` CLI paths, which previously forced web access on regardless of configuration. A bare invocation still enables web by default, but an explicit `DOCDEX_WEB_ENABLED=0` or `[web] enabled = false` now wins — this matters because those subprocesses, not the daemon, do the fetching in gateway deployments.
 - Add the `[web] enabled` config key that documentation already implied existed. It was absent from the schema, so `enabled = false` was silently discarded by serde and operators had no supported way to turn web research off. Environment `DOCDEX_WEB_ENABLED` still wins, then the config file, then the previous default.
@@ -8,6 +10,7 @@
 - Set `KillMode=control-group` on the installed and server units so headless Chrome children are reaped with the daemon rather than accumulating across restarts.
 - Treat quota, auth, and rate-limit refusals from a discovery provider as terminal for a block window instead of retrying them every query, so an exhausted mSwarm quota no longer drives a continuous retry loop.
 - Record the refusing status per provider and skip that provider while it is blocked, rather than discarding the status code and treating a 403 as "no results".
+- Bump release metadata to 0.2.97.
 
 ## 0.2.96
 - Ask SearXNG for the `general,it` categories so its Stack Overflow, GitHub, MDN, crates.io, and package-registry engines are queried; previously Docdex sent no category and SearXNG answered from `general` engines only.

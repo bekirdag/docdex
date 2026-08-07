@@ -1,8 +1,13 @@
 # Changelog
 
 ## Unreleased
+
+## 0.2.97
 - Throttle LaunchAgent restarts on macOS to match the hardened Linux unit.
 - Harden the installed Linux systemd unit against OOM crashloops with a longer restart delay, a start-limit, memory bounds, and control-group kill so browser children are reaped.
+- Stop retrying discovery providers that returned a terminal quota or auth refusal.
+- Add the `[web] enabled` kill switch and honour it in the CLI fetch paths.
+- Bump packaged release metadata to 0.2.97.
 
 ## 0.2.96
 - Query the owned SearXNG instance for the `general,it` categories so its code, documentation, and package-registry engines are used.

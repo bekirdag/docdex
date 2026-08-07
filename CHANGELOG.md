@@ -5,7 +5,7 @@
 - Keep provider-supplied titles and snippets on discovery results instead of reducing them to bare URLs.
 - Drop discovery hits that match too little of the query before fetching them, so keyword collisions such as `wikipedia.org/wiki/Tokyo` for a `tokio` query no longer cost a page fetch. Results without provider metadata are never judged, and the floor can never empty a result set.
 - Raise the deployed SearXNG outgoing timeout from the stock 3s, which was reporting reachable engines such as DuckDuckGo as `timeout`, and give the general and IT engines Docdex depends on explicit headroom.
-- Expand the deployed SearXNG engine set to 38 engines chosen by probing each one against this deployment, covering independent web indexes, code/Q&A sources, and per-ecosystem package registries, and leave out the engines measured as empty or refusing the datacenter IP.
+- Expand the deployed SearXNG engine set to 48 engines chosen by probing each one against this deployment with domain-appropriate queries, covering independent web indexes, code/Q&A sources, man pages, and per-ecosystem package registries, and leave out the engines measured as empty or refusing the datacenter IP.
 
 ## 0.2.95
 - Fix `docdex setup` closing immediately after the data-collection consent screen was accepted: local-service detection built a nested Tokio runtime inside the CLI runtime and panicked with "Cannot start a runtime from within a runtime".

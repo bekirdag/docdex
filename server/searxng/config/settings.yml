@@ -30,8 +30,11 @@ outgoing:
 # Engine selection below was measured against this deployment by querying each
 # engine individually; counts in the comments are results returned for a
 # representative query. Engines that answered nothing or refused the datacenter
-# IP (mojeek, yep, yahoo, fireball, fastbot, tusksearch, yandex, wiby, pypi,
-# rubygems, anaconda, mankier, bitbucket) are deliberately left out.
+# IP (mojeek, yahoo, fireball, fastbot, tusksearch, yandex, metacpan, pypi,
+# rubygems, anaconda, bitbucket, wikipedia, wikidata, arch linux wiki,
+# habrahabr, ollama) are deliberately left out. Engines are re-tested with a
+# domain-appropriate query before exclusion: several are simply quiet outside
+# their own subject area rather than broken.
 #
 # Brave, Google CSE, Qwant, and Startpage stay enabled from the defaults but are
 # permanently suspended here: they are unauthenticated scrapers hitting services
@@ -84,6 +87,19 @@ engines:
     timeout: 8.0
   - name: searchmysite     # 10, independent-web index
     disabled: false
+  - name: yep              # 20; refused us once, healthy on retest
+    disabled: false
+    timeout: 8.0
+  - name: crowdview        # 40 on discussion-shaped queries
+    disabled: false
+    timeout: 8.0
+  - name: wiby             # 12, small/old-web index
+    disabled: false
+  # Fail on timeout rather than refusal, so they get the widest budget and may
+  # recover once the 8s outgoing default is deployed.
+  - name: encyclosearch
+    disabled: false
+    timeout: 12.0
 
   # --- Code, docs, and Q&A ---------------------------------------------------
   # Docdex asks code and documentation questions, so these carry far more signal
@@ -117,6 +133,16 @@ engines:
     disabled: false
   - name: "discuss.python"
     disabled: false
+  - name: sourcehut        # 15
+    disabled: false
+  - name: mankier          # 20, man pages for CLI questions
+    disabled: false
+  - name: "nixos wiki"
+    disabled: false
+    timeout: 12.0
+  - name: free software directory
+    disabled: false
+    timeout: 12.0
 
   # --- Package registries ----------------------------------------------------
   # Each is quiet outside its own ecosystem, so they cost nothing on unrelated
@@ -138,6 +164,10 @@ engines:
   - name: hoogle           # 13
     disabled: false
   - name: docker hub       # 10
+    disabled: false
+  - name: alpine linux packages  # 50
+    disabled: false
+  - name: gentoo           # 5
     disabled: false
   - name: huggingface      # large result sets for model/dataset queries
     disabled: false

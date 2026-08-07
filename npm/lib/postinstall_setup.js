@@ -2663,6 +2663,46 @@ function writeWindowsSetupRunner({ binaryPath, args, logger, distBaseDir } = {})
   }
 }
 
+/**
+ * Build the user-level systemd unit installed on Linux.
+ *
+ * The restart and memory directives are load-bearing. A `Restart=always` with a
+ * 2s delay and no memory cap turned a single OOM kill into an indefinite
+ * crashloop: the daemon returned immediately, replayed the workload that killed
+ * it, and died again, while orphaned headless-Chrome children accumulated
+ * across restarts.
+ */
+function buildLinuxUserUnit({ binaryPath, args = [], envPairs = [], workingDir } = {}) {
+  const envLines = envPairs.map(([key, value]) => `Environment=${key}=${value}`);
+  return [
+    "[Unit]",
+    "Description=Docdex daemon",
+    "After=network.target",
+    // Give up after repeated fast failures rather than restarting forever.
+    // These are [Unit] options; systemd ignores them under [Service].
+    "StartLimitIntervalSec=600",
+    "StartLimitBurst=5",
+    "",
+    "[Service]",
+    `ExecStart=${binaryPath} ${args.join(" ")}`,
+    workingDir ? `WorkingDirectory=${workingDir}` : "",
+    ...envLines,
+    "Restart=always",
+    "RestartSec=15",
+    // Without a cap the daemon grows until the kernel OOM killer picks a victim,
+    // which may not even be docdexd. A cgroup limit makes the failure bounded
+    // and attributable, and keeps the rest of the host alive.
+    "MemoryHigh=2G",
+    "MemoryMax=3G",
+    // Reap child processes (headless Chrome) with the daemon.
+    "KillMode=control-group",
+    "",
+    "[Install]",
+    "WantedBy=default.target",
+    ""
+  ].filter(Boolean).join("\n");
+}
+
 function registerStartup({ binaryPath, port, repoRoot, logger, distBaseDir, startNow = true }) {
   if (!binaryPath) return { ok: false, reason: "missing_binary" };
   if (startNow) {
@@ -2710,23 +2750,7 @@ function registerStartup({ binaryPath, port, repoRoot, logger, distBaseDir, star
     const systemdDir = path.join(os.homedir(), ".config", "systemd", "user");
     const unitPath = path.join(systemdDir, "docdexd.service");
     fs.mkdirSync(systemdDir, { recursive: true });
-    const envLines = envPairs.map(([key, value]) => `Environment=${key}=${value}`);
-    const unit = [
-      "[Unit]",
-      "Description=Docdex daemon",
-      "After=network.target",
-      "",
-      "[Service]",
-      `ExecStart=${binaryPath} ${args.join(" ")}`,
-      workingDir ? `WorkingDirectory=${workingDir}` : "",
-      ...envLines,
-      "Restart=always",
-      "RestartSec=2",
-      "",
-      "[Install]",
-      "WantedBy=default.target",
-      ""
-    ].filter(Boolean).join("\n");
+    const unit = buildLinuxUserUnit({ binaryPath, args, envPairs, workingDir });
     fs.writeFileSync(unitPath, unit);
     const reload = spawnSync("systemctl", ["--user", "daemon-reload"]);
     const enableArgs = startNow
@@ -3207,6 +3231,7 @@ module.exports = {
   warnCodexRestart,
   configUrlForPort,
   configStreamableUrlForPort,
+  buildLinuxUserUnit,
   resolveDaemonPort,
   parseEnvBool,
   resolveOllamaInstallMode,

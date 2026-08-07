@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Harden the installed Linux systemd unit against OOM crashloops with a longer restart delay, a start-limit, memory bounds, and control-group kill so browser children are reaped.
 
 ## 0.2.96
 - Query the owned SearXNG instance for the `general,it` categories so its code, documentation, and package-registry engines are used.

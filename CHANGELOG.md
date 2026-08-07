@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- Stop the installed Linux daemon unit from crashlooping after an OOM kill: back the restart delay off from 2s to 15s, stop restarting after repeated fast failures, and bound the daemon with `MemoryHigh`/`MemoryMax` so the failure is attributable instead of letting the kernel pick a victim.
+- Set `KillMode=control-group` on the installed and server units so headless Chrome children are reaped with the daemon rather than accumulating across restarts.
 - Treat quota, auth, and rate-limit refusals from a discovery provider as terminal for a block window instead of retrying them every query, so an exhausted mSwarm quota no longer drives a continuous retry loop.
 - Record the refusing status per provider and skip that provider while it is blocked, rather than discarding the status code and treating a 403 as "no results".
 

@@ -1031,3 +1031,32 @@ test("pullOllamaModel invokes ollama pull", () => {
   assert.equal(calls[0].cmd, "ollama");
   assert.deepEqual(calls[0].args, ["pull", "phi3.5:3.8b"]);
 });
+
+test("linux user unit bounds memory and backs off restarts instead of crashlooping", () => {
+  const { buildLinuxUserUnit } = require("../lib/postinstall_setup.js");
+  const unit = buildLinuxUserUnit({
+    binaryPath: "/home/u/.docdex/bin/docdexd",
+    args: ["daemon", "--port", "28491"],
+    envPairs: [["DOCDEX_ENABLE_MEMORY", "true"]],
+    workingDir: "/home/u"
+  });
+
+  // A 2s restart with no memory cap turned one OOM kill into an endless loop.
+  assert.ok(!unit.includes("RestartSec=2\n"), "restart delay must not be 2s");
+  assert.match(unit, /^RestartSec=15$/m);
+  assert.match(unit, /^MemoryHigh=2G$/m);
+  assert.match(unit, /^MemoryMax=3G$/m);
+  // Orphaned headless Chrome accumulated across restarts without this.
+  assert.match(unit, /^KillMode=control-group$/m);
+
+  // StartLimit* are [Unit] options; systemd ignores them under [Service].
+  const unitSection = unit.slice(unit.indexOf("[Unit]"), unit.indexOf("[Service]"));
+  assert.match(unitSection, /^StartLimitIntervalSec=600$/m);
+  assert.match(unitSection, /^StartLimitBurst=5$/m);
+
+  // Existing behaviour preserved.
+  assert.match(unit, /^ExecStart=\/home\/u\/\.docdex\/bin\/docdexd daemon --port 28491$/m);
+  assert.match(unit, /^Environment=DOCDEX_ENABLE_MEMORY=true$/m);
+  assert.match(unit, /^WorkingDirectory=\/home\/u$/m);
+  assert.match(unit, /^WantedBy=default\.target$/m);
+});

@@ -2,6 +2,9 @@
 Description=Docdex HTTP daemon
 After=network-online.target
 Wants=network-online.target
+# Stop restarting after repeated fast failures instead of looping forever.
+StartLimitIntervalSec=600
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -15,7 +18,13 @@ Environment=DOCDEX_PERSONAL_PREFERENCES_STORAGE_ROOT=/mnt/docdex/personal_prefer
 WorkingDirectory=/mnt/docdex
 ExecStart=/opt/docdex/bin/docdexd daemon --host 127.0.0.1 --port 28492 --enable-mcp true --enable-memory true
 Restart=on-failure
-RestartSec=5
+RestartSec=15
+# Bound memory so a runaway daemon is killed predictably by its own cgroup
+# rather than letting the kernel OOM killer choose a victim on the host.
+MemoryHigh=2G
+MemoryMax=3G
+# Reap child processes (headless Chrome) together with the daemon.
+KillMode=control-group
 LimitNOFILE=65535
 NoNewPrivileges=true
 PrivateTmp=true

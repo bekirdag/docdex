@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- Treat quota, auth, and rate-limit refusals from a discovery provider as terminal for a block window instead of retrying them every query, so an exhausted mSwarm quota no longer drives a continuous retry loop.
+- Record the refusing status per provider and skip that provider while it is blocked, rather than discarding the status code and treating a 403 as "no results".
 
 ## 0.2.96
 - Ask SearXNG for the `general,it` categories so its Stack Overflow, GitHub, MDN, crates.io, and package-registry engines are queried; previously Docdex sent no category and SearXNG answered from `general` engines only.

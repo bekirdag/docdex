@@ -47,6 +47,16 @@ const DDG_TYPING_MAX_TOTAL_MS: u64 = 2_000;
 const DDG_LITE_FALLBACK_URL: &str = "https://lite.duckduckgo.com/lite/";
 const DDG_BLOCK_WINDOW_SECS: u64 = 86_400;
 const DDG_BLOCK_CACHE_KEY: &str = "ddg:block";
+/// How long a provider stays disabled after a rate-limit (429) response.
+const PROVIDER_RATE_LIMIT_BLOCK_SECS: u64 = 900;
+/// How long a provider stays disabled after an auth/quota refusal.
+///
+/// "Quota exceeded for the current billing window" is terminal until that window
+/// resets, so retrying every few seconds only burns CPU and, when the failure
+/// cascades into a browser fallback, memory. We cannot read the reset time, so
+/// back off far enough that a stuck provider costs a handful of probes per day
+/// rather than thousands.
+const PROVIDER_QUOTA_BLOCK_SECS: u64 = 3_600;
 const BRAVE_API_URL: &str = "https://api.search.brave.com/res/v1/web/search";
 const GOOGLE_CSE_API_URL: &str = "https://www.googleapis.com/customsearch/v1";
 const BING_API_URL: &str = "https://api.bing.microsoft.com/v7.0/search";
@@ -811,6 +821,34 @@ impl DdgDiscovery {
         chain.as_mut().expect("fallback chain must exist")
     }
 
+    /// True when `provider` is inside a block window from an earlier quota or
+    /// auth refusal, so the chain should skip it entirely.
+    fn provider_blocked(&self, provider: &str) -> bool {
+        let Some(layout) = self.cache_layout.as_ref() else {
+            return false;
+        };
+        load_provider_block_record(layout, provider).is_some()
+    }
+
+    /// Record a terminal provider refusal. Returns true when the status was
+    /// terminal, so callers can distinguish "out of quota" from "no results".
+    fn note_provider_status(&self, provider: &str, status: StatusCode) -> bool {
+        let Some(window) = provider_block_window_secs(status) else {
+            return false;
+        };
+        if let Some(layout) = self.cache_layout.as_ref() {
+            write_provider_block_record(layout, provider, status.as_str(), window);
+        }
+        tracing::warn!(
+            target: "docdexd_web",
+            provider,
+            status = status.as_u16(),
+            block_secs = window,
+            "discovery provider refused; disabling it for the block window instead of retrying"
+        );
+        true
+    }
+
     fn ddg_blocked(&self) -> bool {
         let Some(layout) = self.cache_layout.as_ref() else {
             return false;
@@ -863,6 +901,18 @@ impl DdgDiscovery {
         last_error: &mut Option<anyhow::Error>,
     ) -> Option<WebDiscoveryResponse> {
         while let Some(provider) = fallback_chain.next() {
+            // A provider inside its block window refused us for a reason that
+            // does not clear between requests, so do not spend a round trip on
+            // it at all.
+            let name = fallback_provider_name(&provider);
+            if self.provider_blocked(name) {
+                tracing::debug!(
+                    target: "docdexd_web",
+                    provider = name,
+                    "skipping discovery provider inside its block window"
+                );
+                continue;
+            }
             let attempt = self
                 .try_fallback_provider(provider, query, limit, cache_limit, cache_key)
                 .await;
@@ -984,6 +1034,7 @@ impl DdgDiscovery {
         let url = build_searxng_url(base_url, query)?;
         let resp = self.searxng_client.get(url).send().await?;
         if !resp.status().is_success() {
+            self.note_provider_status(SEARXNG_PROVIDER, resp.status());
             return Ok(None);
         }
         let body = read_discovery_text(resp, "searxng discovery").await?;
@@ -1032,6 +1083,7 @@ impl DdgDiscovery {
                 .await?;
         }
         if !resp.status().is_success() {
+            self.note_provider_status(BRAVE_PROVIDER, resp.status());
             return Ok(None);
         }
         let body = read_discovery_json(resp, "brave discovery").await?;
@@ -1060,6 +1112,7 @@ impl DdgDiscovery {
         let url = build_google_cse_url(base_url, query, count, api_key, cx)?;
         let resp = self.client.get(url).send().await?;
         if !resp.status().is_success() {
+            self.note_provider_status(GOOGLE_CSE_PROVIDER, resp.status());
             return Ok(None);
         }
         let body = read_discovery_json(resp, "google cse discovery").await?;
@@ -1092,6 +1145,7 @@ impl DdgDiscovery {
             .send()
             .await?;
         if !resp.status().is_success() {
+            self.note_provider_status(BING_PROVIDER, resp.status());
             return Ok(None);
         }
         let body = read_discovery_json(resp, "bing discovery").await?;
@@ -1128,6 +1182,7 @@ impl DdgDiscovery {
             .send()
             .await?;
         if !resp.status().is_success() {
+            self.note_provider_status(TAVILY_PROVIDER, resp.status());
             return Ok(None);
         }
         let body = read_discovery_json(resp, "tavily discovery").await?;
@@ -1164,6 +1219,7 @@ impl DdgDiscovery {
             .send()
             .await?;
         if !resp.status().is_success() {
+            self.note_provider_status(EXA_PROVIDER, resp.status());
             return Ok(None);
         }
         let body = read_discovery_json(resp, "exa discovery").await?;
@@ -1201,6 +1257,7 @@ impl DdgDiscovery {
             .send()
             .await?;
         if !resp.status().is_success() {
+            self.note_provider_status(MSWARM_PROVIDER, resp.status());
             return Ok(None);
         }
         let body = read_discovery_json(resp, "mswarm discovery").await?;
@@ -1433,6 +1490,55 @@ fn discovery_cache_key(config: &WebConfig, provider: &str, query: &str) -> Strin
 
 fn ddg_block_entry(layout: &StateLayout) -> std::path::PathBuf {
     cache::cache_entry_for_url(layout, DDG_BLOCK_CACHE_KEY)
+}
+
+/// Terminal-for-window responses from a discovery provider.
+///
+/// These mean "stop asking", not "try again": an exhausted quota or a rejected
+/// key does not recover between requests seconds apart.
+fn provider_block_window_secs(status: StatusCode) -> Option<u64> {
+    match status {
+        StatusCode::TOO_MANY_REQUESTS => Some(PROVIDER_RATE_LIMIT_BLOCK_SECS),
+        StatusCode::UNAUTHORIZED | StatusCode::PAYMENT_REQUIRED | StatusCode::FORBIDDEN => {
+            Some(PROVIDER_QUOTA_BLOCK_SECS)
+        }
+        _ => None,
+    }
+}
+
+fn provider_block_cache_key(provider: &str) -> String {
+    format!("provider:block:{provider}")
+}
+
+fn load_provider_block_record(layout: &StateLayout, provider: &str) -> Option<DdgBlockRecord> {
+    let entry = cache::cache_entry_for_url(layout, &provider_block_cache_key(provider));
+    if !entry.exists() {
+        return None;
+    }
+    let payload = std::fs::read(&entry).ok()?;
+    let record: DdgBlockRecord = serde_json::from_slice(&payload).ok()?;
+    if now_ms() >= record.blocked_until_ms {
+        let _ = std::fs::remove_file(&entry);
+        return None;
+    }
+    Some(record)
+}
+
+fn write_provider_block_record(
+    layout: &StateLayout,
+    provider: &str,
+    reason: &str,
+    window_secs: u64,
+) {
+    let now = now_ms();
+    let record = DdgBlockRecord {
+        blocked_at_ms: now,
+        blocked_until_ms: now.saturating_add(window_secs.saturating_mul(1_000)),
+        reason: reason.to_string(),
+    };
+    if let Ok(payload) = serde_json::to_vec(&record) {
+        let _ = cache::write_cache_entry(layout, &provider_block_cache_key(provider), &payload);
+    }
 }
 
 fn load_ddg_block_record(layout: &StateLayout) -> Option<DdgBlockRecord> {
@@ -2490,5 +2596,62 @@ Markdown Content:
             .collect();
         assert!(pairs.contains(&("format".to_string(), "json".to_string())));
         assert!(pairs.contains(&("categories".to_string(), "general,it".to_string())));
+    }
+
+    #[test]
+    fn provider_block_window_treats_quota_and_auth_as_terminal() {
+        // "Quota exceeded for the current billing window" does not clear between
+        // requests seconds apart, so these must disable the provider, not retry.
+        assert_eq!(
+            provider_block_window_secs(StatusCode::FORBIDDEN),
+            Some(PROVIDER_QUOTA_BLOCK_SECS)
+        );
+        assert_eq!(
+            provider_block_window_secs(StatusCode::UNAUTHORIZED),
+            Some(PROVIDER_QUOTA_BLOCK_SECS)
+        );
+        assert_eq!(
+            provider_block_window_secs(StatusCode::PAYMENT_REQUIRED),
+            Some(PROVIDER_QUOTA_BLOCK_SECS)
+        );
+        assert_eq!(
+            provider_block_window_secs(StatusCode::TOO_MANY_REQUESTS),
+            Some(PROVIDER_RATE_LIMIT_BLOCK_SECS)
+        );
+        // Transient and not-found responses stay retryable.
+        assert_eq!(provider_block_window_secs(StatusCode::BAD_GATEWAY), None);
+        assert_eq!(provider_block_window_secs(StatusCode::NOT_FOUND), None);
+        assert_eq!(
+            provider_block_window_secs(StatusCode::INTERNAL_SERVER_ERROR),
+            None
+        );
+    }
+
+    #[test]
+    fn provider_block_record_round_trips_and_is_scoped_per_provider() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let layout = StateLayout::new(temp.path().join("state"));
+
+        assert!(load_provider_block_record(&layout, MSWARM_PROVIDER).is_none());
+
+        write_provider_block_record(&layout, MSWARM_PROVIDER, "403", PROVIDER_QUOTA_BLOCK_SECS);
+
+        let record = load_provider_block_record(&layout, MSWARM_PROVIDER).expect("block recorded");
+        assert_eq!(record.reason, "403");
+        assert!(record.blocked_until_ms > record.blocked_at_ms);
+        // Blocking one provider must not disable the others.
+        assert!(load_provider_block_record(&layout, SEARXNG_PROVIDER).is_none());
+        assert!(load_provider_block_record(&layout, BRAVE_PROVIDER).is_none());
+    }
+
+    #[test]
+    fn provider_block_record_expires_after_its_window() {
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let layout = StateLayout::new(temp.path().join("state"));
+
+        // A zero-length window is already in the past, so the next read clears it.
+        write_provider_block_record(&layout, BRAVE_PROVIDER, "429", 0);
+
+        assert!(load_provider_block_record(&layout, BRAVE_PROVIDER).is_none());
     }
 }

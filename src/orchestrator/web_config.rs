@@ -41,7 +41,12 @@ pub struct WebConfig {
 
 impl WebConfig {
     pub fn from_env() -> Self {
-        let enabled = env_bool("DOCDEX_WEB_ENABLED", false);
+        // Precedence: an explicit environment value wins, then `[web] enabled`
+        // from config.toml, then the historical default.
+        let enabled = match env_bool_opt("DOCDEX_WEB_ENABLED") {
+            Some(value) => value,
+            None => config_web_enabled().unwrap_or(false),
+        };
         let discovery_provider = env::var("DOCDEX_WEB_DISCOVERY_PROVIDER")
             .ok()
             .and_then(|value| normalize_nonempty(value))
@@ -222,6 +227,23 @@ fn config_user_agent() -> Option<String> {
     }
     let config = config::load_config_from_path(&path).ok()?;
     normalize_nonempty(config.web.user_agent)
+}
+
+fn env_bool_opt(key: &str) -> Option<bool> {
+    let raw = env::var(key).ok()?;
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "y" | "on" => Some(true),
+        "0" | "false" | "no" | "n" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn config_web_enabled() -> Option<bool> {
+    let path = config::default_config_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+    config::load_config_from_path(&path).ok()?.web.enabled
 }
 
 fn config_discovery_provider() -> Option<String> {
@@ -704,5 +726,64 @@ mod tests {
         env.set("DOCDEX_WEB_SEARXNG_URLS", "");
         assert!(WebConfig::from_env().searxng_urls.is_empty());
         Ok(())
+    }
+
+    #[test]
+    fn config_file_can_disable_web_when_env_is_unset() {
+        let env = EnvSnapshot::new(&["DOCDEX_WEB_ENABLED", "DOCDEX_CONFIG_PATH"]);
+        let dir = TempDir::new().expect("temp dir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[web]\nenabled = false\n").expect("write config");
+        env.set("DOCDEX_CONFIG_PATH", &path.to_string_lossy());
+        env.clear("DOCDEX_WEB_ENABLED");
+
+        // `[web] enabled` used to be absent from the schema, so serde discarded
+        // it and operators had no supported way to turn web research off.
+        assert_eq!(config_web_enabled(), Some(false));
+        assert!(!WebConfig::from_env().enabled);
+    }
+
+    #[test]
+    fn config_file_can_enable_web_when_env_is_unset() {
+        let env = EnvSnapshot::new(&["DOCDEX_WEB_ENABLED", "DOCDEX_CONFIG_PATH"]);
+        let dir = TempDir::new().expect("temp dir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[web]\nenabled = true\n").expect("write config");
+        env.set("DOCDEX_CONFIG_PATH", &path.to_string_lossy());
+        env.clear("DOCDEX_WEB_ENABLED");
+
+        assert!(WebConfig::from_env().enabled);
+    }
+
+    #[test]
+    fn environment_overrides_the_config_file_in_both_directions() {
+        let env = EnvSnapshot::new(&["DOCDEX_WEB_ENABLED", "DOCDEX_CONFIG_PATH"]);
+        let dir = TempDir::new().expect("temp dir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[web]\nenabled = false\n").expect("write config");
+        env.set("DOCDEX_CONFIG_PATH", &path.to_string_lossy());
+
+        env.set("DOCDEX_WEB_ENABLED", "1");
+        assert!(WebConfig::from_env().enabled, "env must win over config");
+
+        env.set("DOCDEX_WEB_ENABLED", "0");
+        assert!(!WebConfig::from_env().enabled);
+
+        // An unparseable value is not an opinion; fall back to the config file.
+        env.set("DOCDEX_WEB_ENABLED", "maybe");
+        assert!(!WebConfig::from_env().enabled);
+    }
+
+    #[test]
+    fn omitting_web_enabled_leaves_the_environment_default() {
+        let env = EnvSnapshot::new(&["DOCDEX_WEB_ENABLED", "DOCDEX_CONFIG_PATH"]);
+        let dir = TempDir::new().expect("temp dir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[web]\nuser_agent = \"x\"\n").expect("write config");
+        env.set("DOCDEX_CONFIG_PATH", &path.to_string_lossy());
+        env.clear("DOCDEX_WEB_ENABLED");
+
+        assert_eq!(config_web_enabled(), None);
+        assert!(!WebConfig::from_env().enabled);
     }
 }

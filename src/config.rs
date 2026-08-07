@@ -760,6 +760,13 @@ impl Default for CodeIntelligenceConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebConfigSection {
+    /// Operator kill switch for all web discovery and fetching.
+    ///
+    /// `None` means "not configured", so the environment default applies.
+    /// Documented and accepted for years without existing, which left
+    /// `[web] enabled = false` silently discarded by serde.
+    #[serde(default)]
+    pub enabled: Option<bool>,
     #[serde(default = "default_discovery_provider")]
     pub discovery_provider: String,
     #[serde(default = "default_web_user_agent")]
@@ -789,6 +796,7 @@ pub struct WebConfigSection {
 impl Default for WebConfigSection {
     fn default() -> Self {
         Self {
+            enabled: None,
             discovery_provider: default_discovery_provider(),
             user_agent: default_web_user_agent(),
             ddg_base_url: None,

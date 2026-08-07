@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.96
+- Query the owned SearXNG instance for the `general,it` categories so its code, documentation, and package-registry engines are used.
+- Keep provider titles and snippets on discovery results and drop low-relevance hits before fetching them.
+- Bump packaged release metadata to 0.2.96.
+
 ## 0.2.95
 - Fix `docdex setup` closing right after the consent screen was accepted, caused by a nested Tokio runtime panic during local-service detection.
 - Accept `Y`, `y`, and `Enter` as consent; only `n`, `N`, and `Esc` decline.

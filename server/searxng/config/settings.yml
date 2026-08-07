@@ -18,26 +18,31 @@ server:
 
 outgoing:
   # SearXNG's stock 3s budget is too tight for this deployment: DuckDuckGo and
-  # several independent indexes were reported as `timeout` on every query even
-  # though they were reachable. Engines that exceed the budget are dropped
-  # silently, so a short timeout looks identical to an engine that is blocked.
+  # several other reachable engines were reported as `timeout` on every query.
+  # An engine that misses the budget is dropped silently, so a short timeout
+  # looks identical to an engine that is blocking us.
   request_timeout: 8.0
   max_request_timeout: 15.0
   pool_connections: 200
   pool_maxsize: 40
   enable_http2: true
 
+# Engine selection below was measured against this deployment by querying each
+# engine individually; counts in the comments are results returned for a
+# representative query. Engines that answered nothing or refused the datacenter
+# IP (mojeek, yep, yahoo, fireball, fastbot, tusksearch, yandex, wiby, pypi,
+# rubygems, anaconda, mankier, bitbucket) are deliberately left out.
+#
+# Brave, Google CSE, Qwant, and Startpage stay enabled from the defaults but are
+# permanently suspended here: they are unauthenticated scrapers hitting services
+# that block datacenter IPs. They recover only behind a residential proxy or,
+# for Google CSE, a valid API key.
 engines:
-  # Keep several free general-search engines active so one upstream CAPTCHA or
-  # suspension does not make the owned SearXNG service return an empty result.
-  #
-  # Per-engine `timeout` overrides the global budget above, so the general
-  # engines we depend on most are given explicit headroom.
+  # --- General web -----------------------------------------------------------
+  # Kept broad so one upstream CAPTCHA or suspension cannot empty a response.
   - name: bing
     disabled: false
     timeout: 8.0
-  - name: qwant
-    disabled: false
   - name: dogpile
     disabled: false
     timeout: 8.0
@@ -48,65 +53,95 @@ engines:
     disabled: false
   - name: searchch
     disabled: false
-
-  # Independent indexes. These run their own crawlers rather than reselling a
-  # major engine, so they answer from a datacenter IP without CAPTCHA walls and
-  # keep working when Brave/Google/Startpage suspend us.
+  - name: qwant
+    disabled: false
+  # Given generous headroom because they fail on timeout, not on blocking.
   - name: duckduckgo
     disabled: false
-    timeout: 10.0
+    timeout: 12.0
   - name: duckduckgo web
     disabled: false
-    timeout: 10.0
-  - name: mojeek
+    timeout: 12.0
+  # Independent indexes and aggregators that answer from this IP without a
+  # CAPTCHA wall. mwmbl runs its own crawler; the rest are metasearch.
+  - name: mwmbl            # 28
     disabled: false
     timeout: 8.0
-  - name: mwmbl
+  - name: gabanza          # 30
     disabled: false
     timeout: 8.0
-  - name: yep
+  - name: resulthunter     # 20
     disabled: false
     timeout: 8.0
+  - name: zapmeta          # 9
+    disabled: false
+    timeout: 8.0
+  - name: infospace        # 8
+    disabled: false
+    timeout: 8.0
+  - name: searchtoday      # 8
+    disabled: false
+    timeout: 8.0
+  - name: searchmysite     # 10, independent-web index
+    disabled: false
 
-  # Docdex issues code and documentation queries, so the `it` category carries
-  # far more signal per request than adding more general web engines. These are
-  # queried because Docdex asks for `categories=general,it`.
-  - name: stackoverflow
+  # --- Code, docs, and Q&A ---------------------------------------------------
+  # Docdex asks code and documentation questions, so these carry far more signal
+  # per request than additional general engines. Reached because Docdex sends
+  # `categories=general,it`.
+  - name: stackoverflow    # 10
     disabled: false
     timeout: 8.0
-  - name: askubuntu
+  - name: askubuntu        # 10
     disabled: false
-  - name: superuser
+  - name: superuser        # 10
     disabled: false
-  - name: github
+  - name: github           # 30
     disabled: false
     timeout: 8.0
-  - name: codeberg
-    disabled: false
   - name: gitlab
     disabled: false
-  - name: mdn
+  - name: "gitea.com"      # 10
+    disabled: false
+  - name: codeberg         # times out at 3s; retry with the wider budget
     disabled: false
     timeout: 8.0
-  - name: arch linux wiki
+  - name: mdn              # 10
     disabled: false
-  - name: microsoft learn
+    timeout: 8.0
+  - name: microsoft learn  # 10
     disabled: false
-  - name: hackernews
+  - name: hackernews       # 24
     disabled: false
-  - name: lobste.rs
+  - name: "lobste.rs"      # 20
     disabled: false
-  - name: crates.io
+  - name: "discuss.python"
     disabled: false
-  - name: lib.rs
+
+  # --- Package registries ----------------------------------------------------
+  # Each is quiet outside its own ecosystem, so they cost nothing on unrelated
+  # queries and are authoritative on their own.
+  - name: "crates.io"      # 10
     disabled: false
-  - name: pypi
+  - name: "lib.rs"         # 119
     disabled: false
-  - name: npm
+  - name: npm              # 25
     disabled: false
-  - name: pkg.go.dev
+  - name: "pkg.go.dev"     # 50
     disabled: false
-  - name: docker hub
+  - name: packagist        # 15
+    disabled: false
+  - name: hex              # 10
+    disabled: false
+  - name: "pub.dev"
+    disabled: false
+  - name: hoogle           # 13
+    disabled: false
+  - name: docker hub       # 10
+    disabled: false
+  - name: huggingface      # large result sets for model/dataset queries
+    disabled: false
+  - name: national vulnerability database  # 10, CVE lookups
     disabled: false
 
 valkey:

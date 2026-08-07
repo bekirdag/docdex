@@ -1060,3 +1060,18 @@ test("linux user unit bounds memory and backs off restarts instead of crashloopi
   assert.match(unit, /^WorkingDirectory=\/home\/u$/m);
   assert.match(unit, /^WantedBy=default\.target$/m);
 });
+
+test("launch agent plist throttles restarts so a failing daemon cannot spin", () => {
+  const { buildLaunchAgentPlist } = require("../lib/postinstall_setup.js");
+  const plist = buildLaunchAgentPlist({
+    programArgs: ["/usr/local/bin/docdexd", "daemon"],
+    envPairs: [["DOCDEX_ENABLE_MEMORY", "true"]],
+    logDir: "/tmp/logs"
+  });
+
+  assert.match(plist, /<key>ThrottleInterval<\/key>\s*<integer>15<\/integer>/);
+  // Existing behaviour preserved.
+  assert.match(plist, /<key>KeepAlive<\/key>\s*<true\/>/);
+  assert.match(plist, /<key>RunAtLoad<\/key>\s*<true\/>/);
+  assert.match(plist, /<string>DOCDEX_ENABLE_MEMORY<\/string>|<key>DOCDEX_ENABLE_MEMORY<\/key>/);
+});

@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Throttle LaunchAgent restarts on macOS to match the hardened Linux unit.
 - Harden the installed Linux systemd unit against OOM crashloops with a longer restart delay, a start-limit, memory bounds, and control-group kill so browser children are reaped.
 
 ## 0.2.96

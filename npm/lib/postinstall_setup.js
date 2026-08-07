@@ -2599,6 +2599,12 @@ function buildLaunchAgentPlist({
     `  <true/>\n` +
     `  <key>KeepAlive</key>\n` +
     `  <true/>\n` +
+    // launchd's default ThrottleInterval is 10s. Pin it explicitly and match the
+    // systemd RestartSec, so a daemon that dies on startup cannot spin. launchd
+    // has no reliable equivalent of MemoryMax, so unlike the Linux unit this
+    // bounds restart cadence only, not memory.
+    `  <key>ThrottleInterval</key>\n` +
+    `  <integer>15</integer>\n` +
     `  <key>SoftResourceLimits</key>\n` +
     `  <dict>\n` +
     `    <key>NumberOfFiles</key>\n` +

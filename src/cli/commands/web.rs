@@ -46,7 +46,9 @@ pub async fn run_search(query: String, limit: usize) -> Result<()> {
     }
     util::init_logging("warn")?;
     let mut config = web::WebConfig::from_env();
-    config.enabled = true;
+    // A bare `docdexd web-search` is itself a request for web access, so enable
+    // it by default -- but never override an explicit operator "off".
+    config.enabled = !crate::orchestrator::web_config::web_explicitly_disabled();
     let discovery = web::ddg::DdgDiscovery::new(config)?;
     let response = discovery.discover(&query, limit).await?;
     println!("{}", serde_json::to_string_pretty(&response)?);
@@ -68,6 +70,13 @@ pub async fn run_fetch(url: String) -> Result<()> {
         }
     }
     util::init_logging("warn")?;
+    if crate::orchestrator::web_config::web_explicitly_disabled() {
+        return Err(AppError::new(
+            ERR_MISSING_DEPENDENCY,
+            "web fetching is disabled by configuration",
+        )
+        .into());
+    }
     let config = web::WebConfig::from_env();
     let url = parse_and_validate_outbound_url(url.trim())
         .await

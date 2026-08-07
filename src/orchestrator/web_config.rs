@@ -229,6 +229,20 @@ fn config_user_agent() -> Option<String> {
     normalize_nonempty(config.web.user_agent)
 }
 
+/// True when an operator has explicitly turned web access off, via
+/// `DOCDEX_WEB_ENABLED` or `[web] enabled` in config.toml.
+///
+/// The CLI enables web by default because a bare `docdexd web-search` is an
+/// explicit request for it, but an explicit "off" has to win — otherwise the
+/// kill switch only covers the daemon and not the subprocesses that do the
+/// actual fetching.
+pub fn web_explicitly_disabled() -> bool {
+    match env_bool_opt("DOCDEX_WEB_ENABLED") {
+        Some(value) => !value,
+        None => config_web_enabled() == Some(false),
+    }
+}
+
 fn env_bool_opt(key: &str) -> Option<bool> {
     let raw = env::var(key).ok()?;
     match raw.trim().to_ascii_lowercase().as_str() {
@@ -785,5 +799,33 @@ mod tests {
 
         assert_eq!(config_web_enabled(), None);
         assert!(!WebConfig::from_env().enabled);
+    }
+
+    #[test]
+    fn explicit_disable_is_detected_from_either_source() {
+        let env = EnvSnapshot::new(&["DOCDEX_WEB_ENABLED", "DOCDEX_CONFIG_PATH"]);
+        let dir = TempDir::new().expect("temp dir");
+        let path = dir.path().join("config.toml");
+        env.set("DOCDEX_CONFIG_PATH", &path.to_string_lossy());
+
+        // Nothing configured: the CLI keeps its default-on behaviour.
+        std::fs::write(&path, "[web]\nuser_agent = \"x\"\n").expect("write config");
+        env.clear("DOCDEX_WEB_ENABLED");
+        assert!(!web_explicitly_disabled());
+
+        // Config file says off.
+        std::fs::write(&path, "[web]\nenabled = false\n").expect("write config");
+        assert!(web_explicitly_disabled());
+
+        // Environment overrides the file in both directions.
+        env.set("DOCDEX_WEB_ENABLED", "1");
+        assert!(!web_explicitly_disabled());
+        env.set("DOCDEX_WEB_ENABLED", "0");
+        assert!(web_explicitly_disabled());
+
+        // Config file says on.
+        std::fs::write(&path, "[web]\nenabled = true\n").expect("write config");
+        env.clear("DOCDEX_WEB_ENABLED");
+        assert!(!web_explicitly_disabled());
     }
 }

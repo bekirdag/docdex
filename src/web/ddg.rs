@@ -25,6 +25,11 @@ use crate::web::WebConfig;
 const PROVIDER: &str = "duckduckgo_lite";
 const DDG_LITE_PROVIDER: &str = "duckduckgo_lite";
 const SEARXNG_PROVIDER: &str = "searxng_json";
+/// SearXNG defaults to the `general` category when none is supplied, which
+/// leaves its whole `it` engine set (Stack Overflow, GitHub, MDN, crates.io,
+/// package registries) idle. Docdex asks code and documentation questions, so
+/// those engines carry more signal per request than extra general engines.
+const SEARXNG_CATEGORIES: &str = "general,it";
 const BRAVE_PROVIDER: &str = "brave";
 const GOOGLE_CSE_PROVIDER: &str = "google_cse";
 const BING_PROVIDER: &str = "bing";
@@ -78,6 +83,41 @@ pub struct DdgDiscovery {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct WebDiscoveryResult {
     pub url: String,
+    /// Result title as reported by the provider, when it supplies one.
+    ///
+    /// Kept so relevance can be judged before paying to fetch the page; a URL
+    /// alone cannot tell `en.wikipedia.org/wiki/Tokyo` apart from a genuine
+    /// `tokio` hit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Provider-supplied result summary, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
+}
+
+impl WebDiscoveryResult {
+    pub fn from_url(url: String) -> Self {
+        Self {
+            url,
+            title: None,
+            snippet: None,
+        }
+    }
+
+    /// Text a relevance check can score against: title, snippet, and the URL.
+    pub fn match_text(&self) -> String {
+        let mut text = String::new();
+        if let Some(title) = self.title.as_deref() {
+            text.push_str(title);
+            text.push(' ');
+        }
+        if let Some(snippet) = self.snippet.as_deref() {
+            text.push_str(snippet);
+            text.push(' ');
+        }
+        text.push_str(&self.url);
+        text
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -295,15 +335,12 @@ impl DdgDiscovery {
                 cache::read_cache_entry_with_ttl(layout, &cache_key, self.config.cache_ttl)
             {
                 if let Ok(cached) = serde_json::from_slice::<WebDiscoveryResponse>(&payload) {
-                    let urls = cached
-                        .results
-                        .into_iter()
-                        .map(|result| result.url)
-                        .collect();
+                    // Keep cached titles/snippets so a cache hit can still be
+                    // relevance-filtered before anything is fetched.
                     return Ok(build_response_for_limit(
                         &cached.provider,
                         query,
-                        filter_blocked_urls(dedupe_urls(urls), &self.blocklist),
+                        self.filter_results(cached.results),
                         limit,
                     ));
                 }
@@ -723,6 +760,27 @@ impl DdgDiscovery {
         filter_blocked_urls(deduped, &self.blocklist)
     }
 
+    /// Dedupe and blocklist-filter discovery results, keeping their metadata.
+    fn filter_results(&self, results: Vec<WebDiscoveryResult>) -> Vec<WebDiscoveryResult> {
+        let mut by_url: HashMap<String, WebDiscoveryResult> = HashMap::new();
+        let urls: Vec<String> = results
+            .into_iter()
+            .map(|result| {
+                let url = result.url.clone();
+                by_url.entry(url.clone()).or_insert(result);
+                url
+            })
+            .collect();
+        self.filter_links(urls)
+            .into_iter()
+            .map(|url| {
+                by_url
+                    .remove(&url)
+                    .unwrap_or_else(|| WebDiscoveryResult::from_url(url))
+            })
+            .collect()
+    }
+
     fn cache_response(&self, cache_key: &str, response: &WebDiscoveryResponse) {
         if let Some(layout) = self.cache_layout.as_ref() {
             if self.config.cache_ttl.as_secs() > 0 {
@@ -929,13 +987,18 @@ impl DdgDiscovery {
             return Ok(None);
         }
         let body = read_discovery_text(resp, "searxng discovery").await?;
-        let links = extract_searxng_links(&body)?;
-        let filtered = self.filter_links(links);
+        let results = extract_searxng_results(&body)?;
+        let filtered = self.filter_results(results);
         if filtered.is_empty() {
             return Ok(None);
         }
-        let responses =
-            build_discovery_responses(SEARXNG_PROVIDER, query, filtered, limit, cache_limit);
+        let responses = build_discovery_responses_with_meta(
+            SEARXNG_PROVIDER,
+            query,
+            filtered,
+            limit,
+            cache_limit,
+        );
         self.cache_response(cache_key, &responses.response_for_cache);
         Ok(Some(responses.response))
     }
@@ -1277,7 +1340,8 @@ fn build_searxng_url(base: &Url, query: &str) -> Result<Url> {
     let mut url = base.clone();
     url.query_pairs_mut()
         .append_pair("q", query)
-        .append_pair("format", "json");
+        .append_pair("format", "json")
+        .append_pair("categories", SEARXNG_CATEGORIES);
     Ok(url)
 }
 
@@ -1401,13 +1465,9 @@ fn write_ddg_block_record(layout: &StateLayout, reason: &str) {
 fn build_response_for_limit(
     provider: &str,
     query: &str,
-    urls: Vec<String>,
+    mut results: Vec<WebDiscoveryResult>,
     limit: usize,
 ) -> WebDiscoveryResponse {
-    let mut results: Vec<WebDiscoveryResult> = urls
-        .into_iter()
-        .map(|url| WebDiscoveryResult { url })
-        .collect();
     if results.len() > limit {
         results.truncate(limit);
     }
@@ -1425,13 +1485,27 @@ fn build_discovery_responses(
     limit: usize,
     cache_limit: usize,
 ) -> DiscoveryResponses {
-    let response_for_cache = build_response_for_limit(provider, query, urls, cache_limit);
-    let limited_urls = response_for_cache
-        .results
-        .iter()
-        .map(|result| result.url.clone())
-        .collect();
-    let response = build_response_for_limit(provider, query, limited_urls, limit);
+    build_discovery_responses_with_meta(
+        provider,
+        query,
+        urls.into_iter().map(WebDiscoveryResult::from_url).collect(),
+        limit,
+        cache_limit,
+    )
+}
+
+/// Same as [`build_discovery_responses`] but keeps provider-supplied titles and
+/// snippets, so downstream relevance checks have something to score.
+fn build_discovery_responses_with_meta(
+    provider: &str,
+    query: &str,
+    results: Vec<WebDiscoveryResult>,
+    limit: usize,
+    cache_limit: usize,
+) -> DiscoveryResponses {
+    let response_for_cache = build_response_for_limit(provider, query, results, cache_limit);
+    let response =
+        build_response_for_limit(provider, query, response_for_cache.results.clone(), limit);
     DiscoveryResponses {
         response_for_cache,
         response,
@@ -1462,14 +1536,45 @@ fn extract_links(html: &str) -> Vec<String> {
     extract_markdown_links(html)
 }
 
-fn extract_searxng_links(body: &str) -> Result<Vec<String>> {
+/// Parse SearXNG JSON keeping the title and snippet alongside each URL.
+fn extract_searxng_results(body: &str) -> Result<Vec<WebDiscoveryResult>> {
     let value: Value = serde_json::from_str(body).map_err(|err| {
         AppError::new(
             ERR_INTERNAL_ERROR,
             format!("searxng discovery failed: {err}"),
         )
     })?;
-    Ok(extract_json_links(&value))
+    let entries = value
+        .get("results")
+        .and_then(|results| results.as_array())
+        .map(|items| items.as_slice())
+        .unwrap_or_default();
+    let mut out = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let Some(url) = entry
+            .get("url")
+            .and_then(|url| url.as_str())
+            .or_else(|| entry.get("link").and_then(|url| url.as_str()))
+        else {
+            continue;
+        };
+        out.push(WebDiscoveryResult {
+            url: url.to_string(),
+            title: json_text_field(entry, "title"),
+            // SearXNG names the result summary `content`.
+            snippet: json_text_field(entry, "content"),
+        });
+    }
+    Ok(out)
+}
+
+fn json_text_field(entry: &Value, key: &str) -> Option<String> {
+    entry
+        .get(key)
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
 }
 
 fn extract_brave_links(value: &Value) -> Vec<String> {
@@ -2332,5 +2437,58 @@ Markdown Content:
         let err = result.expect_err("all attempts should fail");
         assert_eq!(requests, 2);
         assert!(err.to_string().contains("duckduckgo discovery failed"));
+    }
+
+    #[test]
+    fn searxng_results_keep_titles_and_snippets() {
+        let body = r#"{"results":[
+            {"url":"https://docs.rs/tokio/latest/tokio/task/fn.block_in_place.html",
+             "title":"block_in_place in tokio::task",
+             "content":"Runs the provided blocking function on the current thread."},
+            {"url":"https://en.wikipedia.org/wiki/Tokyo","title":"Tokyo","content":"Capital of Japan."}
+        ]}"#;
+
+        let results = extract_searxng_results(body).expect("parse searxng body");
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(
+            results[0].title.as_deref(),
+            Some("block_in_place in tokio::task")
+        );
+        assert!(results[0]
+            .snippet
+            .as_deref()
+            .unwrap_or_default()
+            .contains("blocking function"));
+        assert_eq!(results[1].title.as_deref(), Some("Tokyo"));
+        assert!(results[0]
+            .match_text()
+            .contains("block_in_place in tokio::task"));
+    }
+
+    #[test]
+    fn searxng_results_tolerate_missing_metadata() {
+        let body = r#"{"results":[{"url":"https://example.com/a"},{"title":"no url"}]}"#;
+
+        let results = extract_searxng_results(body).expect("parse searxng body");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].url, "https://example.com/a");
+        assert!(results[0].title.is_none());
+        assert!(results[0].snippet.is_none());
+    }
+
+    #[test]
+    fn searxng_url_requests_general_and_it_categories() {
+        let base = Url::parse("http://127.0.0.1:18888/search").expect("base url");
+
+        let url = build_searxng_url(&base, "tokio block_in_place").expect("searxng url");
+
+        let pairs: Vec<(String, String)> = url
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        assert!(pairs.contains(&("format".to_string(), "json".to_string())));
+        assert!(pairs.contains(&("categories".to_string(), "general,it".to_string())));
     }
 }

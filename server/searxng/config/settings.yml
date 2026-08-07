@@ -16,20 +16,97 @@ server:
   public_instance: true
   secret_key: overridden-by-SEARXNG_SECRET
 
+outgoing:
+  # SearXNG's stock 3s budget is too tight for this deployment: DuckDuckGo and
+  # several independent indexes were reported as `timeout` on every query even
+  # though they were reachable. Engines that exceed the budget are dropped
+  # silently, so a short timeout looks identical to an engine that is blocked.
+  request_timeout: 8.0
+  max_request_timeout: 15.0
+  pool_connections: 200
+  pool_maxsize: 40
+  enable_http2: true
+
 engines:
   # Keep several free general-search engines active so one upstream CAPTCHA or
   # suspension does not make the owned SearXNG service return an empty result.
+  #
+  # Per-engine `timeout` overrides the global budget above, so the general
+  # engines we depend on most are given explicit headroom.
   - name: bing
     disabled: false
+    timeout: 8.0
   - name: qwant
     disabled: false
   - name: dogpile
     disabled: false
+    timeout: 8.0
   - name: privacywall
     disabled: false
+    timeout: 8.0
   - name: seznam
     disabled: false
   - name: searchch
+    disabled: false
+
+  # Independent indexes. These run their own crawlers rather than reselling a
+  # major engine, so they answer from a datacenter IP without CAPTCHA walls and
+  # keep working when Brave/Google/Startpage suspend us.
+  - name: duckduckgo
+    disabled: false
+    timeout: 10.0
+  - name: duckduckgo web
+    disabled: false
+    timeout: 10.0
+  - name: mojeek
+    disabled: false
+    timeout: 8.0
+  - name: mwmbl
+    disabled: false
+    timeout: 8.0
+  - name: yep
+    disabled: false
+    timeout: 8.0
+
+  # Docdex issues code and documentation queries, so the `it` category carries
+  # far more signal per request than adding more general web engines. These are
+  # queried because Docdex asks for `categories=general,it`.
+  - name: stackoverflow
+    disabled: false
+    timeout: 8.0
+  - name: askubuntu
+    disabled: false
+  - name: superuser
+    disabled: false
+  - name: github
+    disabled: false
+    timeout: 8.0
+  - name: codeberg
+    disabled: false
+  - name: gitlab
+    disabled: false
+  - name: mdn
+    disabled: false
+    timeout: 8.0
+  - name: arch linux wiki
+    disabled: false
+  - name: microsoft learn
+    disabled: false
+  - name: hackernews
+    disabled: false
+  - name: lobste.rs
+    disabled: false
+  - name: crates.io
+    disabled: false
+  - name: lib.rs
+    disabled: false
+  - name: pypi
+    disabled: false
+  - name: npm
+    disabled: false
+  - name: pkg.go.dev
+    disabled: false
+  - name: docker hub
     disabled: false
 
 valkey:

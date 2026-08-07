@@ -1757,7 +1757,7 @@ async fn run_web_discovery(
             discovery: Some(WebDiscoveryResponse {
                 provider: provider.clone(),
                 query: query.to_string(),
-                results: vec![crate::web::ddg::WebDiscoveryResult { url: url.clone() }],
+                results: vec![crate::web::ddg::WebDiscoveryResult::from_url(url.clone())],
             }),
             fetches: Some(vec![WebFetchResult {
                 url,
@@ -1912,7 +1912,7 @@ async fn run_web_discovery(
             discovery_response.results = urls
                 .iter()
                 .take(web_limit)
-                .map(|url| WebDiscoveryResult { url: url.clone() })
+                .map(|url| WebDiscoveryResult::from_url(url.clone()))
                 .collect();
             let fetches = fetch_web_documents(
                 query,
@@ -2052,10 +2052,13 @@ fn normalize_discovery_response(
     limit: usize,
     query_category: QueryCategory,
 ) -> (WebDiscoveryResponse, Vec<String>) {
+    let query = response.query.clone();
+    let mut meta: HashMap<String, WebDiscoveryResult> = HashMap::new();
     let mut urls = Vec::with_capacity(response.results.len());
-    for result in response.results {
-        let raw = result.url;
-        let unwrapped = unwrap_ddg_redirect(&raw).unwrap_or(raw);
+    for mut result in response.results {
+        let unwrapped = unwrap_ddg_redirect(&result.url).unwrap_or_else(|| result.url.clone());
+        result.url = unwrapped.clone();
+        meta.entry(unwrapped.clone()).or_insert(result);
         urls.push(unwrapped);
     }
     let mut urls = dedupe_urls(urls);
@@ -2063,10 +2066,15 @@ fn normalize_discovery_response(
     urls.retain(|value| !is_tracking_url(value));
     sort_urls_for_category(&mut urls, query_category);
     let urls = enforce_domain_diversity(urls, WEB_MAX_RESULTS_PER_DOMAIN);
+    let urls = retain_relevant_discovery_urls(urls, &query, &meta);
     let results = urls
         .iter()
         .take(limit)
-        .map(|url| WebDiscoveryResult { url: url.clone() })
+        .map(|url| {
+            meta.get(url)
+                .cloned()
+                .unwrap_or_else(|| WebDiscoveryResult::from_url(url.clone()))
+        })
         .collect();
     (
         WebDiscoveryResponse {
@@ -2076,6 +2084,79 @@ fn normalize_discovery_response(
         },
         urls,
     )
+}
+
+/// Fraction of query tokens a discovery result must match to be worth fetching.
+const WEB_DISCOVERY_MIN_MATCH_RATIO: f32 = 0.34;
+/// Never let the relevance floor shrink discovery below this many candidates.
+const WEB_DISCOVERY_MIN_RELEVANT_KEPT: usize = 3;
+
+fn discovery_match_ratio(query_tokens: &[String], result: &WebDiscoveryResult) -> f32 {
+    if query_tokens.is_empty() {
+        return 1.0;
+    }
+    let mut haystack = HashSet::new();
+    collect_match_tokens(&result.match_text(), &mut haystack);
+    let matched = query_tokens
+        .iter()
+        .filter(|token| haystack.contains(*token))
+        .count();
+    matched as f32 / query_tokens.len() as f32
+}
+
+/// Drop discovery hits that share too little with the query before they are
+/// fetched.
+///
+/// General web engines keyword-match loosely: a `tokio` query pulls back
+/// `wikipedia.org/wiki/Tokyo` and the band `TOKIO`. Fetching those costs a page
+/// load and pollutes the answer, and the URL alone is not enough to tell them
+/// apart — the provider's title and snippet are. Results without that metadata
+/// are kept, because a bare URL cannot be judged fairly.
+fn retain_relevant_discovery_urls(
+    urls: Vec<String>,
+    query: &str,
+    meta: &HashMap<String, WebDiscoveryResult>,
+) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let query_tokens: Vec<String> = tokenize_terms_for_match(query)
+        .into_iter()
+        .filter(|token| seen.insert(token.clone()))
+        .collect();
+    if query_tokens.is_empty() || urls.len() <= WEB_DISCOVERY_MIN_RELEVANT_KEPT {
+        return urls;
+    }
+
+    let mut kept = Vec::with_capacity(urls.len());
+    let mut rejected: Vec<(f32, String)> = Vec::new();
+    for url in urls {
+        let judged = meta
+            .get(&url)
+            .filter(|result| result.title.is_some() || result.snippet.is_some());
+        let Some(result) = judged else {
+            kept.push(url);
+            continue;
+        };
+        let ratio = discovery_match_ratio(&query_tokens, result);
+        if ratio >= WEB_DISCOVERY_MIN_MATCH_RATIO {
+            kept.push(url);
+        } else {
+            rejected.push((ratio, url));
+        }
+    }
+
+    if kept.len() >= WEB_DISCOVERY_MIN_RELEVANT_KEPT || rejected.is_empty() {
+        return kept;
+    }
+    // Relevance must never turn a working search into an empty one; backfill
+    // with the closest of the rejected hits.
+    rejected.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    for (_, url) in rejected {
+        if kept.len() >= WEB_DISCOVERY_MIN_RELEVANT_KEPT {
+            break;
+        }
+        kept.push(url);
+    }
+    kept
 }
 
 fn simplify_discovery_query(query: &str) -> Option<String> {
@@ -5428,6 +5509,103 @@ mod tests {
             clamp_direct_fetch_max_bytes(Some(usize::MAX)),
             WEB_DIRECT_FETCH_MAX_BYTES_HARD_LIMIT
         );
+    }
+
+    fn discovery_hit(url: &str, title: &str, snippet: &str) -> WebDiscoveryResult {
+        WebDiscoveryResult {
+            url: url.to_string(),
+            title: Some(title.to_string()),
+            snippet: Some(snippet.to_string()),
+        }
+    }
+
+    #[test]
+    fn discovery_relevance_drops_keyword_collisions_before_fetching() {
+        // Real hits observed from the SearXNG deployment for this query.
+        let query = "rust tokio block_in_place runtime documentation";
+        let hits = vec![
+            discovery_hit(
+                "https://docs.rs/tokio/latest/tokio/task/fn.block_in_place.html",
+                "block_in_place in tokio::task - Rust",
+                "Runs the provided blocking function on the current thread without blocking the executor.",
+            ),
+            discovery_hit(
+                "https://en.wikipedia.org/wiki/Tokyo",
+                "Tokyo",
+                "Tokyo is the capital and most populous city of Japan.",
+            ),
+            discovery_hit(
+                "https://ja.wikipedia.org/wiki/TOKIO",
+                "TOKIO",
+                "TOKIO is a Japanese band formed under Johnny & Associates.",
+            ),
+            discovery_hit(
+                "https://tokio.rs/tokio/topics/bridging",
+                "Bridging with sync code | Tokio",
+                "Using the Tokio runtime from synchronous code with block_in_place.",
+            ),
+            discovery_hit(
+                "https://www.dpreview.com/reviews/panasonic-lumix-fz2500",
+                "Panasonic Lumix DMC-FZ2500 review",
+                "A camera review with sample images and specifications.",
+            ),
+        ];
+        let meta: HashMap<String, WebDiscoveryResult> = hits
+            .iter()
+            .map(|hit| (hit.url.clone(), hit.clone()))
+            .collect();
+        let urls: Vec<String> = hits.iter().map(|hit| hit.url.clone()).collect();
+
+        let kept = retain_relevant_discovery_urls(urls, query, &meta);
+
+        assert!(kept.contains(
+            &"https://docs.rs/tokio/latest/tokio/task/fn.block_in_place.html".to_string()
+        ));
+        assert!(kept.contains(&"https://tokio.rs/tokio/topics/bridging".to_string()));
+        assert!(!kept.contains(&"https://en.wikipedia.org/wiki/Tokyo".to_string()));
+        assert!(
+            !kept.contains(&"https://www.dpreview.com/reviews/panasonic-lumix-fz2500".to_string())
+        );
+    }
+
+    #[test]
+    fn discovery_relevance_keeps_results_without_provider_metadata() {
+        // Providers that return bare URLs cannot be judged, so nothing is dropped.
+        let query = "rust tokio block_in_place runtime documentation";
+        let urls: Vec<String> = vec![
+            "https://en.wikipedia.org/wiki/Tokyo".to_string(),
+            "https://example.com/unrelated".to_string(),
+            "https://example.org/other".to_string(),
+            "https://example.net/more".to_string(),
+        ];
+        let meta: HashMap<String, WebDiscoveryResult> = urls
+            .iter()
+            .map(|url| (url.clone(), WebDiscoveryResult::from_url(url.clone())))
+            .collect();
+
+        let kept = retain_relevant_discovery_urls(urls.clone(), query, &meta);
+
+        assert_eq!(kept, urls);
+    }
+
+    #[test]
+    fn discovery_relevance_never_returns_an_empty_set() {
+        let query = "some extremely specific query with no matches anywhere";
+        let hits = vec![
+            discovery_hit("https://a.example/1", "Alpha", "nothing related"),
+            discovery_hit("https://b.example/2", "Bravo", "also unrelated"),
+            discovery_hit("https://c.example/3", "Charlie", "still unrelated"),
+            discovery_hit("https://d.example/4", "Delta", "query matches nothing"),
+        ];
+        let meta: HashMap<String, WebDiscoveryResult> = hits
+            .iter()
+            .map(|hit| (hit.url.clone(), hit.clone()))
+            .collect();
+        let urls: Vec<String> = hits.iter().map(|hit| hit.url.clone()).collect();
+
+        let kept = retain_relevant_discovery_urls(urls, query, &meta);
+
+        assert_eq!(kept.len(), WEB_DISCOVERY_MIN_RELEVANT_KEPT);
     }
 }
 

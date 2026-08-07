@@ -1,6 +1,11 @@
 # Changelog
 
 ## Unreleased
+- Ask SearXNG for the `general,it` categories so its Stack Overflow, GitHub, MDN, crates.io, and package-registry engines are queried; previously Docdex sent no category and SearXNG answered from `general` engines only.
+- Keep provider-supplied titles and snippets on discovery results instead of reducing them to bare URLs.
+- Drop discovery hits that match too little of the query before fetching them, so keyword collisions such as `wikipedia.org/wiki/Tokyo` for a `tokio` query no longer cost a page fetch. Results without provider metadata are never judged, and the floor can never empty a result set.
+- Raise the deployed SearXNG outgoing timeout from the stock 3s, which was reporting reachable engines such as DuckDuckGo as `timeout`, and give the general and IT engines Docdex depends on explicit headroom.
+- Enable additional independent SearXNG indexes (Mojeek, Mwmbl, Yep, DuckDuckGo web) that answer from a datacenter IP without CAPTCHA walls.
 
 ## 0.2.95
 - Fix `docdex setup` closing immediately after the data-collection consent screen was accepted: local-service detection built a nested Tokio runtime inside the CLI runtime and panicked with "Cannot start a runtime from within a runtime".

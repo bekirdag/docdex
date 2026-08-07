@@ -1414,12 +1414,8 @@ mod tests {
                 provider: "mswarm".to_string(),
                 query: "rust reqwest docs".to_string(),
                 results: vec![
-                    WebDiscoveryResult {
-                        url: "https://docs.rs/reqwest".to_string(),
-                    },
-                    WebDiscoveryResult {
-                        url: "https://crates.io/crates/reqwest".to_string(),
-                    },
+                    WebDiscoveryResult::from_url("https://docs.rs/reqwest".to_string()),
+                    WebDiscoveryResult::from_url("https://crates.io/crates/reqwest".to_string()),
                 ],
             }),
             fetches: Some(vec![WebFetchResult {

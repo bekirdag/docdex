@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Add `docdexd state-prune`, which reports reclaimable state and removes it with `--apply`. Per-repository state was never evicted, so indexing throwaway checkouts left their symbol databases and Tantivy segments resident forever; a long-lived machine measured 7,000 of 7,820 state directories belonging to repositories that no longer exist. State for a repository that still exists is never a candidate, and deletion is confined to the repos directory.
 
 ## 0.2.97
 - Pin `ThrottleInterval` on the macOS LaunchAgent so a daemon that dies at startup cannot spin; launchd has no reliable memory bound, so unlike the Linux unit this limits restart cadence only.

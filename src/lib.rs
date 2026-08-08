@@ -47,6 +47,7 @@ pub mod setup;
 pub(crate) mod sqlite;
 pub mod state_layout;
 pub mod state_paths;
+pub mod state_prune;
 pub mod symbols;
 pub mod tier2;
 pub mod tree;

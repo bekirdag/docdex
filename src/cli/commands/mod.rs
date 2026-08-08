@@ -27,6 +27,7 @@ pub mod run_tests;
 pub mod search;
 pub mod self_check;
 pub mod serve;
+pub mod state_prune;
 pub mod symbols;
 pub mod telemetry;
 pub mod test;
@@ -60,6 +61,7 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
         super::Command::Serve { args } => serve::run(args).await,
         super::Command::Daemon { args } => serve::run_daemon(args).await,
         super::Command::HelpAll => help_all::run(),
+        super::Command::StatePrune { apply, json } => state_prune::run(apply, json),
         super::Command::Browser { command } => browser::run(command).await,
         super::Command::Mswarm { command } => mswarm::run(command).await,
         super::Command::SelfCheck {

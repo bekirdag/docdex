@@ -364,6 +364,15 @@ pub(crate) enum Command {
     },
     /// Print help for all commands and flags.
     HelpAll,
+    /// Report reclaimable state and optionally remove it.
+    StatePrune {
+        /// Remove the reclaimable directories instead of only reporting them.
+        #[arg(long)]
+        apply: bool,
+        /// Emit the report as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Manage browser discovery and setup.
     Browser {
         #[command(subcommand)]

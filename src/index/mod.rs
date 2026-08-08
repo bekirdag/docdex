@@ -3051,6 +3051,26 @@ fn repo_state_mismatch_error(
     ))
 }
 
+/// True when `candidate` is Docdex's own global state directory rather than a
+/// state directory the caller chose to keep inside the repository.
+///
+/// The "state dir lives inside the repo" shortcut exists for a repo-local
+/// `.docdex` directory. It misfires when the indexed repository *is* the home
+/// directory, because `~/.docdex/state` is then a subdirectory of the repo
+/// root: scoping is skipped and every file lands in the unscoped root
+/// `symbols.db`, shared with every other unscoped repo.
+fn is_global_state_base(candidate: &Path) -> bool {
+    let Ok(global) = crate::state_paths::default_state_base_dir() else {
+        return false;
+    };
+    let normalized = candidate.canonicalize();
+    let candidate = normalized.as_deref().unwrap_or(candidate);
+    let global_normalized = global.canonicalize();
+    let global = global_normalized.as_deref().unwrap_or(global.as_path());
+    // The state base itself, and the docdex data root that contains it.
+    candidate == global || global.parent().is_some_and(|root| candidate == root)
+}
+
 fn resolve_state_dir(repo_root: &Path, state_dir: Option<PathBuf>) -> Result<PathBuf> {
     if !repo_root.exists() {
         return Err(missing_repo_path_error(repo_root).into());
@@ -3072,7 +3092,7 @@ fn resolve_state_dir(repo_root: &Path, state_dir: Option<PathBuf>) -> Result<Pat
             let repo_root = repo_root
                 .canonicalize()
                 .unwrap_or_else(|_| repo_root.to_path_buf());
-            if custom.starts_with(&repo_root) {
+            if custom.starts_with(&repo_root) && !is_global_state_base(&custom) {
                 return Ok(custom);
             }
             match crate::repo_manager::resolve_shared_index_state_dir(&repo_root, &custom) {
@@ -3646,8 +3666,8 @@ fn sort_hits_deterministically(hits: &mut [Hit]) {
 #[cfg(test)]
 mod tests {
     use super::{
-        sort_hits_deterministically, DocSnapshot, DocumentKind, Hit, IndexConfig, Indexer,
-        IndexingGate,
+        resolve_state_dir, sort_hits_deterministically, DocSnapshot, DocumentKind, Hit,
+        IndexConfig, Indexer, IndexingGate,
     };
     use anyhow::Result;
     use std::sync::{mpsc, Arc, Barrier};
@@ -3882,6 +3902,55 @@ mod tests {
         let (after_reopen, after_reopen_total) = reopened.list_docs(0, usize::MAX)?;
         assert_eq!(after_reopen_total, total);
         assert_eq!(doc_ids(&after_reopen), doc_ids(&all));
+        Ok(())
+    }
+    #[test]
+    fn indexing_a_home_directory_does_not_write_to_the_global_state_base() -> Result<()> {
+        let _guard = crate::setup::test_support::ENV_LOCK.lock();
+        let home = TempDir::new()?;
+        let previous_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", home.path());
+
+        // `~/.docdex/state` is a subdirectory of the home directory, so indexing
+        // $HOME used to satisfy the "state dir lives inside the repo" shortcut,
+        // skip scoping, and write the unscoped root symbols.db.
+        let global_base = crate::state_paths::default_state_base_dir()?;
+        std::fs::create_dir_all(&global_base)?;
+
+        let resolved = resolve_state_dir(home.path(), Some(global_base.clone()));
+
+        match previous_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+
+        let resolved = resolved?;
+        assert_ne!(
+            resolved, global_base,
+            "state must be scoped, not written to the global base"
+        );
+        assert!(
+            resolved.ends_with("index"),
+            "expected a scoped repos/<key>/index dir, got {}",
+            resolved.display()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_repo_local_state_dir_is_still_used_verbatim() -> Result<()> {
+        let repo = TempDir::new()?;
+        // Canonicalize first: on macOS TempDir yields /var/... while the resolver
+        // canonicalizes the repo root to /private/var/..., and the repo-local
+        // shortcut compares the two with starts_with.
+        let repo_root = repo.path().canonicalize()?;
+        let inside = repo_root.join(".docdex-state");
+        std::fs::create_dir_all(&inside)?;
+
+        let resolved = resolve_state_dir(&repo_root, Some(inside.clone()))?;
+
+        // The shortcut still applies to a genuinely repo-local directory.
+        assert_eq!(resolved.canonicalize()?, inside.canonicalize()?);
         Ok(())
     }
 }

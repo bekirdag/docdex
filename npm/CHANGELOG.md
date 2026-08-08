@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.98
+- Add `docdexd state-prune` to report and reclaim per-repository state whose repository no longer exists.
+- Scope index state correctly when the indexed repository contains Docdex's own state directory.
+- Bump packaged release metadata to 0.2.98.
+
 ## 0.2.97
 - Throttle LaunchAgent restarts on macOS to match the hardened Linux unit.
 - Harden the installed Linux systemd unit against OOM crashloops with a longer restart delay, a start-limit, memory bounds, and control-group kill so browser children are reaped.

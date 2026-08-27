@@ -14,6 +14,11 @@ function normalizeVersion(value) {
   return value.trim().replace(/^v/i, "");
 }
 
+function resolveCurrentVersion(packageVersion, installMetadata) {
+  const installed = normalizeVersion(installMetadata?.version);
+  return installed || normalizeVersion(packageVersion);
+}
+
 function parseSemver(value) {
   const normalized = normalizeVersion(value);
   const match = normalized.match(
@@ -214,5 +219,6 @@ module.exports = {
   checkForUpdateOnce,
   compareSemver,
   parseSemver,
+  resolveCurrentVersion,
   shouldCheckForUpdate
 };

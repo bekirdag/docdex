@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.2.99
+- Resolve the effective installed version from native install metadata for both `--version` and update checks, preventing stale JavaScript wrappers from falsely advertising an already-installed release.
+- Reconcile repositories on their first daemon mount when files changed while Docdex was stopped, and refresh readiness metadata after incremental updates so index health remains accurate.
+- Run blocking repository mounts outside Tokio workers so initialization cannot stall daemon health checks or concurrent requests.
+- Keep offline diagnostics offline: local inspection and pruning commands no longer auto-start the daemon, while `docdexd check` recognizes a healthy Docdex daemon already holding the configured port.
+- Update `h2` and the npm `tar` runtime to patched releases after the release security gate identified newly disclosed denial-of-service advisories.
+- Make npm daemon readiness use MCP initialization without a default repository, so a successful multi-repo startup is not torn down as a false failure.
+- Avoid byte slicing across UTF-8 character boundaries while parsing unprefixed plain-text conversation lines.
+- Bump release metadata to 0.2.99.
+
 ## 0.2.98
 - Drop `encyclosearch` and `free software directory` from the deployed SearXNG engine set; both still time out at the widened 12s budget, so they cost a request slot on every query and return nothing.
 - Scope index state correctly when the indexed repository contains Docdex's own state directory. Indexing a home directory made `~/.docdex/state` look repo-local, which bypassed per-repository scoping and wrote every file into one unscoped root `symbols.db` shared across repositories. A genuinely repo-local state directory is still honoured.

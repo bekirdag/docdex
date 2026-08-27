@@ -2331,6 +2331,21 @@ fn should_ensure_daemon(command: &Command) -> bool {
     ) {
         return false;
     }
+    if matches!(
+        command,
+        Command::Check
+            | Command::StatePrune { .. }
+            | Command::Profile { .. }
+            | Command::Repo {
+                command: RepoCommand::Id { .. }
+                    | RepoCommand::Status { .. }
+                    | RepoCommand::Dirty { .. }
+                    | RepoCommand::Inspect { .. }
+                    | RepoCommand::Reassociate { .. }
+            }
+    ) {
+        return false;
+    }
     !matches!(
         command,
         Command::Serve { .. }

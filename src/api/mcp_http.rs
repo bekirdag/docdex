@@ -242,7 +242,7 @@ pub async fn mcp_message_handler(
                 );
             }
         };
-        let repo_root = match resolve_repo_for_mcp(&state, Some(root_uri)) {
+        let repo_root = match resolve_repo_for_mcp(&state, Some(root_uri)).await {
             Ok(root) => root,
             Err(err) => {
                 return json_error(status_for_app_error(err.code), err.code, err.message);
@@ -275,7 +275,7 @@ pub async fn mcp_message_handler(
             );
         };
         if let Some(root_uri) = extract_project_root(&payload) {
-            match resolve_repo_for_mcp(&state, Some(root_uri)) {
+            match resolve_repo_for_mcp(&state, Some(root_uri)).await {
                 Ok(repo_root) => {
                     if repo_root != bound_root {
                         return json_error(
@@ -572,8 +572,8 @@ async fn handle_mcp_single(
         normalize_initialize_payload(&mut payload);
         let init_root = extract_init_root(&payload);
         let resolved = match init_root.clone() {
-            Some(root_uri) => resolve_repo_for_mcp(state, Some(root_uri)),
-            None => resolve_repo_for_mcp(state, None),
+            Some(root_uri) => resolve_repo_for_mcp(state, Some(root_uri)).await,
+            None => resolve_repo_for_mcp(state, None).await,
         };
         let repo_root = match resolved {
             Ok(root) => {
@@ -688,6 +688,7 @@ async fn handle_mcp_single(
                     ));
                 };
                 let repo_root = resolve_repo_for_mcp(state, Some(root_uri))
+                    .await
                     .map_err(|err| app_error_response(&err))?;
                 if let Err(err) = router.bind_session(session_id, &repo_root).await {
                     return Err(json_error(
@@ -712,6 +713,7 @@ async fn handle_mcp_single(
         };
         if let Some(root_uri) = extract_project_root(&payload) {
             let requested_root = resolve_repo_for_mcp(state, Some(root_uri))
+                .await
                 .map_err(|err| app_error_response(&err))?;
             if requested_root != bound_root {
                 return Err(json_error(
@@ -761,9 +763,13 @@ async fn handle_mcp_single(
 
     let repo_root =
         if let Some(root_uri) = extract_stateless_routing_root(&payload, state.require_repo_id) {
-            resolve_repo_for_mcp(state, Some(root_uri)).map_err(|err| app_error_response(&err))?
+            resolve_repo_for_mcp(state, Some(root_uri))
+                .await
+                .map_err(|err| app_error_response(&err))?
         } else {
-            resolve_repo_for_mcp(state, None).map_err(|err| app_error_response(&err))?
+            resolve_repo_for_mcp(state, None)
+                .await
+                .map_err(|err| app_error_response(&err))?
         };
     authorize_mcp_encrypted_repo(state, headers, &payload, Some(&repo_root)).await?;
     match router.call(Some(&repo_root), None, payload).await {
@@ -1816,7 +1822,10 @@ mod tests {
     }
 }
 
-fn resolve_repo_for_mcp(state: &AppState, root_uri: Option<String>) -> Result<PathBuf, AppError> {
+async fn resolve_repo_for_mcp(
+    state: &AppState,
+    root_uri: Option<String>,
+) -> Result<PathBuf, AppError> {
     if let Some(root_uri) = root_uri.as_deref() {
         let candidate = parse_root_uri(root_uri)?;
         if !candidate.exists() {
@@ -1827,6 +1836,6 @@ fn resolve_repo_for_mcp(state: &AppState, root_uri: Option<String>) -> Result<Pa
             );
         }
     }
-    let init = resolve_initialize(state, root_uri.as_deref())?;
+    let init = resolve_initialize(state, root_uri.as_deref()).await?;
     Ok(PathBuf::from(init.repo_root))
 }

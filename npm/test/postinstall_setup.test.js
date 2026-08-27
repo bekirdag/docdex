@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
@@ -32,6 +33,7 @@ const {
   buildDaemonEnv,
   buildLaunchAgentPlist,
   startDaemonWithHealthCheck,
+  checkDaemonMcpReady,
   waitForDaemonReady
 } = require("../lib/postinstall_setup");
 
@@ -781,6 +783,33 @@ test("waitForDaemonReady requires both health and MCP route readiness", async ()
   });
   assert.equal(ready, true);
   assert.deepEqual(calls, ["health", "mcp"]);
+});
+
+test("MCP readiness initializes a multi-repo daemon without requiring a default repo", async (t) => {
+  let requestPayload;
+  const server = http.createServer((request, response) => {
+    let body = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => {
+      body += chunk;
+    });
+    request.on("end", () => {
+      requestPayload = JSON.parse(body);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const address = server.address();
+  assert.equal(
+    await checkDaemonMcpReady({ host: "127.0.0.1", port: address.port }),
+    true
+  );
+  assert.equal(requestPayload.method, "initialize");
+  assert.equal(requestPayload.params.protocolVersion, "2025-06-18");
+  assert.equal(requestPayload.params.rootUri, undefined);
 });
 
 test("normalizeVersion strips v prefix and trims whitespace", () => {

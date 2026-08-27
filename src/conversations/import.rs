@@ -618,7 +618,10 @@ fn value_to_message(value: &Value, created_at_ms: Option<i64>) -> Option<Convers
 fn parse_prefixed_role_line(input: &str) -> Option<(ConversationRole, &str)> {
     for prefix in ["system", "user", "assistant", "tool", "developer"] {
         let needle = format!("{prefix}:");
-        if input.len() >= needle.len() && input[..needle.len()].eq_ignore_ascii_case(&needle) {
+        if input
+            .get(..needle.len())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(&needle))
+        {
             return Some((
                 ConversationRole::from_str(prefix),
                 input[needle.len()..].trim_start(),
@@ -831,5 +834,14 @@ mod tests {
         assert_eq!(parsed.messages.len(), 2);
         assert_eq!(parsed.messages[0].role, ConversationRole::User);
         assert!(parsed.messages[1].content.contains("mapping nodes"));
+    }
+
+    #[test]
+    fn plain_text_role_detection_does_not_slice_through_utf8() {
+        let parsed =
+            parse_plain_text_transcript("— release note").expect("plain text should parse");
+        assert_eq!(parsed.messages.len(), 1);
+        assert_eq!(parsed.messages[0].role, ConversationRole::User);
+        assert_eq!(parsed.messages[0].content, "— release note");
     }
 }

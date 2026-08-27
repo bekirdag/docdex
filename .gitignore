@@ -33,3 +33,6 @@ tmp/
 # Local agent planning/task/progress artifacts
 /docs/planning/
 .claude/
+
+# pigeonpost: holds this repo's mailbox token
+.mcp.json

@@ -26,6 +26,7 @@ const DAEMON_HEALTH_REQUEST_TIMEOUT_MS = 1000;
 const DAEMON_HEALTH_POLL_INTERVAL_MS = 200;
 const DAEMON_HEALTH_PATH = "/healthz";
 const DAEMON_MCP_READY_PATH = "/v1/mcp";
+const DAEMON_MCP_PROTOCOL_VERSION = "2025-06-18";
 const DAEMON_INFO_PATH = "/ai-help";
 const DAEMON_PORT_RELEASE_TIMEOUT_MS = 5000;
 const STARTUP_FAILURE_MARKER = "startup_registration_failed.json";
@@ -154,8 +155,15 @@ function checkDaemonMcpReady({ host, port, timeoutMs = DAEMON_HEALTH_REQUEST_TIM
     const payload = JSON.stringify({
       jsonrpc: "2.0",
       id: 1,
-      method: "ping",
-      params: {}
+      method: "initialize",
+      params: {
+        protocolVersion: DAEMON_MCP_PROTOCOL_VERSION,
+        capabilities: {},
+        clientInfo: {
+          name: "docdex-installer",
+          version: "0.0.0"
+        }
+      }
     });
     const req = http.request(
       {

@@ -3,6 +3,7 @@ mod common;
 use serde_json::Value;
 use std::error::Error;
 use std::fs;
+use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -94,6 +95,54 @@ fn check_fails_when_bind_in_use() -> Result<(), Box<dyn Error>> {
         .and_then(|v| v.as_str());
     assert_eq!(error_kind, Some("addr_in_use"));
     drop(listener);
+    Ok(())
+}
+
+#[test]
+fn check_accepts_bind_owned_by_healthy_docdex_daemon() -> Result<(), Box<dyn Error>> {
+    let home = TempDir::new()?;
+    let state_root = TempDir::new()?;
+    let listener = match TcpListener::bind("127.0.0.1:0") {
+        Ok(listener) => listener,
+        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+            eprintln!("skipping healthy-daemon check: TCP bind not permitted in this environment");
+            return Ok(());
+        }
+        Err(err) => return Err(err.into()),
+    };
+    let port = listener.local_addr()?.port();
+    write_config(home.path(), state_root.path(), &format!("127.0.0.1:{port}"))?;
+    let responder = std::thread::spawn(move || -> std::io::Result<()> {
+        let (mut stream, _) = listener.accept()?;
+        let mut request = [0u8; 512];
+        let _ = stream.read(&mut request)?;
+        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")?;
+        Ok(())
+    });
+
+    let output = Command::new(docdex_bin())
+        .env("DOCDEX_WEB_ENABLED", "0")
+        .env("DOCDEX_ENABLE_MEMORY", "0")
+        .env("HOME", home.path())
+        .env("DOCDEX_LLM_AGENT", "test")
+        .env("DOCDEX_ENABLE_MCP", "0")
+        .arg("check")
+        .output()?;
+    responder.join().expect("health responder")?;
+
+    let report = parse_report(&output.stdout)?;
+    let check = find_check(&report, "bind_available").ok_or("missing bind_available check")?;
+    assert_eq!(
+        check.get("status").and_then(|value| value.as_str()),
+        Some("ok")
+    );
+    assert_eq!(
+        check
+            .get("details")
+            .and_then(|value| value.get("daemon_running"))
+            .and_then(|value| value.as_bool()),
+        Some(true)
+    );
     Ok(())
 }
 

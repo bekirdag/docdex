@@ -185,6 +185,20 @@ pub(crate) async fn build_report(options: CheckOptions) -> Result<CheckReport> {
                             "bind_addr": bind_addr_raw,
                         })),
                     },
+                    Err(err)
+                        if err.kind == "addr_in_use"
+                            && crate::cli::daemon_spawn::daemon_healthy(addr) =>
+                    {
+                        CheckItem {
+                            name: "bind_available",
+                            status: "ok",
+                            message: "bind address is owned by a healthy Docdex daemon".to_string(),
+                            details: Some(json!({
+                                "bind_addr": bind_addr_raw,
+                                "daemon_running": true,
+                            })),
+                        }
+                    }
                     Err(err) => {
                         if err.kind == "permission_denied"
                             && (addr.port() == 0 || addr.port() >= 1024)

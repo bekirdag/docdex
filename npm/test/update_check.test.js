@@ -4,7 +4,12 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
 
-const { checkForUpdate, compareSemver, parseSemver } = require("../lib/update_check");
+const {
+  checkForUpdate,
+  compareSemver,
+  parseSemver,
+  resolveCurrentVersion
+} = require("../lib/update_check");
 
 function createHttpsMock({ statusCode = 200, body = JSON.stringify({ version: "0.2.99" }) } = {}) {
   return {
@@ -30,6 +35,12 @@ test("compareSemver treats prerelease lower than release", () => {
   const prerelease = parseSemver("0.2.18-beta.1");
   const release = parseSemver("0.2.18");
   assert.equal(compareSemver(prerelease, release), -1);
+});
+
+test("resolveCurrentVersion prefers installed daemon metadata over a stale wrapper", () => {
+  assert.equal(resolveCurrentVersion("0.2.94", { version: "0.2.98" }), "0.2.98");
+  assert.equal(resolveCurrentVersion("0.2.94", { version: "  " }), "0.2.94");
+  assert.equal(resolveCurrentVersion("v0.2.94", null), "0.2.94");
 });
 
 test("checkForUpdate logs when a newer version exists", async () => {

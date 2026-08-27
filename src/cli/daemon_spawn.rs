@@ -96,7 +96,7 @@ fn parse_bind_addr(value: &str) -> Result<SocketAddr> {
         .map_err(|_| anyhow!("invalid http_bind_addr: {value}"))
 }
 
-fn daemon_healthy(addr: SocketAddr) -> bool {
+pub(crate) fn daemon_healthy(addr: SocketAddr) -> bool {
     let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(300)) else {
         return false;
     };

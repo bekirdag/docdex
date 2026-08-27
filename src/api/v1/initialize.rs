@@ -29,13 +29,13 @@ pub async fn initialize_handler(
     State(state): State<AppState>,
     Json(req): Json<InitializeRequest>,
 ) -> impl IntoResponse {
-    match resolve_initialize(&state, req.root_uri.as_deref()) {
+    match resolve_initialize(&state, req.root_uri.as_deref()).await {
         Ok(response) => Json(response).into_response(),
         Err(err) => json_error(status_for_app_error(err.code), err.code, err.message),
     }
 }
 
-pub(crate) fn resolve_initialize(
+pub(crate) async fn resolve_initialize(
     state: &AppState,
     root_uri: Option<&str>,
 ) -> Result<InitializeResponse, AppError> {
@@ -58,12 +58,15 @@ pub(crate) fn resolve_initialize(
             .repos
             .as_ref()
             .ok_or_else(|| AppError::new(ERR_INTERNAL_ERROR, "repo manager unavailable"))?;
-        let mount = manager.mount_repo(&resolved_repo).map_err(|err| {
-            if let Some(app) = err.downcast_ref::<AppError>() {
-                return app.clone();
-            }
-            AppError::new(ERR_INTERNAL_ERROR, "failed to initialize repo")
-        })?;
+        let mount = manager
+            .mount_repo_async(resolved_repo.clone())
+            .await
+            .map_err(|err| {
+                if let Some(app) = err.downcast_ref::<AppError>() {
+                    return app.clone();
+                }
+                AppError::new(ERR_INTERNAL_ERROR, "failed to initialize repo")
+            })?;
         let mut status = mount.status;
         if status == crate::daemon::multi_repo::RepoMountStatus::Ready
             && maybe_start_background_index(mount.repo.indexer.clone(), &mount.repo.repo_id)

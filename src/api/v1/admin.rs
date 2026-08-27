@@ -133,11 +133,11 @@ pub async fn admin_repo_provision_handler(
     if let Err(response) = require_service_admin(&state, &headers, "/v1/admin/repos/provision") {
         return response;
     }
-    let (repo_id, repo_root) = match resolve_admin_repo(&state, request.repo_id, request.repo_root)
-    {
-        Ok(value) => value,
-        Err(err) => return app_error_to_response(err),
-    };
+    let (repo_id, repo_root) =
+        match resolve_admin_repo(&state, request.repo_id, request.repo_root).await {
+            Ok(value) => value,
+            Err(err) => return app_error_to_response(err),
+        };
     let mut bindings = Vec::new();
     for input in request.access_bindings {
         let binding = input.into_binding(repo_id.clone());
@@ -219,15 +219,17 @@ pub async fn admin_repo_delete_handler(
     let mut mounted_repo_root: Option<PathBuf> = None;
     let mut mounted_state_dir: Option<PathBuf> = None;
     if let Some(manager) = state.repos.as_ref() {
-        let runtime = manager.get_by_id(&repo_id).or_else(|| {
-            requested_repo_root.as_ref().and_then(|root| {
-                if root.exists() {
-                    manager.mount_repo(root).ok().map(|mount| mount.repo)
-                } else {
-                    None
-                }
-            })
-        });
+        let runtime = if let Some(runtime) = manager.get_by_id(&repo_id) {
+            Some(runtime)
+        } else if let Some(root) = requested_repo_root.as_ref().filter(|root| root.exists()) {
+            manager
+                .mount_repo_async(root.to_path_buf())
+                .await
+                .ok()
+                .map(|mount| mount.repo)
+        } else {
+            None
+        };
         if let Some(runtime) = runtime {
             mounted_repo_root = Some(runtime.repo_root.clone());
             mounted_state_dir = Some(runtime.indexer.state_dir().to_path_buf());
@@ -583,7 +585,7 @@ pub(crate) fn require_service_admin(
     }
 }
 
-fn resolve_admin_repo(
+async fn resolve_admin_repo(
     state: &AppState,
     repo_id: Option<String>,
     repo_root: Option<String>,
@@ -604,12 +606,15 @@ fn resolve_admin_repo(
         }
         let canonical = path.canonicalize().unwrap_or(path);
         if let Some(manager) = state.repos.as_ref() {
-            let mount = manager.mount_repo(&canonical).map_err(|err| {
-                AppError::new(
-                    ERR_INVALID_ARGUMENT,
-                    format!("failed to mount repository for provisioning: {err}"),
-                )
-            })?;
+            let mount = manager
+                .mount_repo_async(canonical.clone())
+                .await
+                .map_err(|err| {
+                    AppError::new(
+                        ERR_INVALID_ARGUMENT,
+                        format!("failed to mount repository for provisioning: {err}"),
+                    )
+                })?;
             return Ok((
                 mount.repo.repo_id.clone(),
                 Some(mount.repo.repo_root.display().to_string()),

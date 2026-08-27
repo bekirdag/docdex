@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.2.99
+- Prevent false update notices by using native install metadata as the effective installed version.
+- Reconcile file changes made while the daemon was stopped without blocking asynchronous health and initialization traffic.
+- Keep local diagnostic commands from auto-starting the daemon and recognize a healthy daemon on the configured port.
+- Update the packaged `tar` runtime to 7.5.22 to address newly disclosed denial-of-service advisories.
+- Initialize MCP without a default repository during postinstall readiness checks so healthy multi-repo daemons remain running.
+- Bump packaged release metadata to 0.2.99.
+
 ## 0.2.98
 - Add `docdexd state-prune` to report and reclaim per-repository state whose repository no longer exists.
 - Scope index state correctly when the indexed repository contains Docdex's own state directory.

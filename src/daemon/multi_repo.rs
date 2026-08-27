@@ -10,7 +10,7 @@ use crate::ollama::OllamaEmbedder;
 use crate::repo_manager;
 use crate::search::{ConversationState, MemoryState};
 use crate::watcher;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -684,16 +684,34 @@ impl RepoManager {
         };
         self.insert_repo(repo.clone(), watcher);
         let index_ready = indexer.index_ready();
-        let status = if index_ready {
-            RepoMountStatus::Ready
-        } else {
+        let reconcile_needed = index_ready
+            && match indexer.needs_reconciliation() {
+                Ok(needs_reconciliation) => needs_reconciliation,
+                Err(err) => {
+                    warn!(
+                        target: "docdexd",
+                        error = ?err,
+                        repo = %repo_root.display(),
+                        "failed to compare the repository with its index; scheduling reconciliation"
+                    );
+                    true
+                }
+            };
+        let status = if !index_ready || reconcile_needed {
             RepoMountStatus::Indexing
+        } else {
+            RepoMountStatus::Ready
         };
         if status == RepoMountStatus::Indexing && !read_only {
             let repo_id_clone = repo.repo_id.clone();
             let indexer = indexer.clone();
             tokio::spawn(async move {
-                match crate::index::ensure_indexed(indexer).await {
+                let result = if reconcile_needed {
+                    indexer.reindex_all().await.map(|_| true)
+                } else {
+                    crate::index::ensure_indexed(indexer).await
+                };
+                match result {
                     Ok(true) => info!(repo_id = %repo_id_clone, "background reindex complete"),
                     Ok(false) => info!(repo_id = %repo_id_clone, "index already ready"),
                     Err(err) => {
@@ -703,6 +721,13 @@ impl RepoManager {
             });
         }
         Ok(RepoMount { repo, status })
+    }
+
+    pub async fn mount_repo_async(self: &Arc<Self>, repo_root: PathBuf) -> Result<RepoMount> {
+        let manager = Arc::clone(self);
+        tokio::task::spawn_blocking(move || manager.mount_repo(&repo_root))
+            .await
+            .map_err(|err| anyhow!("repo mount task aborted: {err}"))?
     }
 }
 
@@ -765,7 +790,11 @@ mod tests {
             let repo_root = repo.path().to_path_buf();
             handles.push(tokio::spawn(async move {
                 barrier.wait().await;
-                manager.mount_repo(&repo_root).expect("mount repo").repo
+                manager
+                    .mount_repo_async(repo_root)
+                    .await
+                    .expect("mount repo")
+                    .repo
             }));
         }
         barrier.wait().await;
@@ -775,6 +804,98 @@ mod tests {
         assert!(Arc::ptr_eq(&first, &second));
         assert!(!first.read_only);
         assert_eq!(manager.repo_count(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mount_reconciles_files_changed_while_daemon_was_stopped() {
+        let repo = TempDir::new().expect("repo dir");
+        let state_dir = TempDir::new().expect("state dir");
+        let prepared = prepare_indexed_repo(repo.path(), state_dir.path()).await;
+        drop(prepared);
+        std::thread::sleep(Duration::from_millis(2));
+        std::fs::write(
+            repo.path().join("README.md"),
+            "# changed while stopped\nmount-reconcile-sentinel\n",
+        )
+        .expect("change repo file");
+
+        let manager = Arc::new(RepoManager::new(
+            None,
+            Some(state_dir.path().to_path_buf()),
+            false,
+            crate::config::MemoryConversationConfig::default(),
+            crate::repo_encryption::RepoEncryptionConfig::default(),
+        ));
+        let mount = manager
+            .mount_repo_async(repo.path().to_path_buf())
+            .await
+            .expect("mount stale repo");
+        assert_eq!(mount.status, RepoMountStatus::Indexing);
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let content_updated = mount
+                    .repo
+                    .indexer
+                    .search("mount-reconcile-sentinel", 5)
+                    .expect("search index")
+                    .iter()
+                    .any(|hit| hit.rel_path == "README.md");
+                let reconciliation_complete = !mount
+                    .repo
+                    .indexer
+                    .needs_reconciliation()
+                    .expect("reconciliation state");
+                if content_updated && reconciliation_complete {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("background reconciliation timed out");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn async_mount_wait_does_not_block_tokio_worker() {
+        let repo = TempDir::new().expect("repo dir");
+        std::fs::write(repo.path().join("README.md"), "# test\n").expect("write file");
+        let state_dir = TempDir::new().expect("state dir");
+        let manager = Arc::new(RepoManager::new(
+            None,
+            Some(state_dir.path().to_path_buf()),
+            false,
+            crate::config::MemoryConversationConfig::default(),
+            crate::repo_encryption::RepoEncryptionConfig::default(),
+        ));
+        let lock_manager = Arc::clone(&manager);
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let lock_thread = std::thread::spawn(move || {
+            let _guard = lock_manager.mount_lock.lock();
+            locked_tx.send(()).expect("signal locked");
+            release_rx.recv().expect("release mount lock");
+        });
+        locked_rx.recv().expect("mount lock acquired");
+
+        let mount_manager = Arc::clone(&manager);
+        let repo_root = repo.path().to_path_buf();
+        let mount_task = tokio::spawn(async move {
+            mount_manager
+                .mount_repo_async(repo_root)
+                .await
+                .expect("async mount")
+        });
+        tokio::time::timeout(
+            Duration::from_millis(250),
+            tokio::time::sleep(Duration::from_millis(25)),
+        )
+        .await
+        .expect("mount blocked the only Tokio worker");
+
+        release_tx.send(()).expect("release mount");
+        lock_thread.join().expect("lock thread");
+        mount_task.await.expect("mount task");
     }
 
     #[tokio::test]

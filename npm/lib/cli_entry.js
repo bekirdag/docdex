@@ -15,7 +15,7 @@ const {
   assetPatternForPlatformKey,
   UnsupportedPlatformError
 } = require("./platform");
-const { checkForUpdateOnce } = require("./update_check");
+const { checkForUpdateOnce, resolveCurrentVersion } = require("./update_check");
 
 function isDoctorCommand(argv) {
   const sub = argv[0];
@@ -212,6 +212,8 @@ async function run() {
   }
 
   const { binaryPath, basePath } = resolveInstallPaths(platformKey);
+  const installMeta = readInstallMetadata({ fsModule: fs, pathModule: path, basePath });
+  const currentVersion = resolveCurrentVersion(pkg.version, installMeta);
 
   if (!fs.existsSync(binaryPath)) {
     console.error(`[docdex] Missing binary for ${platformKey}. Try reinstalling or set DOCDEX_DOWNLOAD_REPO to a repo with release assets.`);
@@ -224,15 +226,13 @@ async function run() {
   }
 
   if (isVersionCommand(argv)) {
-    const installMeta = readInstallMetadata({ fsModule: fs, pathModule: path, basePath });
-    const version = installMeta?.version || pkg.version;
-    console.log(`docdexd ${version}`);
+    console.log(`docdexd ${currentVersion}`);
     process.exit(0);
     return;
   }
 
   await checkForUpdateOnce({
-    currentVersion: pkg.version,
+    currentVersion,
     env: process.env,
     stdout: process.stdout,
     stderr: process.stderr,

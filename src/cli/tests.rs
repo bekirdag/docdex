@@ -66,7 +66,14 @@ fn serve_args(repo: RepoArgs) -> ServeArgs {
 #[test]
 fn ensure_daemon_skips_help_only() {
     assert!(!should_ensure_daemon(&Command::HelpAll));
-    assert!(should_ensure_daemon(&Command::Check));
+    assert!(!should_ensure_daemon(&Command::Check));
+    assert!(!should_ensure_daemon(&Command::StatePrune {
+        apply: false,
+        json: false,
+    }));
+    assert!(!should_ensure_daemon(&Command::Profile {
+        command: super::ProfileCommand::List { agent_id: None },
+    }));
 }
 
 #[test]

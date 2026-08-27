@@ -1228,6 +1228,7 @@ impl Indexer {
                 ingest.impact_diagnostics,
             )?;
         }
+        self.write_index_ready_marker(self.num_docs())?;
         Ok(decision)
     }
 
@@ -1257,6 +1258,7 @@ impl Indexer {
         if self.symbols_store.is_some() {
             self.remove_impact_edges_for_file(&rel)?;
         }
+        self.write_index_ready_marker(self.num_docs())?;
         Ok(())
     }
 
@@ -1730,6 +1732,55 @@ impl Indexer {
 
     pub fn index_ready(&self) -> bool {
         self.index_ready_marker_exists() || self.num_docs() > 0
+    }
+
+    /// Return true when the repository tree no longer matches the last complete
+    /// index snapshot. This is intentionally metadata-only so a daemon can
+    /// reconcile changes made while it was stopped without rereading every file
+    /// during mount.
+    pub fn needs_reconciliation(&self) -> Result<bool> {
+        let marker = match fs::read(self.index_ready_path())
+            .ok()
+            .and_then(|raw| serde_json::from_slice::<IndexReadyRecord>(&raw).ok())
+        {
+            Some(marker) => marker,
+            None => return Ok(true),
+        };
+        let (snapshots, total) = self.list_docs(0, usize::MAX)?;
+        if total != marker.docs_indexed || snapshots.len() as u64 != total {
+            return Ok(true);
+        }
+        let mut indexed_paths = snapshots
+            .into_iter()
+            .map(|snapshot| snapshot.rel_path)
+            .collect::<BTreeSet<_>>();
+        for entry in WalkDir::new(&self.repo_root)
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_type().is_file())
+        {
+            let path = entry.path();
+            if !decide_file(path, &self.repo_root, &self.config).should_index() {
+                continue;
+            }
+            let rel_path = self.rel_path(path)?;
+            if !indexed_paths.remove(&rel_path) {
+                return Ok(true);
+            }
+            let modified_at_ms = match entry
+                .metadata()
+                .ok()
+                .and_then(|metadata| metadata.modified().ok())
+                .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+            {
+                Some(modified) => modified.as_millis(),
+                None => return Ok(true),
+            };
+            if modified_at_ms > marker.indexed_at_epoch_ms {
+                return Ok(true);
+            }
+        }
+        Ok(!indexed_paths.is_empty())
     }
 
     pub fn indexing_in_progress(&self) -> Result<bool> {

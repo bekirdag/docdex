@@ -1,6 +1,6 @@
 {
   "name": "docdex",
-  "version": "0.2.98",
+  "version": "0.2.99",
   "mcpName": "io.github.bekirdag/docdex",
   "description": "Local-first documentation and code indexer with HTTP/MCP search, AST, and agent memory.",
   "bin": {
@@ -62,6 +62,6 @@
     "access": "public"
   },
   "dependencies": {
-    "tar": "^7.5.19"
+    "tar": "^7.5.22"
   }
 }

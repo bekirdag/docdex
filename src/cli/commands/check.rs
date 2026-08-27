@@ -1343,7 +1343,10 @@ fn load_repo_state_entries(state_dir: &Path) -> Result<Vec<RepoStateEntry>> {
                 .with_context(|| format!("parse {}", registry_path.display()))?;
             for entry in parsed.repos.values() {
                 let trimmed = entry.state_key.trim();
-                if !trimmed.is_empty() {
+                // State pruning intentionally leaves registry history behind. Only
+                // audit repositories whose state directory still exists; otherwise
+                // a successful prune makes every database check report corruption.
+                if !trimmed.is_empty() && layout.repos_dir().join(trimmed).is_dir() {
                     let canonical_path = entry.canonical_path.as_deref().and_then(|value| {
                         let trimmed = value.trim();
                         if trimmed.is_empty() {
@@ -1511,4 +1514,35 @@ fn model_installed(installed: &std::collections::HashSet<String>, required: &str
     installed
         .iter()
         .any(|name| name == required || name.starts_with(&prefix))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::load_repo_state_entries;
+    use std::fs;
+
+    #[test]
+    fn repo_state_entries_ignore_registry_rows_removed_by_prune() {
+        let temp = tempfile::tempdir().expect("temp state dir");
+        let repos_dir = temp.path().join("repos");
+        fs::create_dir_all(repos_dir.join("live-state")).expect("create live state");
+        fs::write(
+            repos_dir.join("repo_registry.json"),
+            r#"{
+                "repos": {
+                    "live": {"state_key":"live-state","canonical_path":"/tmp/live"},
+                    "pruned": {"state_key":"pruned-state","canonical_path":"/tmp/pruned"}
+                }
+            }"#,
+        )
+        .expect("write registry");
+
+        let entries = load_repo_state_entries(temp.path()).expect("load repo state entries");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].state_key, "live-state");
+        assert_eq!(
+            entries[0].canonical_path.as_deref(),
+            Some(std::path::Path::new("/tmp/live"))
+        );
+    }
 }

@@ -8,6 +8,7 @@
 - Keep local diagnostic commands from auto-starting the daemon and recognize a healthy daemon on the configured port.
 - Update the packaged `tar` runtime to 7.5.22 to address newly disclosed denial-of-service advisories.
 - Initialize MCP without a default repository during postinstall readiness checks so healthy multi-repo daemons remain running.
+- Avoid UTF-8 parsing panics during conversation imports and false database failures after repository state pruning.
 - Bump packaged release metadata to 0.2.99.
 
 ## 0.2.98

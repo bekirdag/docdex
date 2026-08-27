@@ -10,6 +10,7 @@
 - Update `h2` and the npm `tar` runtime to patched releases after the release security gate identified newly disclosed denial-of-service advisories.
 - Make npm daemon readiness use MCP initialization without a default repository, so a successful multi-repo startup is not torn down as a false failure.
 - Avoid byte slicing across UTF-8 character boundaries while parsing unprefixed plain-text conversation lines.
+- Ignore registry history whose repository state was deliberately removed by `state-prune`, preventing false database-corruption failures in `docdexd check`.
 - Bump release metadata to 0.2.99.
 
 ## 0.2.98

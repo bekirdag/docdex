@@ -59,12 +59,18 @@ engines:
     disabled: false
   - name: qwant
     disabled: false
-  # Given generous headroom because they fail on timeout, not on blocking.
+  # Disabled 2026-09-21: every DuckDuckGo host (duckduckgo.com, lite., html.)
+  # now refuses to complete a TCP connect from this box, while Bing and
+  # Wikipedia connect in under 0.1s. The 12s headroom below therefore bought
+  # nothing but latency: each engine burned its full timeout, returned no
+  # results, and pinned the whole search at 12s, which was breaking Docdex
+  # web discovery and flapping the tunnel health probe. Re-enable only once
+  # a connect from the searxng container succeeds again.
   - name: duckduckgo
-    disabled: false
+    disabled: true
     timeout: 12.0
   - name: duckduckgo web
-    disabled: false
+    disabled: true
     timeout: 12.0
   # Independent indexes and aggregators that answer from this IP without a
   # CAPTCHA wall. mwmbl runs its own crawler; the rest are metasearch.

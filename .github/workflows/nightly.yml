@@ -12,7 +12,7 @@ permissions: {}
 
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, wodo-ci]
     permissions:
       contents: read
     steps:
@@ -22,7 +22,7 @@ jobs:
           persist-credentials: false
 
       - name: Free disk space (Linux)
-        if: ${{ runner.os == 'Linux' }}
+        if: runner.os == 'Linux' && runner.environment == 'github-hosted'
         run: |
           df -h
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
@@ -87,7 +87,7 @@ jobs:
           scripts/load_test_mcp.sh .
 
   artifacts:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, wodo-ci]
     needs: validate
     permissions:
       contents: read
@@ -98,7 +98,7 @@ jobs:
           persist-credentials: false
 
       - name: Free disk space (Linux)
-        if: ${{ runner.os == 'Linux' }}
+        if: runner.os == 'Linux' && runner.environment == 'github-hosted'
         run: |
           df -h
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \

@@ -16,7 +16,7 @@ env:
 jobs:
   preflight:
     name: Release preflight
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, wodo-ci]
     permissions:
       contents: read
     steps:
@@ -26,6 +26,7 @@ jobs:
           persist-credentials: false
 
       - name: Free disk space
+        if: runner.environment == 'github-hosted'
         run: |
           df -h
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
@@ -144,7 +145,7 @@ jobs:
   build:
     name: Build ${{ matrix.archive }}
     needs: preflight
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ startsWith(matrix.os, 'ubuntu-') && !endsWith(matrix.os, '-arm') && fromJSON('["self-hosted","Linux","X64","wodo-ci"]') || matrix.os }}
     permissions:
       contents: read
     strategy:
@@ -183,7 +184,7 @@ jobs:
           persist-credentials: false
 
       - name: Free disk space (Linux)
-        if: ${{ runner.os == 'Linux' }}
+        if: runner.os == 'Linux' && runner.environment == 'github-hosted'
         run: |
           df -h
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
@@ -258,7 +259,7 @@ jobs:
   prepare-release-assets:
     name: Prepare immutable GitHub release assets
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, wodo-ci]
     permissions:
       contents: read
     steps:
@@ -322,7 +323,7 @@ jobs:
   prepare-npm:
     name: Pack and smoke npm package
     needs: prepare-release-assets
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, wodo-ci]
     permissions:
       contents: read
     outputs:
@@ -449,7 +450,7 @@ jobs:
     needs:
       - prepare-release-assets
       - prepare-npm
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, wodo-ci]
     environment: release
     permissions:
       contents: write
@@ -667,7 +668,7 @@ jobs:
   publish-mcp:
     name: Publish MCP Registry server
     needs: publish-npm
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, wodo-ci]
     environment: release
     permissions:
       contents: read

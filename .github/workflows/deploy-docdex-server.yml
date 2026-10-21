@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   prepare:
-    runs-on: ubuntu-22.04
+    runs-on: [self-hosted, Linux, X64, wodo-ci]
     permissions:
       contents: read
     outputs:
@@ -130,11 +130,7 @@ jobs:
     environment: production
     permissions:
       actions: read
-    runs-on:
-      - self-hosted
-      - Linux
-      - X64
-      - docdex-deploy
+    runs-on: [self-hosted, Linux, X64, wodo-ci]
     steps:
       - name: Download release binary
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8

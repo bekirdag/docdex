@@ -1,10 +1,10 @@
 self-hosted-runner:
   labels:
-    - docdex-deploy
-
+  - docdex-deploy
+  - wodo-ci
+  - wodomini
 config-variables: null
-
 paths:
   .github/workflows/deploy-docdex-server.yml:
     ignore:
-      - "SC2029"
+    - SC2029

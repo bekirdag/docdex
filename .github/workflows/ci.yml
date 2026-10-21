@@ -11,7 +11,7 @@ permissions: {}
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, wodo-ci]
     permissions:
       contents: read
     steps:
@@ -37,7 +37,7 @@ jobs:
         run: cargo test --locked --all
 
   npm-installer-e2e:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, wodo-ci]
     permissions:
       contents: read
     steps:

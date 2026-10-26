@@ -17,6 +17,9 @@ jobs:
   preflight:
     name: Release preflight
     runs-on: [self-hosted, Linux, X64, wodo-ci]
+    outputs:
+      prerelease: ${{ steps.channel.outputs.prerelease }}
+      npm_dist_tag: ${{ steps.channel.outputs.npm_dist_tag }}
     permissions:
       contents: read
     steps:
@@ -70,6 +73,12 @@ jobs:
         run: |
           test "${GITHUB_REF_TYPE}" = "tag"
           python3 scripts/verify_release_versions.py --tag "${GITHUB_REF_NAME}"
+
+      - name: Determine publication channel
+        id: channel
+        run: |
+          python3 scripts/test_release_channel.py
+          python3 scripts/release_channel.py --tag "${GITHUB_REF_NAME}" --github-output "${GITHUB_OUTPUT}"
 
       - name: Cargo formatting
         run: cargo fmt --all -- --check
@@ -448,6 +457,7 @@ jobs:
   release-assets:
     name: Publish immutable GitHub release assets
     needs:
+      - preflight
       - prepare-release-assets
       - prepare-npm
     runs-on: [self-hosted, Linux, X64, wodo-ci]
@@ -470,6 +480,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -505,12 +516,12 @@ jobs:
           trap 'rm -f "${RELEASE_JSON}"; rm -rf "${VERIFY_DIR}"' EXIT
           if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
             --json tagName,isDraft,isPrerelease >"${RELEASE_JSON}" 2>/dev/null; then
-            jq -e --arg tag "${GITHUB_REF_NAME}" \
-              '.tagName == $tag and .isPrerelease == false' "${RELEASE_JSON}" >/dev/null
+            jq -e --arg tag "${GITHUB_REF_NAME}" --argjson prerelease "${RELEASE_PRERELEASE}" \
+              '.tagName == $tag and .isPrerelease == $prerelease' "${RELEASE_JSON}" >/dev/null
             if jq -e '.isDraft == false' "${RELEASE_JSON}" >/dev/null; then
               gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
                 "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" >"${RELEASE_JSON}"
-              jq -e '.draft == false and .prerelease == false and .immutable == true' \
+              jq -e --argjson prerelease "${RELEASE_PRERELEASE}" '.draft == false and .prerelease == $prerelease and .immutable == true' \
                 "${RELEASE_JSON}" >/dev/null
               python3 scripts/verify_release_assets_immutable.py \
                 --repository "${GITHUB_REPOSITORY}" \
@@ -524,6 +535,7 @@ jobs:
               --repo "${GITHUB_REPOSITORY}" \
               --verify-tag \
               --draft \
+              --prerelease="${RELEASE_PRERELEASE}" \
               --title "${GITHUB_REF_NAME}"
           fi
 
@@ -549,7 +561,7 @@ jobs:
           for attempt in $(seq 1 12); do
             if gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
               "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" \
-              --jq 'select(.draft == false and .prerelease == false and .immutable == true) | .tag_name' \
+              --jq "select(.draft == false and .prerelease == ${RELEASE_PRERELEASE} and .immutable == true) | .tag_name" \
               | grep -Fxq "${GITHUB_REF_NAME}"; then
               IMMUTABLE_RELEASE_VERIFIED=1
               break
@@ -563,6 +575,7 @@ jobs:
   publish-npm:
     name: Publish exact npm artifact
     needs:
+      - preflight
       - prepare-npm
       - release-assets
     runs-on: ubuntu-latest
@@ -639,7 +652,8 @@ jobs:
           DOCDEX_DOWNLOAD_REPO: ${{ github.repository }}
           NPM_CONFIG_PROVENANCE: "true"
           PACK_FILENAME: ${{ needs.prepare-npm.outputs.filename }}
-        run: npm publish "artifacts/npm/${PACK_FILENAME}" --access public --provenance
+          NPM_DIST_TAG: ${{ needs.preflight.outputs.npm_dist_tag }}
+        run: npm publish "artifacts/npm/${PACK_FILENAME}" --access public --provenance --tag "${NPM_DIST_TAG}"
 
       - name: Verify npm publication
         shell: bash
@@ -667,7 +681,8 @@ jobs:
 
   publish-mcp:
     name: Publish MCP Registry server
-    needs: publish-npm
+    needs: [preflight, publish-npm]
+    if: ${{ needs.preflight.outputs.prerelease == 'false' }}
     runs-on: [self-hosted, Linux, X64, wodo-ci]
     environment: release
     permissions:

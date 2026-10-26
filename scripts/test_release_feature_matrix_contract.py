@@ -319,6 +319,19 @@ with open(os.environ["DOCDEX_FEATURE_MATRIX_LANE_EVIDENCE"], "w", encoding="utf-
         )
         self.assertGreaterEqual(release.count("verify_remote_tag"), 4)
 
+    def test_prerelease_channel_is_enforced_at_each_publication_boundary(self) -> None:
+        text = (SCRIPT_DIR.parent / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        self.assertIn("python3 scripts/release_channel.py --tag", text)
+        release = text[text.index("  release-assets:\n"):text.index("  publish-npm:\n")]
+        npm = text[text.index("  publish-npm:\n"):text.index("  publish-mcp:\n")]
+        mcp = text[text.index("  publish-mcp:\n"):]
+        self.assertIn("RELEASE_PRERELEASE: ${{ needs.preflight.outputs.prerelease }}", release)
+        self.assertIn('--prerelease="${RELEASE_PRERELEASE}"', release)
+        self.assertIn('.prerelease == ${RELEASE_PRERELEASE} and .immutable == true', release)
+        self.assertIn("NPM_DIST_TAG: ${{ needs.preflight.outputs.npm_dist_tag }}", npm)
+        self.assertIn('--tag "${NPM_DIST_TAG}"', npm)
+        self.assertIn("if: ${{ needs.preflight.outputs.prerelease == 'false' }}", mcp)
+
     def test_deploy_workflow_uses_the_verified_release_asset(self) -> None:
         text = (
             SCRIPT_DIR.parent / ".github/workflows/deploy-docdex-server.yml"

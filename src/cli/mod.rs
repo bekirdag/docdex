@@ -52,6 +52,8 @@ pub(crate) enum McpAddTransport {
 
 #[derive(Args, Debug, Clone)]
 pub(crate) struct ServeArgs {
+    #[arg(long, action = ArgAction::Set, help = "Allow workspace metadata and Git ignore writes (false for managed read-only mounts)")]
+    pub workspace_metadata: Option<bool>,
     #[command(flatten)]
     pub repo: RepoArgs,
     #[arg(skip)]
@@ -364,6 +366,8 @@ pub(crate) enum Command {
     },
     /// Print help for all commands and flags.
     HelpAll,
+    /// Print compiled version and managed-client capabilities as JSON without loading configuration or starting services.
+    RuntimeInfo,
     /// Report reclaimable state and optionally remove it.
     StatePrune {
         /// Remove the reclaimable directories instead of only reporting them.
@@ -2299,7 +2303,7 @@ pub async fn run() -> Result<()> {
             args.enable_memory_explicit = enable_memory_explicit;
         }
     }
-    let config = if !matches!(cli.command, Command::HelpAll) {
+    let config = if !matches!(cli.command, Command::HelpAll | Command::RuntimeInfo) {
         Some(config::AppConfig::load_default().map_err(|err| {
             StartupError::new(
                 "startup_config_invalid",
@@ -2351,6 +2355,7 @@ fn should_ensure_daemon(command: &Command) -> bool {
         Command::Serve { .. }
             | Command::Daemon { .. }
             | Command::HelpAll
+            | Command::RuntimeInfo
             | Command::Llm { .. }
             | Command::Setup { .. }
             | Command::Mswarm { .. }

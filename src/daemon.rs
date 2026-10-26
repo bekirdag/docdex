@@ -538,7 +538,10 @@ pub async fn serve(
     } else {
         None
     };
-    let profile_state_dir = match global_state_dir.clone() {
+    let profile_state_dir = match embeddings::env_non_empty("DOCDEX_PROFILE_STATE_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| global_state_dir.clone())
+    {
         Some(state_dir) => Some(state_dir),
         None => match crate::state_paths::default_state_base_dir() {
             Ok(state_dir) => {

@@ -14,8 +14,11 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
+use tantivy::schema::Value;
 use tantivy::schema::{Schema, FAST, STORED, STRING, TEXT};
-use tantivy::{doc, Document, Index, IndexReader, IndexWriter, ReloadPolicy, Term};
+use tantivy::{
+    doc, Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument as Document, Term,
+};
 use tracing::warn;
 
 const MAX_INDEX_RAM_BYTES: usize = 50 * 1024 * 1024;
@@ -160,7 +163,7 @@ impl LibsIndexer {
         )?;
         let reader = index
             .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommit)
+            .reload_policy(ReloadPolicy::OnCommitWithDelay)
             .try_into()?;
         let writer = index.writer(MAX_INDEX_RAM_BYTES)?;
         Ok(Self {
@@ -188,7 +191,7 @@ impl LibsIndexer {
             .with_context(|| format!("open libs index at {}", libs_state_dir.display()))?;
         let reader = index
             .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommit)
+            .reload_policy(ReloadPolicy::OnCommitWithDelay)
             .try_into()?;
         let schema = index.schema();
         let doc_id_field = schema.get_field("doc_id").unwrap();
@@ -294,17 +297,21 @@ impl LibsIndexer {
             }
         };
 
-        let mut snippet_generator =
-            tantivy::SnippetGenerator::create(&searcher, tantivy_query.as_ref(), self.body_field)
-                .ok();
+        let mut snippet_generator = tantivy::snippet::SnippetGenerator::create(
+            &searcher,
+            tantivy_query.as_ref(),
+            self.body_field,
+        )
+        .ok();
         if let Some(generator) = snippet_generator.as_mut() {
             generator.set_max_num_chars(super::MAX_SNIPPET_CHARS);
         }
 
-        let top_docs = searcher.search(&tantivy_query, &TopDocs::with_limit(limit))?;
+        let top_docs =
+            searcher.search(&tantivy_query, &TopDocs::with_limit(limit).order_by_score())?;
         let mut results = Vec::with_capacity(top_docs.len());
         for (score, addr) in top_docs {
-            let retrieved = match searcher.doc(addr) {
+            let retrieved = match searcher.doc::<Document>(addr) {
                 Ok(doc) => doc,
                 Err(err) => {
                     warn!(
@@ -318,20 +325,20 @@ impl LibsIndexer {
             };
             let doc_id = retrieved
                 .get_first(self.doc_id_field)
-                .and_then(|v| v.as_text().map(|s| s.to_string()))
+                .and_then(|v| v.as_str().map(|s| s.to_string()))
                 .unwrap_or_default();
             let rel_path = retrieved
                 .get_first(self.rel_path_field)
-                .and_then(|v| v.as_text().map(|s| s.to_string()))
+                .and_then(|v| v.as_str().map(|s| s.to_string()))
                 .unwrap_or_default();
             let path = rel_path.clone();
             let body = retrieved
                 .get_first(self.body_field)
-                .and_then(|v| v.as_text())
+                .and_then(|v| v.as_str())
                 .unwrap_or_default();
             let summary = retrieved
                 .get_first(self.summary_field)
-                .and_then(|v| v.as_text().map(|s| s.to_string()))
+                .and_then(|v| v.as_str().map(|s| s.to_string()))
                 .unwrap_or_default();
             let token_estimate = retrieved
                 .get_first(self.token_field)
@@ -429,9 +436,9 @@ impl LibsIndexer {
         let term = Term::from_field_text(self.doc_id_field, doc_id);
         let term_query =
             tantivy::query::TermQuery::new(term, tantivy::schema::IndexRecordOption::Basic);
-        let top_docs = searcher.search(&term_query, &TopDocs::with_limit(1))?;
+        let top_docs = searcher.search(&term_query, &TopDocs::with_limit(1).order_by_score())?;
         if let Some((_score, addr)) = top_docs.into_iter().next() {
-            let doc = searcher.doc(addr)?;
+            let doc = searcher.doc::<Document>(addr)?;
             return Ok(Some(doc));
         }
         Ok(None)
@@ -440,11 +447,11 @@ impl LibsIndexer {
     fn snapshot_from_document(&self, doc_id: &str, doc: &Document) -> DocSnapshot {
         let rel_path = doc
             .get_first(self.rel_path_field)
-            .and_then(|v| v.as_text().map(|s| s.to_string()))
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
             .unwrap_or_default();
         let summary = doc
             .get_first(self.summary_field)
-            .and_then(|v| v.as_text().map(|s| s.to_string()))
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
             .unwrap_or_default();
         let token_estimate = doc
             .get_first(self.token_field)
@@ -479,9 +486,11 @@ impl LibsIndexer {
         }) {
             let parser = QueryParser::for_index(&self.index, vec![self.body_field]);
             if let Ok(parsed) = parser.parse_query(query) {
-                if let Ok(mut generator) =
-                    tantivy::SnippetGenerator::create(&searcher, parsed.as_ref(), self.body_field)
-                {
+                if let Ok(mut generator) = tantivy::snippet::SnippetGenerator::create(
+                    &searcher,
+                    parsed.as_ref(),
+                    self.body_field,
+                ) {
                     generator.set_max_num_chars(super::MAX_SNIPPET_CHARS);
                     let snippet = generator.snippet_from_doc(doc);
                     let fragment = snippet.fragment().trim();
@@ -490,7 +499,7 @@ impl LibsIndexer {
                             fragment.chars().count() >= super::MAX_SNIPPET_CHARS.saturating_sub(1);
                         let body = doc
                             .get_first(self.body_field)
-                            .and_then(|v| v.as_text())
+                            .and_then(|v| v.as_str())
                             .unwrap_or_default();
                         if let Some((text, snippet_truncated, _start, _end)) =
                             super::line_safe_snippet_for_fragment(
@@ -519,7 +528,7 @@ impl LibsIndexer {
         }
         let body = doc
             .get_first(self.body_field)
-            .and_then(|v| v.as_text())
+            .and_then(|v| v.as_str())
             .unwrap_or_default();
         let preview = preview_snippet_from_body(body, fallback_lines);
         let Some((preview_text, preview_truncated)) = preview else {

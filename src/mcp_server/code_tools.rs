@@ -242,6 +242,7 @@ impl McpServer {
         &self,
         memory: &McpMemoryState,
         text: &str,
+        query: bool,
     ) -> Result<MemoryEmbedding> {
         let stored_dim = match memory.store.embedding_dim() {
             Ok(dim) => dim,
@@ -253,10 +254,22 @@ impl McpServer {
                 None
             }
         };
-        match memory.embedder.embed(text).await {
+        let result = if query {
+            memory.embedder.embed_query(text).await
+        } else {
+            memory.embedder.embed(text).await
+        };
+        match result {
             Ok(embedding) => {
                 if let Some(expected) = stored_dim {
                     if embedding.len() != expected {
+                        if std::env::var("DOCDEX_EMBEDDING_STRICT").ok().as_deref() == Some("1") {
+                            return Err(AppError::new(
+                                ERR_EMBEDDING_FAILED,
+                                "Embedding dimension changed; rebuild the managed index",
+                            )
+                            .into());
+                        }
                         warn!(
                             provider = memory.embedder.provider(),
                             model = memory.embedder.model(),
@@ -279,6 +292,9 @@ impl McpServer {
                 })
             }
             Err(err) => {
+                if std::env::var("DOCDEX_EMBEDDING_STRICT").ok().as_deref() == Some("1") {
+                    return Err(err);
+                }
                 warn!(
                     error = ?err,
                     "memory embedding failed; falling back to local hash"

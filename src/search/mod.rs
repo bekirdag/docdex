@@ -1385,7 +1385,7 @@ pub(crate) async fn memory_recall_handler(
 
     let started = Instant::now();
     let repo_root = repo.indexer.repo_root().display().to_string();
-    let query_embedding = match memory.embedder.embed(query).await {
+    let query_embedding = match memory.embedder.embed_query(query).await {
         Ok(value) => value,
         Err(err) => {
             let (code, status, message) = if let Some(app) = err.downcast_ref::<AppError>() {

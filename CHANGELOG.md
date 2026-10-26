@@ -1,6 +1,30 @@
 # Changelog
 
+## 0.2.100-codali.4
+
+- Upgrade Tantivy to0.27 with LZ4 support and remove the vulnerable zstd dependency chain (RUSTSEC-2026-0403 and RUSTSEC-2026-0410).
+- Preserve score ordering, snippets, document values and commit reload behavior through the updated search API. Verify old-version repository and library index reads, reindexing and library staleness checks.
+- Supersede the unpublished codali.3 candidate without moving its tag; include its local-runner adapter fixes.
+
+## 0.2.100-codali.3
+
+- Support explicitly configured mcoda local HTTP runners, including Strata and llama.cpp, for local delegation. Preserve endpoint, authentication mode, model settings and scheduler metadata; reject incomplete transport settings and credential-bearing URLs.
+- Verify all supported local aliases and authentication modes with real HTTP tests; a live Raijin 1.7B helper probe also passed.
+
 ## Unreleased
+
+## 0.2.100-codali.2
+- Pin Python 3.12 for release validation and packaging on self-hosted runners.
+- Upgrade HTML sanitization, ZIP handling and the TLS/network dependency lock to patched releases; preserve archive path, size and permission checks.
+- Adapt ZIP reader types and test writers to the patched library API.
+- Retain the documented ring overflow-check exception until the coupled Tree-sitter grammar stack can migrate; other audit warnings remain visible.
+- Supersede the unpublished codali.0 candidate without moving its tag.
+
+## 0.2.100-codali.0
+- Add isolated managed-client capabilities, strict purpose-aware remote embeddings and deterministic profile embeddings for Codali sessions.
+- Keep private daemon state outside repositories, support TypeScript extension-substitution impact edges, and tolerate bounded watcher startup delays.
+- Add `runtime-info` to report compiled version, native executable and capabilities without loading configuration or starting services.
+- Publish this candidate through the prerelease/next channel; stable installations remain on 0.2.99.
 
 ## 0.2.99
 - Resolve the effective installed version from native install metadata for both `--version` and update checks, preventing stale JavaScript wrappers from falsely advertising an already-installed release.

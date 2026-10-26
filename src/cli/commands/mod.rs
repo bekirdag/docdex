@@ -61,6 +61,18 @@ pub(crate) async fn dispatch(command: super::Command) -> Result<()> {
         super::Command::Serve { args } => serve::run(args).await,
         super::Command::Daemon { args } => serve::run_daemon(args).await,
         super::Command::HelpAll => help_all::run(),
+        super::Command::RuntimeInfo => {
+            println!(
+                "{}",
+                serde_json::to_string(&serde_json::json!({
+                    "schema_version": 1,
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "executable": std::env::current_exe()?,
+                    "managed_clients": crate::capabilities::current_capabilities().managed_clients,
+                }))?
+            );
+            Ok(())
+        }
         super::Command::StatePrune { apply, json } => state_prune::run(apply, json),
         super::Command::Browser { command } => browser::run(command).await,
         super::Command::Mswarm { command } => mswarm::run(command).await,

@@ -153,6 +153,11 @@ pub(crate) fn resolve_agent_adapter_with_extra_body(
             .ok_or_else(|| anyhow!("AUTH_REQUIRED: OpenAI API key missing"))?;
             LlmAdapter::OpenAiApi(OpenAiApiClient::new(model, adapter_type, config, api_key)?)
         }
+        "openai-compatible-local"
+        | "vllm-local"
+        | "llama-cpp-local"
+        | "llamacpp-local"
+        | "strata-local" => resolve_mcoda_local_adapter(agent, model, adapter_type, extra_body)?,
         "zhipu-api" => {
             let api_key = non_empty_trimmed(
                 agent
@@ -166,6 +171,100 @@ pub(crate) fn resolve_agent_adapter_with_extra_body(
         _ => return Err(anyhow!("unsupported adapter type: {adapter_type}")),
     };
     Ok(adapter)
+}
+
+// mcoda local runners use the same HTTP protocol with an explicit endpoint
+// and authentication mode. Never fall back to a public endpoint or a CLI.
+fn resolve_mcoda_local_adapter(
+    agent: &McodaAgent,
+    model: Option<String>,
+    adapter: String,
+    extra_body: Option<&Value>,
+) -> Result<LlmAdapter> {
+    let config = agent.config.as_ref();
+    let mut merged = Map::new();
+    for layer in [
+        config.and_then(|v| v.pointer("/agent/config")),
+        config.and_then(|v| v.get("localRunner")),
+        config,
+    ] {
+        if let Some(layer) = layer.and_then(Value::as_object) {
+            merged.extend(layer.clone());
+        }
+    }
+    let mut normalized = Value::Object(merged);
+    let base_url = ["baseUrl", "endpoint", "apiBaseUrl"]
+        .into_iter()
+        .find_map(|key| config_string(Some(&normalized), key))
+        .ok_or_else(|| anyhow!("local OpenAI-compatible baseUrl missing"))?;
+    let url = url::Url::parse(&base_url).context("invalid local runner baseUrl")?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(anyhow!("local runner baseUrl must be an HTTP(S) endpoint without credentials, query or fragment"));
+    }
+    normalized["baseUrl"] = Value::String(base_url);
+    if model
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .is_none()
+    {
+        return Err(anyhow!("local OpenAI-compatible model missing"));
+    }
+    for key in config_headers(Some(&normalized)).keys() {
+        if matches!(
+            key.to_ascii_lowercase().as_str(),
+            "authorization" | "proxy-authorization" | "x-api-key" | "api-key"
+        ) {
+            return Err(anyhow!(
+                "local runner credentials must use authMode and the agent secret, not headers"
+            ));
+        }
+    }
+    if let Some(fields) = normalized.get("extraBody").and_then(Value::as_object) {
+        for key in fields.keys() {
+            if matches!(
+                key.to_ascii_lowercase().as_str(),
+                "model"
+                    | "messages"
+                    | "stream"
+                    | "tools"
+                    | "tool_choice"
+                    | "response_format"
+                    | "max_tokens"
+                    | "temperature"
+            ) {
+                return Err(anyhow!("reserved local runner extraBody field: {key}"));
+            }
+        }
+    }
+    let mode = config_string(Some(&normalized), "authMode").unwrap_or_else(|| "none".to_string());
+    let api_key = match mode.trim().to_ascii_lowercase().as_str() {
+        "none" => String::new(),
+        "dummy-bearer" => config_string(Some(&normalized), "dummyBearerToken")
+            .or_else(|| config_string(Some(&normalized), "dummyApiKey"))
+            .unwrap_or_else(|| "local".to_string()),
+        "bearer" => non_empty_trimmed(
+            agent
+                .auth
+                .as_ref()
+                .and_then(|a| a.decrypted_secret.as_deref()),
+        )
+        .ok_or_else(|| anyhow!("AUTH_REQUIRED: local runner bearer credential missing"))?,
+        _ => return Err(anyhow!("unsupported local runner authMode")),
+    };
+    let effective = merge_config_extra_body(Some(&normalized), extra_body).unwrap_or(normalized);
+    Ok(LlmAdapter::OpenAiApi(OpenAiApiClient::new(
+        model,
+        adapter,
+        Some(&effective),
+        api_key,
+    )?))
 }
 
 fn merge_config_extra_body(config: Option<&Value>, extra_body: Option<&Value>) -> Option<Value> {
@@ -229,6 +328,16 @@ fn resolve_model(agent: &McodaAgent) -> Option<String> {
 
 fn resolve_adapter_type(agent: &McodaAgent, has_secret: bool) -> Result<String> {
     let mut adapter_type = agent.adapter.trim().to_string();
+    if matches!(
+        adapter_type.to_ascii_lowercase().as_str(),
+        "openai-compatible-local"
+            | "vllm-local"
+            | "llama-cpp-local"
+            | "llamacpp-local"
+            | "strata-local"
+    ) {
+        adapter_type.make_ascii_lowercase();
+    }
     if adapter_type.is_empty() {
         return Err(anyhow!("agent adapter is empty"));
     }
@@ -1374,6 +1483,131 @@ mod tests {
         assert_eq!(completion.output, "ok");
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
         server.abort();
+    }
+
+    fn local_test_agent(adapter: &str, config: Value) -> McodaAgent {
+        McodaAgent {
+            id: "local-test".into(),
+            slug: "local-test".into(),
+            adapter: adapter.into(),
+            default_model: Some("local-test".into()),
+            config: Some(config),
+            created_at: None,
+            updated_at: None,
+            rating: None,
+            cost_per_million: Some(0.0),
+            max_complexity: None,
+            best_usage: None,
+            reasoning_rating: None,
+            health_status: Some("healthy".into()),
+            health_details: None,
+            cli_binary: None,
+            capabilities: vec![],
+            models: vec![],
+            auth: None,
+            usage_limits: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn mcoda_local_aliases_preserve_config_and_authentication_modes() {
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(|headers: HeaderMap, Json(body): Json<Value>| async move {
+                let mode = body["model"].as_str().unwrap();
+                let expected = match mode {
+                    "none" => None,
+                    "dummy-bearer" => Some("Bearer placeholder"),
+                    "bearer" => Some("Bearer fixture-secret"),
+                    _ => panic!("unexpected mode"),
+                };
+                assert_eq!(
+                    headers.get("authorization").map(|h| h.to_str().unwrap()),
+                    expected
+                );
+                assert_eq!(headers.get("x-local-trace").unwrap(), "fixture");
+                assert_eq!(body["max_tokens"], 32);
+                assert_eq!(body["temperature"], 0.25);
+                assert_eq!(body["reasoning_budget_tokens"], 128);
+                assert_eq!(body["scheduling"]["priority"], -2);
+                Json(json!({"choices":[{"message":{"content":"local-ok"}}]}))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        for alias in [
+            "openai-compatible-local",
+            "vllm-local",
+            "llama-cpp-local",
+            "llamacpp-local",
+            " STRATA-LOCAL ",
+        ] {
+            for mode in ["none", "dummy-bearer", "bearer"] {
+                let mut agent = local_test_agent(
+                    alias,
+                    json!({
+                        "localRunner": {"baseUrl":"http://127.0.0.1:1/unused", "authMode":mode,
+                            "headers":{"x-local-trace":"fixture"}, "extraBody":{"reasoning_budget_tokens":128}},
+                        "baseUrl": format!("http://{address}/v1"), "temperature":0.25,
+                        "dummyBearerToken":"placeholder"
+                    }),
+                );
+                agent.default_model = Some(mode.into());
+                // A stored secret must still be omitted in none/dummy modes.
+                agent.auth = Some(crate::mcoda::registry::McodaAgentAuth {
+                    encrypted_secret: String::new(),
+                    decrypted_secret: Some("fixture-secret".into()),
+                    last_verified_at: None,
+                    updated_at: None,
+                });
+                let client = resolve_agent_adapter_with_extra_body(
+                    &agent,
+                    Some(&json!({"scheduling":{"priority":-2}})),
+                )
+                .unwrap();
+                let completion = client
+                    .generate("hello", 32, Duration::from_secs(2))
+                    .await
+                    .unwrap();
+                assert_eq!(completion.output, "local-ok");
+                assert_eq!(completion.adapter, alias.trim().to_ascii_lowercase());
+            }
+        }
+        server.abort();
+    }
+
+    #[test]
+    fn mcoda_local_adapter_refuses_incomplete_or_unsafe_transport_config() {
+        let endpoint = "http://127.0.0.1:11440/v1";
+        for config in [
+            json!({}),
+            json!({"baseUrl":"file:///tmp/model"}),
+            json!({"baseUrl":"http://user:password@localhost/v1"}),
+            json!({"baseUrl":endpoint,"authMode":"bearer"}),
+            json!({"baseUrl":endpoint,"authMode":"unexpected"}),
+            json!({"baseUrl":endpoint,"headers":{"Authorization":"unexpected"}}),
+            json!({"baseUrl":endpoint,"extraBody":{"max_tokens":999999}}),
+        ] {
+            assert!(resolve_agent_adapter(&local_test_agent("llama-cpp-local", config)).is_err());
+        }
+        let mut agent = local_test_agent("strata-local", json!({"baseUrl":endpoint}));
+        agent.default_model = None;
+        assert!(resolve_agent_adapter(&agent).is_err());
+        let client = resolve_agent_adapter(&local_test_agent(
+            "strata-local",
+            json!({"endpoint":endpoint}),
+        ))
+        .unwrap();
+        match client {
+            LlmAdapter::OpenAiApi(client) => {
+                assert_eq!(client.base_url, endpoint);
+                assert!(client.api_key.is_empty());
+            }
+            _ => panic!("local runner resolved to a different transport"),
+        }
     }
 
     #[tokio::test]

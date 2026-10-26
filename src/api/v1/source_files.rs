@@ -1220,7 +1220,7 @@ fn extract_zip_archive_to_temp(
 }
 
 fn copy_zip_entry_to_temp(
-    entry: &mut ZipFile<'_>,
+    entry: &mut ZipFile<'_, impl Read>,
     temp_path: &FsPath,
 ) -> Result<(u64, String), AppError> {
     let mut output = StdFile::create(temp_path).map_err(|err| {
@@ -1268,7 +1268,7 @@ fn copy_zip_entry_to_temp(
     Ok((size_bytes, format!("{:x}", hasher.finalize())))
 }
 
-fn safe_archive_entry_path(entry: &ZipFile<'_>) -> Result<String, AppError> {
+fn safe_archive_entry_path(entry: &ZipFile<'_, impl Read>) -> Result<String, AppError> {
     let Some(path) = entry.enclosed_name() else {
         return Err(AppError::new(
             ERR_INVALID_ARGUMENT,
@@ -1817,7 +1817,7 @@ mod tests {
         {
             let archive_file = StdFile::create(&archive_path).expect("archive");
             let mut zip = zip::ZipWriter::new(archive_file);
-            let options = zip::write::FileOptions::default();
+            let options = zip::write::SimpleFileOptions::default();
             zip.start_file("notes/strategy.txt", options)
                 .expect("start file");
             zip.write_all(b"archive strategy notes")

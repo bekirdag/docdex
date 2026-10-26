@@ -851,8 +851,11 @@ impl McpService {
             .unwrap_or(DEFAULT_FALLBACK_EMBED_DIM)
             .max(1);
         let profile_embedding_timeout_ms = embedding_timeout_ms;
+        let profile_state_dir = embeddings::env_non_empty("DOCDEX_PROFILE_STATE_DIR")
+            .map(std::path::PathBuf::from)
+            .or_else(|| global_state_dir.clone());
         let profile_state = {
-            let manager = if let Some(state_dir) = global_state_dir.as_ref() {
+            let manager = if let Some(state_dir) = profile_state_dir.as_ref() {
                 Some(
                     ProfileManager::new(state_dir, profile_embedding_dim).with_context(|| {
                         format!(

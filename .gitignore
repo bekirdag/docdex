@@ -1,4 +1,5 @@
 # Build artifacts
+__pycache__/
 /target/
 /npm/node_modules/
 /node_modules/

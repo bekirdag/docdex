@@ -1254,18 +1254,40 @@ fn watcher_removes_deleted_docs() -> Result<(), Box<dyn Error>> {
     let client = Client::builder().timeout(Duration::from_secs(2)).build()?;
     let search_url = format!("http://{host}:{port}/search");
 
-    // Confirm the doc is indexed.
-    let initial: Value = client
-        .get(&search_url)
-        .query(&[("q", unique), ("limit", "2")])
-        .send()?
-        .json()?;
-    let initial_hits = initial
-        .get("hits")
-        .and_then(|v| v.as_array())
-        .map(|arr| arr.len())
-        .unwrap_or(0);
-    assert!(initial_hits > 0, "expected doc to be indexed before delete");
+    // HTTP health can precede the startup index writer releasing its gate.
+    // Prove the exact document is visible before exercising deletion.
+    let ready_deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let response = client
+            .get(&search_url)
+            .query(&[("q", unique), ("limit", "2")])
+            .send()?;
+        let status = response.status();
+        let payload: Value = response.json()?;
+        let warming = status.as_u16() == 503
+            && payload.pointer("/error/code").and_then(Value::as_str) == Some("backoff_required");
+        if !warming {
+            assert!(
+                status.is_success(),
+                "unexpected search response: {status} {payload}"
+            );
+            let hits = payload
+                .get("hits")
+                .and_then(Value::as_array)
+                .ok_or("search response is missing hits")?;
+            if hits
+                .iter()
+                .any(|hit| hit.get("rel_path").and_then(Value::as_str) == Some("docs/temp.md"))
+            {
+                break;
+            }
+        }
+        assert!(
+            Instant::now() < ready_deadline,
+            "expected doc before delete; last response: {status} {payload}"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
 
     // Delete the file and wait for watcher to remove it from the index.
     fs::remove_file(&doomed)?;
@@ -1274,13 +1296,14 @@ fn watcher_removes_deleted_docs() -> Result<(), Box<dyn Error>> {
         let resp = client
             .get(&search_url)
             .query(&[("q", unique), ("limit", "2")])
-            .send()?;
+            .send()?
+            .error_for_status()?;
         let payload: Value = resp.json()?;
         let hits = payload
             .get("hits")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.len())
-            .unwrap_or(0);
+            .ok_or("search response is missing hits")?
+            .len();
         if hits == 0 {
             break;
         }

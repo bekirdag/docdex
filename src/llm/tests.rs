@@ -1237,6 +1237,12 @@ fn parse_local_target_override_matches_agent_slug() {
 
 #[test]
 fn delegation_selects_local_healthy_mcoda_agent() {
+    // Selection reads failure history: isolate it from parallel tests and the host.
+    let temp = TempDir::new().expect("temp dir");
+    let _state_dir = EnvGuard::set(
+        "DOCDEX_STATE_DIR",
+        temp.path().to_str().expect("temp path utf-8"),
+    );
     let mut library = LocalModelLibrary::default();
     library.agents.push(LocalAgentEntry {
         agent_id: "agent-unhealthy".to_string(),
@@ -1897,6 +1903,12 @@ fn delegation_does_not_cache_expensive_mcoda_completion() -> Result<(), Box<dyn 
 
 #[test]
 fn delegation_selects_code_writer() {
+    // Selection reads failure history: isolate it from parallel tests and the host.
+    let temp = TempDir::new().expect("temp dir");
+    let _state_dir = EnvGuard::set(
+        "DOCDEX_STATE_DIR",
+        temp.path().to_str().expect("temp path utf-8"),
+    );
     let mut library = LocalModelLibrary::default();
     library.models.push(LocalModelEntry {
         name: "embed-only".to_string(),
@@ -1927,6 +1939,12 @@ fn delegation_selects_code_writer() {
 
 #[test]
 fn delegation_selection_uses_ready_ollama_raw_name_and_skips_non_ollama_models() {
+    // Selection reads failure history: isolate it from parallel tests and the host.
+    let temp = TempDir::new().expect("temp dir");
+    let _state_dir = EnvGuard::set(
+        "DOCDEX_STATE_DIR",
+        temp.path().to_str().expect("temp path utf-8"),
+    );
     let mut library = LocalModelLibrary::default();
     library.models.push(LocalModelEntry {
         name: "qwen3-vllm:8b".to_string(),
@@ -1967,6 +1985,12 @@ fn delegation_selection_uses_ready_ollama_raw_name_and_skips_non_ollama_models()
 
 #[test]
 fn delegation_selection_skips_phase3_not_ready_models() {
+    // Selection reads failure history: isolate it from parallel tests and the host.
+    let temp = TempDir::new().expect("temp dir");
+    let _state_dir = EnvGuard::set(
+        "DOCDEX_STATE_DIR",
+        temp.path().to_str().expect("temp path utf-8"),
+    );
     let mut library = LocalModelLibrary::default();
     library.models.push(LocalModelEntry {
         name: "qwen2.5-coder:7b".to_string(),
@@ -1987,6 +2011,12 @@ fn delegation_selection_skips_phase3_not_ready_models() {
 
 #[test]
 fn delegation_selects_general_chat_for_general_questions() {
+    // Selection reads failure history: isolate it from parallel tests and the host.
+    let temp = TempDir::new().expect("temp dir");
+    let _state_dir = EnvGuard::set(
+        "DOCDEX_STATE_DIR",
+        temp.path().to_str().expect("temp path utf-8"),
+    );
     let mut library = LocalModelLibrary::default();
     library.models.push(LocalModelEntry {
         name: "code-model".to_string(),
@@ -2042,6 +2072,12 @@ fn resolve_task_scoped_delegation_config_prefers_lane_specific_agents() {
 
 #[test]
 fn delegation_selects_falls_back_without_candidates() {
+    // Selection reads failure history: isolate it from parallel tests and the host.
+    let temp = TempDir::new().expect("temp dir");
+    let _state_dir = EnvGuard::set(
+        "DOCDEX_STATE_DIR",
+        temp.path().to_str().expect("temp path utf-8"),
+    );
     let mut library = LocalModelLibrary::default();
     library.models.push(LocalModelEntry {
         name: "embed-only".to_string(),
@@ -2059,6 +2095,12 @@ fn delegation_selects_falls_back_without_candidates() {
 
 #[test]
 fn delegation_selects_primary_prefers_mcoda_on_tie() {
+    // Selection reads failure history: isolate it from parallel tests and the host.
+    let temp = TempDir::new().expect("temp dir");
+    let _state_dir = EnvGuard::set(
+        "DOCDEX_STATE_DIR",
+        temp.path().to_str().expect("temp path utf-8"),
+    );
     let mut library = LocalModelLibrary::default();
     library.models.push(LocalModelEntry {
         name: "ollama-code".to_string(),
@@ -2099,6 +2141,12 @@ fn delegation_selects_primary_prefers_mcoda_on_tie() {
 
 #[test]
 fn delegation_selects_primary_avoids_local_target_when_possible() {
+    // Selection reads failure history: isolate it from parallel tests and the host.
+    let temp = TempDir::new().expect("temp dir");
+    let _state_dir = EnvGuard::set(
+        "DOCDEX_STATE_DIR",
+        temp.path().to_str().expect("temp path utf-8"),
+    );
     let mut library = LocalModelLibrary::default();
     library.models.push(LocalModelEntry {
         name: "local-model".to_string(),
@@ -2140,6 +2188,12 @@ fn delegation_selects_primary_avoids_local_target_when_possible() {
 
 #[test]
 fn delegation_selects_primary_skips_embedding_only_models() {
+    // Selection reads failure history: isolate it from parallel tests and the host.
+    let temp = TempDir::new().expect("temp dir");
+    let _state_dir = EnvGuard::set(
+        "DOCDEX_STATE_DIR",
+        temp.path().to_str().expect("temp path utf-8"),
+    );
     let mut library = LocalModelLibrary::default();
     library.models.push(LocalModelEntry {
         name: "embed-only".to_string(),

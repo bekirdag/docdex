@@ -24,6 +24,7 @@ pub(crate) async fn run_daemon(args: ServeArgs) -> Result<()> {
 
 async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
     let ServeArgs {
+        workspace_metadata,
         repo,
         repo_explicit,
         host,
@@ -69,6 +70,9 @@ async fn run_with_mode(args: ServeArgs, daemon_mode: bool) -> Result<()> {
         unshare_net,
         allow_ip,
     } = args;
+    if let Some(enabled) = workspace_metadata {
+        std::env::set_var("DOCDEX_WORKSPACE_METADATA", if enabled { "1" } else { "0" });
+    }
     let personal_preferences_enabled_config_present = config::default_config_path()
         .ok()
         .filter(|path| path.exists())

@@ -1090,6 +1090,12 @@ impl Indexer {
     }
 
     fn ensure_run_tests_config(&self) -> Result<()> {
+        if matches!(
+            std::env::var("DOCDEX_WORKSPACE_METADATA").ok().as_deref(),
+            Some("0" | "false" | "off")
+        ) {
+            return Ok(());
+        }
         let config_path = self.repo_root.join(RUN_TESTS_CONFIG_PATH);
         if config_path.exists() {
             return Ok(());

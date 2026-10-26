@@ -16,6 +16,14 @@ curl -sS http://127.0.0.1:28491/healthz
 ```
 Expected: `ok`
 
+A startup error saying `filesystem watcher ... did not become ready` is a separate
+registration deadline, not evidence of FD exhaustion. Large repositories can need
+more time to register their watches. `DOCDEX_WATCHER_STARTUP_TIMEOUT_MS` defaults
+to `30000`, accepts `1000` through `120000`, and falls back to the default for
+invalid values. Check the effective timeout in the error and inspect FD/inotify
+errors before changing resource limits. A timeout still fails startup and stops
+the owned watcher; it does not report a healthy daemon with stale indexing.
+
 ### 2) Check daemon error log for FD pressure
 ```bash
 rg -n "EMFILE|ENFILE|Too many open files|profile lock transient error|failed after .* attempts" ~/.docdex/logs/daemon.err.log

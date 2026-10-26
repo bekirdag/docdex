@@ -114,7 +114,7 @@ pub async fn run_recall(
         embedding_model,
         timeout,
     )?;
-    let embedding = embedder.embed(&query).await?;
+    let embedding = embedder.embed_query(&query).await?;
     let store = memory::MemoryStore::new(index_config.state_dir());
     let top_k = top_k.max(1).min(50);
     let results = tokio::task::spawn_blocking(move || store.recall(&embedding, top_k)).await??;

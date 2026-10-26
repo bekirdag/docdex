@@ -203,6 +203,14 @@ impl EmbeddingEmbedder {
     }
 
     pub async fn embed(&self, prompt: &str) -> Result<Vec<f32>> {
+        self.embed_with_purpose(prompt, "document").await
+    }
+
+    pub async fn embed_query(&self, prompt: &str) -> Result<Vec<f32>> {
+        self.embed_with_purpose(prompt, "query").await
+    }
+
+    async fn embed_with_purpose(&self, prompt: &str, purpose: &str) -> Result<Vec<f32>> {
         match &self.client {
             EmbeddingClient::Ollama(client) => {
                 client.embed(&self.target.model, prompt, self.timeout).await
@@ -217,6 +225,7 @@ impl EmbeddingEmbedder {
                     &self.target.provider,
                     &self.target.model,
                     prompt,
+                    purpose,
                 )
                 .await
             }
@@ -469,6 +478,7 @@ async fn embed_openai_compatible(
     provider: &str,
     model: &str,
     prompt: &str,
+    purpose: &str,
 ) -> Result<Vec<f32>> {
     let model = model.trim();
     if model.is_empty() {
@@ -480,10 +490,15 @@ async fn embed_openai_compatible(
         return Err(AppError::new(ERR_INVALID_ARGUMENT, "prompt must not be empty").into());
     }
 
-    let payload = json!({
-        "model": model,
-        "input": prompt,
-    });
+    let payload = openai_embedding_payload(
+        model,
+        prompt,
+        purpose,
+        std::env::var("DOCDEX_EMBEDDING_SEND_PURPOSE")
+            .ok()
+            .as_deref()
+            == Some("1"),
+    );
     let response = http
         .post(embeddings_url)
         .json(&payload)
@@ -593,11 +608,24 @@ async fn embed_openai_compatible(
     Ok(embedding)
 }
 
+fn openai_embedding_payload(model: &str, prompt: &str, purpose: &str, managed: bool) -> Value {
+    let mut payload = json!({ "model": model, "input": prompt });
+    // Ordinary compatible endpoints retain the original request contract.
+    if managed {
+        payload["input_type"] = Value::String(purpose.to_string());
+    }
+    payload
+}
+
 fn parse_embedding_array(value: &Value) -> Option<Vec<f32>> {
     let array = value.as_array()?;
     let mut out = Vec::with_capacity(array.len());
     for item in array {
-        out.push(item.as_f64()? as f32);
+        let number = item.as_f64()? as f32;
+        if !number.is_finite() {
+            return None;
+        }
+        out.push(number);
     }
     Some(out)
 }
@@ -621,6 +649,22 @@ fn trim_option(value: Option<String>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn managed_embedding_payload_preserves_query_document_purpose() {
+        assert_eq!(
+            openai_embedding_payload("model", "text", "query", true)["input_type"],
+            "query"
+        );
+        assert_eq!(
+            openai_embedding_payload("model", "text", "document", true)["input_type"],
+            "document"
+        );
+        assert!(openai_embedding_payload("model", "text", "query", false)
+            .get("input_type")
+            .is_none());
+        assert!(parse_embedding_array(&json!([1e308])).is_none());
+    }
     use crate::llm::local_library::{
         LocalCapabilityFlags, LocalLibrarySourceType, LocalServiceEntry, LocalServiceHealth,
         LocalServiceModelEntry,

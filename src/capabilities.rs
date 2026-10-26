@@ -16,6 +16,15 @@ pub struct DocdexCapabilities {
     pub auth: AuthCapabilities,
     pub repo_encryption: RepoEncryptionCapabilities,
     pub limits: CapabilityLimits,
+    pub managed_clients: ManagedClientCapabilities,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ManagedClientCapabilities {
+    pub workspace_metadata_control: bool,
+    pub embedding_input_type: bool,
+    pub strict_repo_embeddings: bool,
+    pub deterministic_profile_embeddings: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -63,6 +72,12 @@ pub fn current_capabilities_with_config(
     auth_config: &AuthConfig,
 ) -> DocdexCapabilities {
     DocdexCapabilities {
+        managed_clients: ManagedClientCapabilities {
+            workspace_metadata_control: true,
+            embedding_input_type: true,
+            strict_repo_embeddings: true,
+            deterministic_profile_embeddings: true,
+        },
         contract_version: CAPABILITY_CONTRACT_VERSION,
         retrieval: RetrievalCapabilities {
             score_breakdown: true,

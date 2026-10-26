@@ -826,7 +826,7 @@ async fn collect_memory_context(
         return Ok(None);
     }
 
-    let embedding = match memory.embedder.embed(trimmed).await {
+    let embedding = match memory.embedder.embed_query(trimmed).await {
         Ok(value) => value,
         Err(err) => {
             if embedding_unavailable(&err) {

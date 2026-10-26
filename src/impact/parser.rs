@@ -1822,8 +1822,29 @@ fn resolve_js_ts_import(repo_root: &Path, rel_path: &str, import_path: &str) -> 
     let raw = Path::new(import_path);
     let mut candidates = Vec::new();
     let base = base_dir.join(raw);
-    if raw.extension().is_some() {
-        candidates.push(base);
+    if let Some(extension) = raw.extension() {
+        // TypeScript resolves runtime .js/.mjs/.cjs specifiers to source/type
+        // files first. Keep literal runtime resolution for JavaScript importers.
+        // https://www.typescriptlang.org/docs/handbook/modules/reference.html#file-extension-substitution
+        let substitutions: &[&str] = if matches!(
+            language_for_path(rel_path),
+            Some(SourceLanguage::TypeScript)
+        ) {
+            match extension.to_str() {
+                Some("js") => &["ts", "tsx", "d.ts", "js", "jsx"],
+                Some("jsx") => &["tsx", "ts", "d.ts", "jsx", "js"],
+                Some("mjs") => &["mts", "d.mts", "mjs"],
+                Some("cjs") => &["cts", "d.cts", "cjs"],
+                _ => &[],
+            }
+        } else {
+            &[]
+        };
+        if substitutions.is_empty() {
+            candidates.push(base);
+        } else {
+            candidates.extend(substitutions.iter().map(|ext| base.with_extension(ext)));
+        }
     } else {
         for ext in ["ts", "tsx", "js", "jsx"] {
             candidates.push(base.with_extension(ext));
@@ -3467,6 +3488,59 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         cache.remove(&key);
+    }
+
+    #[test]
+    fn typescript_runtime_extensions_resolve_source_before_emitted_files() {
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path();
+        for file in ["src/value.ts", "src/value.js", "src/view.tsx", "src/esm.mts", "src/common.cts", "src/types.d.ts", "src/types.d.mts", "src/types.d.cts", "src/data.json"] {
+            write_fixture(&root.join(file), "");
+        }
+        for (importer, specifier, expected) in [
+            ("src/main.ts", "./value.js", "src/value.ts"),
+            ("src/main.tsx", "./view.js", "src/view.tsx"),
+            ("src/main.tsx", "./view.jsx", "src/view.tsx"),
+            ("src/main.mts", "./esm.mjs", "src/esm.mts"),
+            ("src/main.cts", "./common.cjs", "src/common.cts"),
+            ("src/main.ts", "./types.js", "src/types.d.ts"),
+            ("src/main.mts", "./types.mjs", "src/types.d.mts"),
+            ("src/main.cts", "./types.cjs", "src/types.d.cts"),
+            ("src/main.ts", "./data.json", "src/data.json"),
+            ("src/main.js", "./value.js", "src/value.js"),
+        ] {
+            assert_eq!(resolve_js_ts_import(root, importer, specifier).as_deref(), Some(expected));
+        }
+        assert_eq!(resolve_js_ts_import(root, "src/main.ts", "missing-package"), None);
+        assert_eq!(resolve_js_ts_import(root, "src/main.js", "./view.js"), None);
+    }
+
+    #[test]
+    fn typescript_import_export_and_dynamic_js_specifiers_create_source_edges() {
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path();
+        for name in ["value", "types", "lazy"] {
+            write_fixture(&root.join(format!("src/{name}.ts")), "export const value = 1;");
+        }
+        let result = extract_import_edges(root, root, "src/main.ts", r#"
+import { value } from './value.js';
+export type { Example } from './types.js';
+const load = () => import('./lazy.js');
+"#);
+        let targets: BTreeSet<_> = result.edges.iter().map(|edge| edge.target.as_str()).collect();
+        assert_eq!(targets, BTreeSet::from(["src/value.ts", "src/types.ts", "src/lazy.ts"]));
+        assert!(result.edges.iter().all(|edge| edge.source == "src/main.ts"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn typescript_extension_substitution_cannot_escape_repository_via_symlink() {
+        let repo = TempDir::new().expect("repo");
+        let outside = TempDir::new().expect("outside");
+        write_fixture(&outside.path().join("secret.ts"), "export const secret = 1;");
+        fs::create_dir_all(repo.path().join("src")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("secret.ts"), repo.path().join("src/secret.ts")).unwrap();
+        assert_eq!(resolve_js_ts_import(repo.path(), "src/main.ts", "./secret.js"), None);
     }
 
     #[test]

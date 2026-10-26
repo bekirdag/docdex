@@ -52,6 +52,8 @@ pub(crate) enum McpAddTransport {
 
 #[derive(Args, Debug, Clone)]
 pub(crate) struct ServeArgs {
+    #[arg(long, action = ArgAction::Set, help = "Allow workspace metadata and Git ignore writes (false for managed read-only mounts)")]
+    pub workspace_metadata: Option<bool>,
     #[command(flatten)]
     pub repo: RepoArgs,
     #[arg(skip)]

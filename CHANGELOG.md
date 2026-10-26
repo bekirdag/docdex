@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.100-codali.0
+- Add isolated managed-client capabilities, strict purpose-aware remote embeddings and deterministic profile embeddings for Codali sessions.
+- Keep private daemon state outside repositories, support TypeScript extension-substitution impact edges, and tolerate bounded watcher startup delays.
+- Add `runtime-info` to report compiled version, native executable and capabilities without loading configuration or starting services.
+- Publish this candidate through the prerelease/next channel; stable installations remain on 0.2.99.
+
 ## 0.2.99
 - Resolve the effective installed version from native install metadata for both `--version` and update checks, preventing stale JavaScript wrappers from falsely advertising an already-installed release.
 - Reconcile repositories on their first daemon mount when files changed while Docdex was stopped, and refresh readiness metadata after incremental updates so index health remains accurate.

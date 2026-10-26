@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.100-codali.4
+
+- Upgrade Tantivy to0.27 with LZ4 support and remove the vulnerable zstd dependency chain (RUSTSEC-2026-0403 and RUSTSEC-2026-0410).
+- Preserve score ordering, snippets, document values and commit reload behavior through the updated search API. Verify old-version repository and library index reads, reindexing and library staleness checks.
+- Supersede the unpublished codali.3 candidate without moving its tag; include its local-runner adapter fixes.
+
 ## 0.2.100-codali.3
 
 - Support explicitly configured mcoda local HTTP runners, including Strata and llama.cpp, for local delegation. Preserve endpoint, authentication mode, model settings and scheduler metadata; reject incomplete transport settings and credential-bearing URLs.

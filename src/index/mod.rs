@@ -1,3 +1,5 @@
+use tantivy::schema::Value;
+use tantivy::snippet::SnippetGenerator;
 mod ignore_rules;
 mod impact;
 pub(crate) mod libs;
@@ -33,7 +35,7 @@ use tantivy::query::QueryParser;
 use tantivy::schema::{Schema, TextOptions, FAST, STORED, STRING, TEXT};
 use tantivy::DocAddress;
 use tantivy::{
-    doc, Document, Index, IndexReader, IndexWriter, ReloadPolicy, SnippetGenerator, Term,
+    doc, Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument as Document, Term,
 };
 use thiserror::Error;
 use tracing::{debug, warn};
@@ -733,7 +735,7 @@ impl Indexer {
         }
         let reader = index
             .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommit)
+            .reload_policy(ReloadPolicy::OnCommitWithDelay)
             .try_into()?;
         let schema = index.schema();
         let doc_id_field = schema
@@ -1373,10 +1375,11 @@ impl Indexer {
         if let Some(generator) = snippet_generator.as_mut() {
             generator.set_max_num_chars(MAX_SNIPPET_CHARS);
         }
-        let top_docs = searcher.search(&tantivy_query, &TopDocs::with_limit(limit))?;
+        let top_docs =
+            searcher.search(&tantivy_query, &TopDocs::with_limit(limit).order_by_score())?;
         let mut results = Vec::with_capacity(top_docs.len());
         for (score, addr) in top_docs {
-            let retrieved = match searcher.doc(addr) {
+            let retrieved = match searcher.doc::<Document>(addr) {
                 Ok(doc) => doc,
                 Err(err) => {
                     warn!(
@@ -1390,11 +1393,11 @@ impl Indexer {
             };
             let doc_id = retrieved
                 .get_first(self.doc_id_field)
-                .and_then(|v| v.as_text().map(|s| s.to_string()))
+                .and_then(|v| v.as_str().map(|s| s.to_string()))
                 .unwrap_or_default();
             let rel_path = retrieved
                 .get_first(self.path_field)
-                .and_then(|v| v.as_text().map(|s| s.to_string()))
+                .and_then(|v| v.as_str().map(|s| s.to_string()))
                 .unwrap_or_default();
             if !self.search_hit_still_exists(&rel_path) {
                 debug!(
@@ -1530,9 +1533,9 @@ impl Indexer {
         let term = Term::from_field_text(self.doc_id_field, doc_id);
         let term_query =
             tantivy::query::TermQuery::new(term, tantivy::schema::IndexRecordOption::Basic);
-        let top_docs = searcher.search(&term_query, &TopDocs::with_limit(1))?;
+        let top_docs = searcher.search(&term_query, &TopDocs::with_limit(1).order_by_score())?;
         if let Some((_score, addr)) = top_docs.into_iter().next() {
-            let doc = searcher.doc(addr)?;
+            let doc = searcher.doc::<Document>(addr)?;
             return Ok(Some(doc));
         }
         Ok(None)
@@ -1972,10 +1975,10 @@ impl Indexer {
                     break 'outer;
                 }
                 let address = DocAddress::new(segment_ord as u32, doc_id);
-                let doc = searcher.doc(address)?;
+                let doc = searcher.doc::<Document>(address)?;
                 let doc_id_text = doc
                     .get_first(self.doc_id_field)
-                    .and_then(|v| v.as_text())
+                    .and_then(|v| v.as_str())
                     .unwrap_or_default();
                 snapshots.push(self.snapshot_from_document(doc_id_text, &doc)?);
             }
@@ -2090,7 +2093,7 @@ impl Indexer {
     fn snapshot_from_document(&self, doc_id: &str, doc: &Document) -> Result<DocSnapshot> {
         let rel_path = doc
             .get_first(self.path_field)
-            .and_then(|v| v.as_text().map(|s| s.to_string()))
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
             .unwrap_or_default();
         let summary = self.document_summary_text(doc, &rel_path)?;
         let kind = self.document_kind_from_doc(doc, &rel_path);
@@ -2113,7 +2116,7 @@ impl Indexer {
         if !self.config.repo_encryption().is_enabled() {
             return Ok(doc
                 .get_first(self.body_field)
-                .and_then(|v| v.as_text())
+                .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string());
         }
@@ -2123,7 +2126,7 @@ impl Indexer {
         };
         let protected = doc
             .get_first(field)
-            .and_then(|v| v.as_text())
+            .and_then(|v| v.as_str())
             .ok_or_else(|| {
                 AppError::new(
                     ERR_REPO_ENCRYPTION_UNSUPPORTED,
@@ -2143,7 +2146,7 @@ impl Indexer {
         if !self.config.repo_encryption().is_enabled() {
             return Ok(doc
                 .get_first(self.summary_field)
-                .and_then(|v| v.as_text().map(|s| s.to_string()))
+                .and_then(|v| v.as_str().map(|s| s.to_string()))
                 .unwrap_or_default());
         }
         let key = self.config.repo_encryption().require_key()?;
@@ -2152,7 +2155,7 @@ impl Indexer {
         };
         let protected = doc
             .get_first(field)
-            .and_then(|v| v.as_text())
+            .and_then(|v| v.as_str())
             .ok_or_else(|| {
                 AppError::new(
                     ERR_REPO_ENCRYPTION_UNSUPPORTED,
@@ -2189,7 +2192,7 @@ impl Indexer {
                     .map(|value| value.to_string())
                     .or_else(|| {
                         doc.get_first(self.path_field)
-                            .and_then(|v| v.as_text().map(|s| s.to_string()))
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
                     })
                     .unwrap_or_default();
                 let body_text = self.document_body_text(doc, &rel_path)?;
@@ -2219,7 +2222,7 @@ impl Indexer {
                                 fragment.chars().count() >= MAX_SNIPPET_CHARS.saturating_sub(1);
                             let body_text = doc
                                 .get_first(self.body_field)
-                                .and_then(|v| v.as_text())
+                                .and_then(|v| v.as_str())
                                 .unwrap_or_default();
                             if let Some((text, snippet_truncated, start_line, end_line)) =
                                 line_safe_snippet_for_fragment(
@@ -2250,7 +2253,7 @@ impl Indexer {
 
         let rel_path = rel_path_hint.map(|p| p.to_string()).or_else(|| {
             doc.get_first(self.path_field)
-                .and_then(|v| v.as_text().map(|s| s.to_string()))
+                .and_then(|v| v.as_str().map(|s| s.to_string()))
                 .map(|text| text.to_string())
         });
         if let Some(rel_path) = rel_path {
@@ -2405,7 +2408,7 @@ fn document_type_for_path(rel_path: &str, kind: DocumentKind) -> Option<DocType>
 impl Indexer {
     fn document_kind_from_doc(&self, doc: &Document, rel_path: &str) -> DocumentKind {
         if let Some(kind_field) = self.kind_field {
-            if let Some(raw) = doc.get_first(kind_field).and_then(|v| v.as_text()) {
+            if let Some(raw) = doc.get_first(kind_field).and_then(|v| v.as_str()) {
                 if let Some(kind) = document_kind_from_text(raw) {
                     return kind;
                 }

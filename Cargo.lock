@@ -759,7 +759,7 @@ dependencies = [
 
 [[package]]
 name = "docdexd"
-version = "0.2.100-codali.2"
+version = "0.2.100-codali.3"
 dependencies = [
  "aes-gcm",
  "ammonia",

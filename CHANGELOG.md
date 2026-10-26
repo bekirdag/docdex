@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.100-codali.3
+
+- Support explicitly configured mcoda local HTTP runners, including Strata and llama.cpp, for local delegation. Preserve endpoint, authentication mode, model settings and scheduler metadata; reject incomplete transport settings and credential-bearing URLs.
+- Verify all supported local aliases and authentication modes with real HTTP tests; a live Raijin 1.7B helper probe also passed.
+
 ## Unreleased
 
 ## 0.2.100-codali.2

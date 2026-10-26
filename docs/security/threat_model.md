@@ -40,7 +40,7 @@
 - Supply chain: checksum verification, manifest validation, and audit scripts.
 - Unauthorized access: localhost bind by default, auth token required on expose.
 - Data corruption: SQLite export/merge for network shares, atomic state writes.
-- Advisory exceptions: `RUSTSEC-2025-0009` ignored because Docdex does not enable QUIC; tracked in `audit.toml`.
+- Advisory exceptions: `RUSTSEC-2025-0009` is tracked in `audit.toml`. The affected ring overflow-check behavior is disabled in release builds; the patched ring version currently conflicts with the Tree-sitter JavaScript grammar's build dependency. Migrate the grammar stack before removing this exception. CI still reports non-gating unmaintained/unsound dependency warnings for review.
 
 ## User Memory Sync Addendum
 - Assets: user-memory sync events, device registrations, feed cursors, profile-memory payloads, personal-preferences and mind-clone inventory summaries, payload encryption keys, and mswarm API-key identity descriptors.

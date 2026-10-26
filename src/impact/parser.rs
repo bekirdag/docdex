@@ -3494,7 +3494,17 @@ mod tests {
     fn typescript_runtime_extensions_resolve_source_before_emitted_files() {
         let dir = TempDir::new().expect("tempdir");
         let root = dir.path();
-        for file in ["src/value.ts", "src/value.js", "src/view.tsx", "src/esm.mts", "src/common.cts", "src/types.d.ts", "src/types.d.mts", "src/types.d.cts", "src/data.json"] {
+        for file in [
+            "src/value.ts",
+            "src/value.js",
+            "src/view.tsx",
+            "src/esm.mts",
+            "src/common.cts",
+            "src/types.d.ts",
+            "src/types.d.mts",
+            "src/types.d.cts",
+            "src/data.json",
+        ] {
             write_fixture(&root.join(file), "");
         }
         for (importer, specifier, expected) in [
@@ -3509,9 +3519,15 @@ mod tests {
             ("src/main.ts", "./data.json", "src/data.json"),
             ("src/main.js", "./value.js", "src/value.js"),
         ] {
-            assert_eq!(resolve_js_ts_import(root, importer, specifier).as_deref(), Some(expected));
+            assert_eq!(
+                resolve_js_ts_import(root, importer, specifier).as_deref(),
+                Some(expected)
+            );
         }
-        assert_eq!(resolve_js_ts_import(root, "src/main.ts", "missing-package"), None);
+        assert_eq!(
+            resolve_js_ts_import(root, "src/main.ts", "missing-package"),
+            None
+        );
         assert_eq!(resolve_js_ts_import(root, "src/main.js", "./view.js"), None);
     }
 
@@ -3520,15 +3536,30 @@ mod tests {
         let dir = TempDir::new().expect("tempdir");
         let root = dir.path();
         for name in ["value", "types", "lazy"] {
-            write_fixture(&root.join(format!("src/{name}.ts")), "export const value = 1;");
+            write_fixture(
+                &root.join(format!("src/{name}.ts")),
+                "export const value = 1;",
+            );
         }
-        let result = extract_import_edges(root, root, "src/main.ts", r#"
+        let result = extract_import_edges(
+            root,
+            root,
+            "src/main.ts",
+            r#"
 import { value } from './value.js';
 export type { Example } from './types.js';
 const load = () => import('./lazy.js');
-"#);
-        let targets: BTreeSet<_> = result.edges.iter().map(|edge| edge.target.as_str()).collect();
-        assert_eq!(targets, BTreeSet::from(["src/value.ts", "src/types.ts", "src/lazy.ts"]));
+"#,
+        );
+        let targets: BTreeSet<_> = result
+            .edges
+            .iter()
+            .map(|edge| edge.target.as_str())
+            .collect();
+        assert_eq!(
+            targets,
+            BTreeSet::from(["src/value.ts", "src/types.ts", "src/lazy.ts"])
+        );
         assert!(result.edges.iter().all(|edge| edge.source == "src/main.ts"));
     }
 
@@ -3537,10 +3568,20 @@ const load = () => import('./lazy.js');
     fn typescript_extension_substitution_cannot_escape_repository_via_symlink() {
         let repo = TempDir::new().expect("repo");
         let outside = TempDir::new().expect("outside");
-        write_fixture(&outside.path().join("secret.ts"), "export const secret = 1;");
+        write_fixture(
+            &outside.path().join("secret.ts"),
+            "export const secret = 1;",
+        );
         fs::create_dir_all(repo.path().join("src")).unwrap();
-        std::os::unix::fs::symlink(outside.path().join("secret.ts"), repo.path().join("src/secret.ts")).unwrap();
-        assert_eq!(resolve_js_ts_import(repo.path(), "src/main.ts", "./secret.js"), None);
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.ts"),
+            repo.path().join("src/secret.ts"),
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_js_ts_import(repo.path(), "src/main.ts", "./secret.js"),
+            None
+        );
     }
 
     #[test]

@@ -340,7 +340,8 @@ fn start_blocking_watcher(
                 }
             }
         })?;
-    let timeout = watcher_startup_timeout(std::env::var(WATCHER_STARTUP_TIMEOUT_ENV).ok().as_deref());
+    let timeout =
+        watcher_startup_timeout(std::env::var(WATCHER_STARTUP_TIMEOUT_ENV).ok().as_deref());
     wait_for_watcher_ready(ready_rx, handle, &stop_flag, &wait_repo_root, timeout)
 }
 
@@ -591,11 +592,22 @@ mod tests {
 
     #[test]
     fn watcher_startup_timeout_is_bounded_and_defaults_for_invalid_values() {
-        for value in [None, Some(""), Some("0"), Some("999"), Some("120001"), Some("-1"), Some("30s")] {
+        for value in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("999"),
+            Some("120001"),
+            Some("-1"),
+            Some("30s"),
+        ] {
             assert_eq!(super::watcher_startup_timeout(value).as_millis(), 30_000);
         }
         for value in [1_000, 30_000, 120_000] {
-            assert_eq!(super::watcher_startup_timeout(Some(&format!(" {value} "))).as_millis(), value);
+            assert_eq!(
+                super::watcher_startup_timeout(Some(&format!(" {value} "))).as_millis(),
+                value
+            );
         }
     }
 
@@ -607,8 +619,15 @@ mod tests {
             tx.send(Ok(())).unwrap();
         });
         let stop = AtomicBool::new(false);
-        super::wait_for_watcher_ready(rx, handle, &stop, std::path::Path::new("repo"), super::watcher_startup_timeout(None))?
-            .join().unwrap();
+        super::wait_for_watcher_ready(
+            rx,
+            handle,
+            &stop,
+            std::path::Path::new("repo"),
+            super::watcher_startup_timeout(None),
+        )?
+        .join()
+        .unwrap();
         assert!(!stop.load(Ordering::Relaxed));
         Ok(())
     }
@@ -620,14 +639,27 @@ mod tests {
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
         let handle = std::thread::spawn(move || {
-            while !thread_stop.load(Ordering::Relaxed) { std::thread::yield_now(); }
+            while !thread_stop.load(Ordering::Relaxed) {
+                std::thread::yield_now();
+            }
             drop(tx);
             stopped_tx.send(()).unwrap();
         });
-        let error = super::wait_for_watcher_ready(rx, handle, &stop, std::path::Path::new("repo"), std::time::Duration::from_millis(5)).unwrap_err();
+        let error = super::wait_for_watcher_ready(
+            rx,
+            handle,
+            &stop,
+            std::path::Path::new("repo"),
+            std::time::Duration::from_millis(5),
+        )
+        .unwrap_err();
         assert!(stop.load(Ordering::Relaxed));
-        assert!(error.to_string().contains("within 5 ms (DOCDEX_WATCHER_STARTUP_TIMEOUT_MS)"));
-        stopped_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        assert!(error
+            .to_string()
+            .contains("within 5 ms (DOCDEX_WATCHER_STARTUP_TIMEOUT_MS)"));
+        stopped_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
     }
 
     #[test]

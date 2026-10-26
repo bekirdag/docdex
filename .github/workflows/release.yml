@@ -501,6 +501,25 @@ jobs:
           name: release-assets-${{ github.ref_name }}
           path: artifacts
 
+      - name: Install verified GitHub CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Linux
+          test "$(uname -m)" = x86_64
+          GH_RELEASE_VERSION=2.103.2
+          GH_RELEASE_SHA256=62ccf747115ddc61237efffdde66a3c8f70ba249433dc64f70801089b59c59c8
+          GH_INSTALL_DIR=$(mktemp -d "${RUNNER_TEMP}/docdex-gh.XXXXXX")
+          GH_ARCHIVE="${GH_INSTALL_DIR}/gh.tar.gz"
+          curl --fail --location --retry 3 --output "${GH_ARCHIVE}" \
+            "https://github.com/cli/cli/releases/download/v${GH_RELEASE_VERSION}/gh_${GH_RELEASE_VERSION}_linux_amd64.tar.gz"
+          printf '%s  %s\n' "${GH_RELEASE_SHA256}" "${GH_ARCHIVE}" | sha256sum -c -
+          tar -xzf "${GH_ARCHIVE}" -C "${GH_INSTALL_DIR}" "gh_${GH_RELEASE_VERSION}_linux_amd64/bin/gh"
+          GH_PRIVATE_BIN="${GH_INSTALL_DIR}/gh_${GH_RELEASE_VERSION}_linux_amd64/bin"
+          test "$("${GH_PRIVATE_BIN}/gh" --version | awk 'NR == 1 { print $3 }')" = "${GH_RELEASE_VERSION}"
+          "${GH_PRIVATE_BIN}/gh" release create --help | grep -F -- --verify-tag >/dev/null
+          printf '%s\n' "${GH_PRIVATE_BIN}" >> "${GITHUB_PATH}"
+
       - name: Publish draft after exact verification
         shell: bash
         env:

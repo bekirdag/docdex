@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## 0.2.100-codali.1
+## 0.2.100-codali.2
 - Pin Python 3.12 for release validation and packaging on self-hosted runners.
 - Upgrade HTML sanitization, ZIP handling and the TLS/network dependency lock to patched releases; preserve archive path, size and permission checks.
 - Adapt ZIP reader types and test writers to the patched library API.

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.2.100
+- Avoid rereading unchanged client transcripts before capture deduplication; bound automatic transcript reads while preserving original histories and existing memories.
+- Share daemon/MCP indexes, reduce per-repository writer working sets, reconcile changed files incrementally, prune ignored watcher subtrees, and recover edits made while repositories were idle.
+- Add cgroup-aware background admission, interactive request priority, and repository/operation resource diagnostics for cache churn investigations.
+- Reuse a bounded SQLite symbols connection and reset stores transactionally without replacing their database files.
+- Preserve managed embedding settings and private workspace metadata; resolve TypeScript runtime-style imports to their source files.
+- Ship an optional, isolated C2LLM code-retrieval experiment. Nomic and normal search defaults remain unchanged; the small local trial did not demonstrate an improvement over Nomic.
+
 ## 0.2.99
 - Resolve the effective installed version from native install metadata for both `--version` and update checks, preventing stale JavaScript wrappers from falsely advertising an already-installed release.
 - Reconcile repositories on their first daemon mount when files changed while Docdex was stopped, and refresh readiness metadata after incremental updates so index health remains accurate.

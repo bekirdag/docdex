@@ -289,8 +289,16 @@ fn read_running_metadata_at_path_with_names(
 }
 
 fn should_scan_processes(path: &Path, env_key: &str, filename: &str) -> bool {
-    let _ = (path, env_key, filename);
+    let _ = filename;
     if env_boolish(TEST_ALLOW_MULTI_DAEMON_ENV) {
+        return false;
+    }
+    // An explicitly managed instance has a private lock and index owned by its
+    // supervising client. Keep the OS lock, but do not reuse unrelated daemons.
+    if env_boolish("DOCDEX_MANAGED_INSTANCE")
+        && path.is_absolute()
+        && env::var_os(env_key).is_some_and(|value| Path::new(&value) == path)
+    {
         return false;
     }
     true
@@ -494,6 +502,46 @@ mod tests {
             }
         });
         Some((port, handle))
+    }
+
+    #[test]
+    fn managed_instance_requires_explicit_absolute_lock() -> Result<()> {
+        let dir = TempDir::new()?;
+        let guard = EnvGuard::new(&[
+            "DOCDEX_MANAGED_INSTANCE",
+            DAEMON_LOCK_ENV,
+            TEST_ALLOW_MULTI_DAEMON_ENV,
+        ]);
+        guard.clear(TEST_ALLOW_MULTI_DAEMON_ENV);
+        guard.set("DOCDEX_MANAGED_INSTANCE", "1");
+        let custom = dir.path().join("managed.lock");
+        guard.clear(DAEMON_LOCK_ENV);
+        assert!(should_scan_processes(
+            &custom,
+            DAEMON_LOCK_ENV,
+            DAEMON_LOCK_FILE
+        ));
+        guard.set(DAEMON_LOCK_ENV, "relative.lock");
+        assert!(should_scan_processes(
+            Path::new("relative.lock"),
+            DAEMON_LOCK_ENV,
+            DAEMON_LOCK_FILE
+        ));
+        guard.set(DAEMON_LOCK_ENV, custom.to_string_lossy().as_ref());
+        assert!(!should_scan_processes(
+            &custom,
+            DAEMON_LOCK_ENV,
+            DAEMON_LOCK_FILE
+        ));
+        let _held = acquire_lock_at_path(&custom, 0)?;
+        assert!(acquire_lock_at_path(&custom, 0).is_err());
+        guard.clear("DOCDEX_MANAGED_INSTANCE");
+        assert!(should_scan_processes(
+            &custom,
+            DAEMON_LOCK_ENV,
+            DAEMON_LOCK_FILE
+        ));
+        Ok(())
     }
 
     #[test]

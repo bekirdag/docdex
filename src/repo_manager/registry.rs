@@ -1223,6 +1223,31 @@ fn ensure_workspace_repo_meta(
     canonical_path: &str,
     now_ms: i64,
 ) -> Result<()> {
+    let write_workspace = !matches!(
+        std::env::var("DOCDEX_WORKSPACE_METADATA").ok().as_deref(),
+        Some("0" | "false" | "off")
+    );
+    ensure_workspace_repo_meta_with_policy(
+        repo_root,
+        fingerprint,
+        canonical_path,
+        now_ms,
+        write_workspace,
+    )
+}
+
+fn ensure_workspace_repo_meta_with_policy(
+    repo_root: &Path,
+    fingerprint: &str,
+    canonical_path: &str,
+    now_ms: i64,
+    write_workspace: bool,
+) -> Result<()> {
+    // Managed coding clients keep identity/index state outside the checkout.
+    // Mounting a repository must not silently edit its Git configuration.
+    if !write_workspace {
+        return Ok(());
+    }
     let path = workspace_repo_meta_path(repo_root);
     let existing = read_repo_meta_at(&path);
     let mut created_at = now_ms;
@@ -1549,6 +1574,30 @@ impl RepoHandleManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn managed_repo_metadata_policy_leaves_workspace_unchanged() {
+        let root = tempfile::tempdir().expect("temp repo");
+        fs::create_dir_all(root.path().join(".git/info")).unwrap();
+        fs::write(root.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        fs::write(root.path().join(".git/info/exclude"), "existing\n").unwrap();
+        fs::write(root.path().join(".gitignore"), "user-work\n").unwrap();
+        ensure_workspace_repo_meta_with_policy(root.path(), "fingerprint", "canonical", 1, false)
+            .unwrap();
+        assert!(!root.path().join(".docdex").exists());
+        assert_eq!(
+            fs::read_to_string(root.path().join(".gitignore")).unwrap(),
+            "user-work\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.path().join(".git/info/exclude")).unwrap(),
+            "existing\n"
+        );
+        fs::remove_file(root.path().join(".gitignore")).unwrap();
+        ensure_workspace_repo_meta_with_policy(root.path(), "fingerprint", "canonical", 2, false)
+            .unwrap();
+        assert!(!root.path().join(".gitignore").exists());
+    }
 
     fn open_and_release(manager: &mut RepoHandleManager, repo_id: &str) -> RepoHandle {
         let handle = manager.acquire(repo_id).expect("acquire repo");

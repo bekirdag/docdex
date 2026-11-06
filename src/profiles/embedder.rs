@@ -42,14 +42,18 @@ impl ProfileEmbedder {
         timeout: Duration,
         expected_dim: usize,
     ) -> Result<Self> {
-        let embedder = match EmbeddingEmbedder::with_target(target, timeout) {
-            Ok(embedder) => Some(embedder),
-            Err(err) => {
-                warn!(
-                    error = ?err,
-                    "profile embedder init failed; falling back to local hash embeddings"
-                );
-                None
+        let embedder = if target.provider == "hash" {
+            None
+        } else {
+            match EmbeddingEmbedder::with_target(target, timeout) {
+                Ok(embedder) => Some(embedder),
+                Err(err) => {
+                    warn!(
+                        error = ?err,
+                        "profile embedder init failed; falling back to local hash embeddings"
+                    );
+                    None
+                }
             }
         };
         Ok(Self {
@@ -91,12 +95,16 @@ impl ProfileEmbedder {
     }
 
     pub async fn embed(&self, text: &str) -> Result<Vec<f32>> {
-        self.embed_with_metadata(text)
+        self.embed_with_purpose(text, true)
             .await
             .map(|result| result.embedding)
     }
 
     pub async fn embed_with_metadata(&self, text: &str) -> Result<ProfileEmbedding> {
+        self.embed_with_purpose(text, false).await
+    }
+
+    async fn embed_with_purpose(&self, text: &str, query: bool) -> Result<ProfileEmbedding> {
         #[cfg(test)]
         if let Some(embedding) = self.test_embedding.as_ref() {
             if embedding.len() != self.expected_dim {
@@ -117,7 +125,12 @@ impl ProfileEmbedder {
             });
         }
         if let Some(embedder) = self.embedder.as_ref() {
-            match embedder.embed(text).await {
+            let result = if query {
+                embedder.embed_query(text).await
+            } else {
+                embedder.embed(text).await
+            };
+            match result {
                 Ok(embedding) => {
                     if embedding.len() == self.expected_dim {
                         return Ok(ProfileEmbedding {

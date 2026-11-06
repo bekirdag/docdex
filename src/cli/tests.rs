@@ -16,6 +16,7 @@ fn repo_args(path: PathBuf) -> RepoArgs {
 
 fn serve_args(repo: RepoArgs) -> ServeArgs {
     ServeArgs {
+        workspace_metadata: None,
         repo,
         repo_explicit: false,
         host: None,

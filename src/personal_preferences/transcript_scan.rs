@@ -1,4 +1,47 @@
 use super::*;
+use std::io::Read;
+
+// Automatic collection is bounded independently of transcript history size.
+// Oversized originals remain untouched and can still be explicitly imported.
+pub(super) const MAX_AUTO_TRANSCRIPT_BYTES: u64 = 32 * 1024 * 1024;
+pub(super) const MAX_AUTO_SCAN_BYTES: u64 = 64 * 1024 * 1024;
+
+pub(super) fn transcript_cache_key(candidate: &ClientTranscriptCandidate) -> String {
+    format!(
+        "transcript_scan_v1:{:x}",
+        Sha256::digest(candidate.path.to_string_lossy().as_bytes())
+    )
+}
+
+pub(super) fn transcript_stamp(path: &Path) -> Result<String> {
+    let metadata = fs::metadata(path)?;
+    let modified = metadata
+        .modified()?
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_nanos();
+    #[cfg(unix)]
+    let identity = {
+        use std::os::unix::fs::MetadataExt;
+        format!(
+            "{}:{}:{}:{}",
+            metadata.dev(),
+            metadata.ino(),
+            metadata.ctime(),
+            metadata.ctime_nsec()
+        )
+    };
+    #[cfg(not(unix))]
+    let identity = String::new();
+    Ok(format!("{}:{modified}:{identity}", metadata.len()))
+}
+
+pub(super) fn cache_transcript_stamp(conn: &Connection, key: &str, stamp: &str) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO personal_preferences_meta(key, value) VALUES (?1, ?2)",
+        params![key, stamp],
+    )?;
+    Ok(())
+}
 
 #[derive(Debug, Clone)]
 pub(super) struct ClientTranscriptCandidate {
@@ -156,8 +199,15 @@ fn infer_transcript_format(path: &Path, source: &str) -> Option<ConversationImpo
 pub(super) fn load_transcript_candidate_imports(
     candidate: &ClientTranscriptCandidate,
 ) -> Result<Vec<ConversationImport>> {
-    let raw = fs::read_to_string(&candidate.path)
+    let _operation = crate::resources::Operation::enter(&candidate.path, "transcript_read");
+    let mut raw = String::new();
+    fs::File::open(&candidate.path)?
+        .take(MAX_AUTO_TRANSCRIPT_BYTES + 1)
+        .read_to_string(&mut raw)
         .with_context(|| format!("read transcript {}", candidate.path.display()))?;
+    if raw.len() as u64 > MAX_AUTO_TRANSCRIPT_BYTES {
+        anyhow::bail!("transcript exceeds automatic capture byte limit; use explicit import");
+    }
     if raw.trim().is_empty() {
         return Ok(Vec::new());
     }

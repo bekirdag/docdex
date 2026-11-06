@@ -85,6 +85,7 @@ impl MemoryStore {
         metadata: Value,
         created_at_ms: i64,
     ) -> Result<(Uuid, i64)> {
+        let _operation = crate::resources::Operation::enter(&self.path, "memory_store");
         let _guard = self.lock.lock();
         let _file_lock = self.lock_exclusive()?;
         let id = Uuid::new_v4();
@@ -129,6 +130,7 @@ impl MemoryStore {
         query_embedding: &[f32],
         top_k: usize,
     ) -> Result<Vec<MemoryCandidate>> {
+        let _operation = crate::resources::Operation::enter(&self.path, "memory_recall");
         let _guard = self.lock.lock();
         let _file_lock = self.lock_shared()?;
         let (conn, stored_dim) = self.open_connection(None)?;

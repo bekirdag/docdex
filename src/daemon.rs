@@ -538,7 +538,10 @@ pub async fn serve(
     } else {
         None
     };
-    let profile_state_dir = match global_state_dir.clone() {
+    let profile_state_dir = match embeddings::env_non_empty("DOCDEX_PROFILE_STATE_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| global_state_dir.clone())
+    {
         Some(state_dir) => Some(state_dir),
         None => match crate::state_paths::default_state_base_dir() {
             Ok(state_dir) => {
@@ -873,12 +876,28 @@ pub async fn serve(
                 let mut ticker = tokio::time::interval(Duration::from_secs(
                     personal_preferences.config.digest_interval_seconds.max(1),
                 ));
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     ticker.tick().await;
-                    match personal_preferences
-                        .store
-                        .scan_supported_client_transcripts(&personal_preferences.config, None)
-                    {
+                    let scanner = personal_preferences.clone();
+                    let scan = tokio::task::spawn_blocking(move || {
+                        let _permit = crate::resources::Background::try_maintenance()?;
+                        Some(
+                            scanner
+                                .store
+                                .scan_supported_client_transcripts(&scanner.config, None),
+                        )
+                    })
+                    .await;
+                    let scan = match scan {
+                        Ok(Some(scan)) => scan,
+                        Ok(None) => continue,
+                        Err(err) => {
+                            warn!(error = ?err, "personal preferences scan task failed");
+                            continue;
+                        }
+                    };
+                    match scan {
                         Ok(scan_summary) => {
                             if scan_summary.captures_created > 0 || scan_summary.parse_errors > 0 {
                                 info!(
@@ -887,6 +906,9 @@ pub async fn serve(
                                     sessions_detected = scan_summary.sessions_detected,
                                     captures_created = scan_summary.captures_created,
                                     skipped_existing = scan_summary.skipped_existing,
+                                    cached_files = scan_summary.cached_files,
+                                    deferred_large_files = scan_summary.deferred_large_files,
+                                    bytes_read = scan_summary.bytes_read,
                                     parse_errors = scan_summary.parse_errors,
                                     "personal preferences transcript scan completed"
                                 );
@@ -900,6 +922,13 @@ pub async fn serve(
                             );
                         }
                     }
+                    if crate::resources::memory_pressure().pressured {
+                        continue;
+                    }
+                    let _digest_operation = crate::resources::Operation::asynchronous(
+                        personal_preferences.store.db_path(),
+                        "preferences_digest",
+                    );
                     match crate::personal_preferences::process_pending_with_local_agents(
                         &personal_preferences.store,
                         global_state_dir_for_task.as_deref(),

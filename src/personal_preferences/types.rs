@@ -1566,6 +1566,12 @@ pub struct PersonalPreferencesTranscriptScanSummary {
     pub skipped_existing: usize,
     pub parse_errors: usize,
     #[serde(default)]
+    pub cached_files: usize,
+    #[serde(default)]
+    pub deferred_large_files: usize,
+    #[serde(default)]
+    pub bytes_read: u64,
+    #[serde(default)]
     pub last_scan_at_ms: Option<i64>,
     #[serde(default)]
     pub sources: Vec<PersonalPreferencesTranscriptSourceSummary>,

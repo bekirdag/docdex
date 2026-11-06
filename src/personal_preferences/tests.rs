@@ -1,6 +1,60 @@
 use super::*;
 use tempfile::TempDir;
 
+#[test]
+fn transcript_scan_caches_before_reading_and_preserves_cache_across_reopen() -> Result<()> {
+    let temp = TempDir::new()?;
+    let root = temp.path().join("codex/sessions");
+    fs::create_dir_all(&root)?;
+    let path = root.join("example.txt");
+    fs::write(&path, "user: use local tools\nassistant: understood\n")?;
+    let config = MemoryPersonalPreferencesConfig {
+        capture_supported_client_transcripts: true,
+        client_transcript_roots: vec![root.display().to_string()],
+        archive_raw_conversations: false,
+        digest_enabled: false,
+        ..MemoryPersonalPreferencesConfig::default()
+    };
+    let store = PersonalPreferencesStore::new(temp.path())?;
+    let first = store.scan_supported_client_transcripts(&config, Some(4))?;
+    assert_eq!(first.captures_created, 1);
+    assert!(first.bytes_read > 0);
+    drop(store);
+    let reopened = PersonalPreferencesStore::new(temp.path())?;
+    let second = reopened.scan_supported_client_transcripts(&config, Some(4))?;
+    assert_eq!(second.cached_files, 1);
+    assert_eq!(second.bytes_read, 0);
+    fs::write(&path, "user: use local tools and validate changes\n")?;
+    assert!(
+        reopened
+            .scan_supported_client_transcripts(&config, Some(4))?
+            .bytes_read
+            > 0
+    );
+    Ok(())
+}
+
+#[test]
+fn transcript_scan_defers_oversized_original_without_reading_or_removing_it() -> Result<()> {
+    let temp = TempDir::new()?;
+    let root = temp.path().join("codex/sessions");
+    fs::create_dir_all(&root)?;
+    let path = root.join("large.jsonl");
+    fs::File::create(&path)?.set_len(MAX_AUTO_TRANSCRIPT_BYTES + 1)?;
+    let config = MemoryPersonalPreferencesConfig {
+        capture_supported_client_transcripts: true,
+        client_transcript_roots: vec![root.display().to_string()],
+        ..MemoryPersonalPreferencesConfig::default()
+    };
+    let store = PersonalPreferencesStore::new(temp.path())?;
+    let scan = store.scan_supported_client_transcripts(&config, None)?;
+    assert_eq!(scan.deferred_large_files, 1);
+    assert_eq!(scan.bytes_read, 0);
+    assert_eq!(scan.captures_created, 0);
+    assert_eq!(fs::metadata(path)?.len(), MAX_AUTO_TRANSCRIPT_BYTES + 1);
+    Ok(())
+}
+
 fn sample_capture_request() -> PersonalPreferencesCaptureRequest {
     PersonalPreferencesCaptureRequest {
         source: "chat_completion".to_string(),

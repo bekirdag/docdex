@@ -162,6 +162,7 @@ impl ProfileManager {
     }
 
     pub fn list_preferences(&self, agent_id: Option<&str>) -> Result<Vec<Preference>> {
+        let _operation = crate::resources::Operation::enter(&self.db_path, "profile_list");
         let _file_lock = self.lock_shared()?;
         let conn = self.conn.lock();
         let mut preferences = Vec::new();

@@ -57,8 +57,11 @@ struct RepoEntry {
     last_access: Instant,
     last_conversation_sweep: Instant,
     activity_generation: u64,
+    watcher_starting: bool,
+    watcher_retry_after: Instant,
 }
 
+#[derive(Clone)]
 struct IdleCandidate {
     repo_id: String,
     entry: Arc<Mutex<RepoEntry>>,
@@ -170,6 +173,8 @@ impl RepoManager {
             last_access: Instant::now(),
             last_conversation_sweep: Instant::now(),
             activity_generation: 0,
+            watcher_starting: false,
+            watcher_retry_after: Instant::now(),
         }));
         {
             // Always acquire repository maps in canonical-then-legacy order.
@@ -230,25 +235,47 @@ impl RepoManager {
     }
 
     fn touch_entry(&self, entry: &Arc<Mutex<RepoEntry>>) -> Arc<RepoRuntime> {
-        let mut entry = entry.lock();
-        entry.last_access = Instant::now();
-        entry.activity_generation = entry.activity_generation.wrapping_add(1);
-        if entry.watcher.is_none() && !entry.runtime.read_only {
-            match watcher::spawn(entry.runtime.indexer.clone()) {
-                Ok(handle) => {
-                    entry.watcher = Some(handle);
-                }
-                Err(err) => {
-                    warn!(
-                        target: "docdexd",
-                        error = ?err,
-                        repo = %entry.runtime.repo_root.display(),
-                        "failed to restart file watcher"
-                    );
-                }
+        let mut guard = entry.lock();
+        guard.last_access = Instant::now();
+        guard.activity_generation = guard.activity_generation.wrapping_add(1);
+        let runtime = guard.runtime.clone();
+        if guard.watcher.is_none()
+            && !guard.watcher_starting
+            && !runtime.read_only
+            && Instant::now() >= guard.watcher_retry_after
+        {
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                guard.watcher_starting = true;
+                let entry = Arc::clone(entry);
+                let indexer = Arc::clone(&runtime.indexer);
+                let restart_handle = handle.clone();
+                // Watcher traversal must never hold either repository map or the
+                // entry mutex, nor occupy a Tokio worker serving other requests.
+                handle.spawn_blocking(move || {
+                    let result = watcher::spawn(Arc::clone(&indexer));
+                    let mut guard = entry.lock();
+                    guard.watcher_starting = false;
+                    match result {
+                        Ok(watcher) => {
+                            guard.watcher = Some(watcher);
+                            drop(guard);
+                            // Events that occurred while idle were not watched.
+                            // Reconcile once after registration to cover the gap.
+                            restart_handle.spawn(async move {
+                                if let Err(err) = indexer.reconcile_all().await {
+                                    warn!(error = ?err, repo = %indexer.repo_root().display(), "idle watcher reconciliation failed");
+                                }
+                            });
+                        }
+                        Err(err) => {
+                            guard.watcher_retry_after = Instant::now() + Duration::from_secs(60);
+                            warn!(error = ?err, repo = %guard.runtime.repo_root.display(), "failed to restart file watcher; retry delayed");
+                        }
+                    }
+                });
             }
         }
-        entry.runtime.clone()
+        runtime
     }
 
     fn get_and_touch_entry(&self, repo_id: &str) -> Option<Arc<RepoRuntime>> {
@@ -297,6 +324,29 @@ impl RepoManager {
         Some(runtime)
     }
 
+    pub fn resource_snapshots(&self) -> Vec<serde_json::Value> {
+        self.repos.read().iter().map(|(repo_id, entry)| {
+            if let Some(entry) = entry.try_lock() {
+                let indexer = &entry.runtime.indexer;
+                let root = if indexer.state_dir().file_name().is_some_and(|name| name == "index") { indexer.state_dir().parent().unwrap_or(indexer.state_dir()) } else { indexer.state_dir() };
+                let size = |name: &str| std::fs::metadata(root.join(name)).map(|meta| meta.len()).unwrap_or(0);
+                let index_bytes: u64 = std::fs::read_dir(indexer.state_dir()).into_iter().flatten()
+                    .filter_map(|entry| entry.ok()).filter_map(|entry| entry.metadata().ok())
+                    .filter(|meta| meta.is_file()).map(|meta| meta.len()).sum();
+                serde_json::json!({"repo_id":repo_id, "repo_root":entry.runtime.repo_root,
+                    "index_bytes":index_bytes, "symbols_bytes":size("symbols.db"),
+                    "symbols_wal_bytes":size("symbols.db-wal"),
+                    "memory_bytes":entry.runtime.memory.as_ref().and_then(|memory| std::fs::metadata(memory.store.path()).ok()).map(|meta| meta.len()),
+                    "documents":indexer.num_docs(),
+                    "idle_seconds":entry.last_access.elapsed().as_secs(),
+                    "watcher_active":entry.watcher.is_some(), "watcher_starting":entry.watcher_starting,
+                    "read_only":entry.runtime.read_only, "indexer_owners":Arc::strong_count(indexer),
+                    "indexing":indexer.indexing_in_progress().unwrap_or(false),
+                    "writer_budget_bytes":if entry.runtime.read_only {0} else {16*1024*1024}})
+            } else { serde_json::json!({"repo_id":repo_id,"busy":true}) }
+        }).collect()
+    }
+
     pub fn repo_count(&self) -> usize {
         self.repos.read().len()
     }
@@ -327,7 +377,9 @@ impl RepoManager {
             let mut ticker = tokio::time::interval(interval);
             loop {
                 ticker.tick().await;
-                manager.sweep_idle(Instant::now());
+                let manager = Arc::clone(&manager);
+                let _ =
+                    tokio::task::spawn_blocking(move || manager.sweep_idle(Instant::now())).await;
             }
         });
     }
@@ -350,7 +402,10 @@ impl RepoManager {
         {
             return;
         }
-        if let Some(mut watcher) = entry.watcher.take() {
+        let watcher = entry.watcher.take();
+        drop(entry);
+        drop(repos);
+        if let Some(mut watcher) = watcher {
             watcher.stop();
         }
     }
@@ -378,6 +433,14 @@ impl RepoManager {
             return;
         }
 
+        // Do not reopen an index still owned by an in-flight request, watcher
+        // startup, or MCP service. It must keep sharing this exact runtime.
+        if entry.watcher_starting || Arc::strong_count(&entry.runtime) > 1 {
+            return;
+        }
+        if entry.watcher.is_none() && Arc::strong_count(&entry.runtime.indexer) > 1 {
+            return;
+        }
         let legacy_id = entry.runtime.legacy_repo_id.clone();
         let watcher = entry.watcher.take();
         repos.remove(&candidate.repo_id);
@@ -403,6 +466,8 @@ impl RepoManager {
         let mut conversation_sweeps: Vec<(String, PathBuf, crate::search::ConversationState)> =
             Vec::new();
         let pinned_repo_id = self.pinned_repo_id.read().clone();
+        let maintenance = crate::resources::Background::try_maintenance();
+        let allow_maintenance = maintenance.is_some();
         let sweep_interval =
             Duration::from_secs(self.conversation_config.sweeper_interval_seconds.max(1));
         {
@@ -415,7 +480,7 @@ impl RepoManager {
                     let due_for_sweep = now
                         .saturating_duration_since(entry_guard.last_conversation_sweep)
                         >= sweep_interval;
-                    if due_for_sweep {
+                    if due_for_sweep && allow_maintenance {
                         conversation_sweeps.push((
                             repo_id.clone(),
                             entry_guard.runtime.repo_root.clone(),
@@ -458,6 +523,7 @@ impl RepoManager {
             episodic_rollup_retention_days: self.conversation_config.episodic_rollup_retention_days,
         };
         for (repo_id, repo_root, conversations) in conversation_sweeps {
+            let _operation = crate::resources::Operation::enter(&repo_root, "maintenance");
             let before_size =
                 combined_archive_size_bytes(&conversations.store, &conversations.knowledge);
             match prune_with_knowledge(
@@ -503,7 +569,7 @@ impl RepoManager {
                 }
             }
         }
-        if self.conversations_enabled {
+        if self.conversations_enabled && maintenance.is_some() {
             if let Some(base_state_dir) = self.shared_state_dir.as_deref() {
                 match crate::conversations::sweep_conversation_namespaces(
                     base_state_dir,
@@ -548,6 +614,7 @@ impl RepoManager {
             }
         }
 
+        drop(maintenance);
         // Conversation retention can be slow. Tests use this hook to exercise
         // the exact interleaving where a request arrives after candidates are
         // discovered but before their lifecycle actions are applied.
@@ -558,8 +625,10 @@ impl RepoManager {
         }
 
         for candidate in hibernate_entries {
+            self.stop_watcher_if_still_idle(candidate.clone(), now);
             self.hibernate_if_still_idle(candidate, now);
         }
+        crate::resources::release_free_memory_under_pressure();
         crate::metrics::global()
             .set_conversation_archive_size_bytes(self.conversation_archive_size_bytes_total());
     }
@@ -707,7 +776,7 @@ impl RepoManager {
             let indexer = indexer.clone();
             tokio::spawn(async move {
                 let result = if reconcile_needed {
-                    indexer.reindex_all().await.map(|_| true)
+                    indexer.reconcile_all().await.map(|_| true)
                 } else {
                     crate::index::ensure_indexed(indexer).await
                 };
@@ -991,6 +1060,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn idle_watcher_restart_reconciles_changes_made_while_stopped() {
+        let repo = TempDir::new().unwrap();
+        std::fs::write(repo.path().join("README.md"), "before idle").unwrap();
+        let state_dir = TempDir::new().unwrap();
+        let manager = RepoManager::new_with_timeouts(
+            None,
+            Some(state_dir.path().to_path_buf()),
+            false,
+            crate::config::MemoryConversationConfig::default(),
+            Duration::from_secs(1),
+            Duration::from_secs(30),
+            Duration::from_secs(1),
+        );
+        let mount = manager.mount_repo(repo.path()).unwrap();
+        crate::index::ensure_indexed(mount.repo.indexer.clone())
+            .await
+            .unwrap();
+        let entry = manager
+            .repos
+            .read()
+            .get(&mount.repo.repo_id)
+            .unwrap()
+            .clone();
+        let now = Instant::now();
+        entry.lock().last_access = now - Duration::from_secs(2);
+        manager.sweep_idle(now);
+        assert!(entry.lock().watcher.is_none());
+        std::fs::write(repo.path().join("README.md"), "awake_sentinel").unwrap();
+        manager.get_by_id(&mount.repo.repo_id).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if !mount
+                    .repo
+                    .indexer
+                    .search("awake_sentinel", 1)
+                    .unwrap()
+                    .is_empty()
+                    && !mount.repo.indexer.indexing_in_progress().unwrap()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("idle edits should become searchable after watcher restart");
+    }
+
+    #[tokio::test]
     async fn repo_manager_hibernates_idle_repo() {
         let repo = TempDir::new().expect("repo dir");
         std::fs::write(repo.path().join("README.md"), "# test\n").expect("write file");
@@ -1014,6 +1132,21 @@ mod tests {
         let now = Instant::now();
         entry.lock().last_access = now - Duration::from_secs(4);
         manager.sweep_idle(now);
+        // A request still owns the runtime: removing it would allow a second
+        // writer on remount. Hibernate only after every external owner exits.
+        assert_eq!(manager.repo_count(), 1);
+        drop(mount);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                manager.sweep_idle(Instant::now());
+                if manager.repo_count() == 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("idle runtime should hibernate after owners exit");
         assert!(manager.repos.read().is_empty());
     }
 
@@ -1164,6 +1297,18 @@ mod tests {
             entry.last_conversation_sweep = now - Duration::from_secs(2);
         }
 
+        // Maintenance deliberately yields to indexing. Wait for startup work
+        // rather than racing its admission permit in this retention test.
+        crate::index::ensure_indexed(mount.repo.indexer.clone())
+            .await
+            .expect("index repo");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while mount.repo.indexer.indexing_in_progress().unwrap() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("startup indexing completes");
         manager.sweep_idle(now);
 
         assert!(conversations

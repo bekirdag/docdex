@@ -39,7 +39,7 @@ use thiserror::Error;
 use tracing::{debug, warn};
 use walkdir::WalkDir;
 
-const MAX_INDEX_RAM_BYTES: usize = 50 * 1024 * 1024;
+const MAX_INDEX_RAM_BYTES: usize = 16 * 1024 * 1024;
 const MAX_BINARY_FILE_BYTES: u64 = 5 * 1024 * 1024;
 const BINARY_SNIFF_BYTES: usize = 8192;
 const INDEX_READY_FILENAME: &str = "index_ready.json";
@@ -273,6 +273,7 @@ pub struct Indexer {
     writer: Option<Arc<Mutex<IndexWriter>>>,
     symbols_store: Option<SymbolsStore>,
     indexing_gate: Arc<IndexingGate>,
+    file_stamps: Arc<Mutex<Option<BTreeMap<String, FileStamp>>>>,
     _lifecycle_lock: Arc<File>,
 }
 
@@ -280,6 +281,25 @@ pub struct Indexer {
 struct IndexReadyRecord {
     indexed_at_epoch_ms: u128,
     docs_indexed: u64,
+    #[serde(default)]
+    files: Option<BTreeMap<String, FileStamp>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct FileStamp {
+    bytes: u64,
+    modified_ns: u128,
+}
+
+fn file_stamp(path: &Path) -> Result<FileStamp> {
+    let metadata = fs::metadata(path)?;
+    Ok(FileStamp {
+        bytes: metadata.len(),
+        modified_ns: metadata
+            .modified()?
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos(),
+    })
 }
 
 struct IndexingGate {
@@ -692,6 +712,7 @@ impl Indexer {
         read_only: bool,
         lifecycle_lock: Arc<File>,
     ) -> Result<Self> {
+        let _operation = crate::resources::Operation::enter(&repo_root, "index_open");
         if !repo_root.exists() {
             return Err(missing_repo_path_error(&repo_root).into());
         }
@@ -769,7 +790,7 @@ impl Indexer {
         let writer = if read_only {
             None
         } else {
-            Some(index.writer(MAX_INDEX_RAM_BYTES)?)
+            Some(index.writer_with_num_threads(1, MAX_INDEX_RAM_BYTES)?)
         };
         if config.repo_encryption().is_enabled() && !read_only {
             purge_unprotected_code_intelligence_state(config.state_dir());
@@ -808,6 +829,10 @@ impl Indexer {
             }
             return Err(err).context("record repo identity metadata");
         }
+        let file_stamps = fs::read(config.state_dir().join(INDEX_READY_FILENAME))
+            .ok()
+            .and_then(|raw| serde_json::from_slice::<IndexReadyRecord>(&raw).ok())
+            .and_then(|record| record.files);
         Ok(Self {
             repo_root,
             config,
@@ -827,6 +852,7 @@ impl Indexer {
             writer: writer.map(|writer| Arc::new(Mutex::new(writer))),
             symbols_store,
             indexing_gate: Arc::new(IndexingGate::new()),
+            file_stamps: Arc::new(Mutex::new(file_stamps)),
             _lifecycle_lock: lifecycle_lock,
         })
     }
@@ -1024,6 +1050,7 @@ impl Indexer {
         if self.seed_index_ready_marker()? {
             return Ok(false);
         }
+        let _background = crate::resources::Background::enter();
         self.reindex_all_uncoordinated()?;
         Ok(true)
     }
@@ -1040,20 +1067,31 @@ impl Indexer {
 
     pub(crate) fn reindex_all_blocking(&self) -> Result<()> {
         let _gate = self.indexing_gate.acquire()?;
+        let _background = crate::resources::Background::enter();
         self.reindex_all_uncoordinated()
     }
 
     fn reindex_all_uncoordinated(&self) -> Result<()> {
+        let _operation = crate::resources::Operation::enter(&self.repo_root, "full_reindex");
         self.clear_index_ready_marker();
         let writer_arc = self.writer()?;
         let mut writer = writer_arc.lock();
         writer.delete_all_documents()?;
         self.reset_symbols_store();
+        let mut stamps = BTreeMap::new();
         let mut impact_edges: BTreeSet<ImpactGraphEdge> = BTreeSet::new();
         let mut impact_diagnostics: HashMap<String, crate::impact::ImpactDiagnostics> =
             HashMap::new();
         for entry in WalkDir::new(&self.repo_root)
             .into_iter()
+            .filter_entry(|entry| {
+                !entry.file_type().is_dir()
+                    || crate::watcher::should_track_subtree(
+                        entry.path(),
+                        &self.repo_root,
+                        &self.config,
+                    )
+            })
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().is_file())
         {
@@ -1062,7 +1100,9 @@ impl Indexer {
             if !decision.should_index() {
                 continue;
             }
+            let stamp = file_stamp(path)?;
             let ingest = self.add_document(&mut writer, path)?;
+            stamps.insert(ingest.rel_path.clone(), stamp);
             self.maybe_update_symbols(&ingest);
             if self.symbols_store.is_some() {
                 for edge in ingest.impact_edges {
@@ -1078,6 +1118,7 @@ impl Indexer {
         if self.symbols_store.is_some() {
             self.write_impact_graph(impact_edges.into_iter().collect(), impact_diagnostics)?;
         }
+        *self.file_stamps.lock() = Some(stamps);
         self.write_index_ready_marker(self.num_docs())?;
         if let Err(err) = self.ensure_run_tests_config() {
             warn!(
@@ -1090,6 +1131,12 @@ impl Indexer {
     }
 
     fn ensure_run_tests_config(&self) -> Result<()> {
+        if matches!(
+            std::env::var("DOCDEX_WORKSPACE_METADATA").ok().as_deref(),
+            Some("0" | "false" | "off")
+        ) {
+            return Ok(());
+        }
         let config_path = self.repo_root.join(RUN_TESTS_CONFIG_PATH);
         if config_path.exists() {
             return Ok(());
@@ -1207,16 +1254,35 @@ impl Indexer {
 
     pub(crate) fn ingest_file_blocking(&self, file: PathBuf) -> Result<FileDecision> {
         let _gate = self.indexing_gate.acquire()?;
+        let _background = crate::resources::Background::enter();
+        self.ingest_file_uncoordinated(file)
+    }
+
+    fn ingest_file_uncoordinated(&self, file: PathBuf) -> Result<FileDecision> {
+        let _operation = crate::resources::Operation::enter(&self.repo_root, "incremental_index");
         let path = file.canonicalize().context("resolve file")?;
         let decision = decide_file(&path, &self.repo_root, &self.config);
         if !decision.should_index() {
             return Ok(decision);
         }
+        let rel = self.rel_path(&path)?;
+        let stamp = file_stamp(&path)?;
+        if self
+            .file_stamps
+            .lock()
+            .as_ref()
+            .and_then(|stamps| stamps.get(&rel))
+            == Some(&stamp)
+        {
+            let _cached =
+                crate::resources::Operation::enter(&self.repo_root, "unchanged_file_skipped");
+            return Ok(decision);
+        }
         let writer_arc = self.writer()?;
         let mut writer = writer_arc.lock();
-        let rel = self.rel_path(&path)?;
         let term = Term::from_field_text(self.doc_id_field, &rel);
         writer.delete_term(term);
+        let stamp = file_stamp(&path)?;
         let ingest = self.add_document(&mut writer, &path)?;
         self.maybe_update_symbols(&ingest);
         writer.commit()?;
@@ -1227,6 +1293,9 @@ impl Indexer {
                 &ingest.impact_edges,
                 ingest.impact_diagnostics,
             )?;
+        }
+        if let Some(stamps) = self.file_stamps.lock().as_mut() {
+            stamps.insert(rel, stamp);
         }
         self.write_index_ready_marker(self.num_docs())?;
         Ok(decision)
@@ -1244,6 +1313,12 @@ impl Indexer {
 
     pub(crate) fn delete_file_blocking(&self, file: PathBuf) -> Result<()> {
         let _gate = self.indexing_gate.acquire()?;
+        let _background = crate::resources::Background::enter();
+        self.delete_file_uncoordinated(file)
+    }
+
+    fn delete_file_uncoordinated(&self, file: PathBuf) -> Result<()> {
+        let _operation = crate::resources::Operation::enter(&self.repo_root, "incremental_delete");
         let rel = match self.rel_path(&file) {
             Ok(rel) => rel,
             Err(_) => return Ok(()),
@@ -1257,6 +1332,9 @@ impl Indexer {
         self.delete_symbols_record(&rel);
         if self.symbols_store.is_some() {
             self.remove_impact_edges_for_file(&rel)?;
+        }
+        if let Some(stamps) = self.file_stamps.lock().as_mut() {
+            stamps.remove(&rel);
         }
         self.write_index_ready_marker(self.num_docs())?;
         Ok(())
@@ -1304,6 +1382,8 @@ impl Indexer {
         query: &str,
         limit: usize,
     ) -> Result<(Vec<Hit>, SearchQueryMeta)> {
+        let _operation = crate::resources::Operation::enter(&self.repo_root, "search");
+
         let raw = query.trim();
         if raw.is_empty() {
             return Err(SearchError::InvalidQuery {
@@ -1598,6 +1678,7 @@ impl Indexer {
     }
 
     pub fn read_symbols(&self, rel_path: &str) -> Result<Option<SymbolsResponseV1>> {
+        let _operation = crate::resources::Operation::enter(&self.repo_root, "symbols_read");
         self.ensure_code_intelligence_allowed()?;
         let Some(store) = self.symbols_store.as_ref() else {
             return Ok(None);
@@ -1609,6 +1690,7 @@ impl Indexer {
     }
 
     pub fn read_ast(&self, rel_path: &str, max_nodes: usize) -> Result<Option<AstResponseV1>> {
+        let _operation = crate::resources::Operation::enter(&self.repo_root, "ast_read");
         self.ensure_code_intelligence_allowed()?;
         let Some(store) = self.symbols_store.as_ref() else {
             return Ok(None);
@@ -1739,48 +1821,90 @@ impl Indexer {
     /// reconcile changes made while it was stopped without rereading every file
     /// during mount.
     pub fn needs_reconciliation(&self) -> Result<bool> {
-        let marker = match fs::read(self.index_ready_path())
-            .ok()
-            .and_then(|raw| serde_json::from_slice::<IndexReadyRecord>(&raw).ok())
-        {
-            Some(marker) => marker,
-            None => return Ok(true),
-        };
-        let (snapshots, total) = self.list_docs(0, usize::MAX)?;
-        if total != marker.docs_indexed || snapshots.len() as u64 != total {
+        let _operation =
+            crate::resources::Operation::enter(&self.repo_root, "reconciliation_check");
+        let Some(stamps) = self.file_stamps.lock().clone() else {
             return Ok(true);
-        }
-        let mut indexed_paths = snapshots
-            .into_iter()
-            .map(|snapshot| snapshot.rel_path)
-            .collect::<BTreeSet<_>>();
+        };
+        Ok(stamps != self.scan_file_stamps()?)
+    }
+
+    fn scan_file_stamps(&self) -> Result<BTreeMap<String, FileStamp>> {
+        let mut stamps = BTreeMap::new();
         for entry in WalkDir::new(&self.repo_root)
             .into_iter()
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| entry.file_type().is_file())
+            .filter_entry(|entry| {
+                !entry.file_type().is_dir()
+                    || crate::watcher::should_track_subtree(
+                        entry.path(),
+                        &self.repo_root,
+                        &self.config,
+                    )
+            })
         {
-            let path = entry.path();
-            if !decide_file(path, &self.repo_root, &self.config).should_index() {
-                continue;
-            }
-            let rel_path = self.rel_path(path)?;
-            if !indexed_paths.remove(&rel_path) {
-                return Ok(true);
-            }
-            let modified_at_ms = match entry
-                .metadata()
-                .ok()
-                .and_then(|metadata| metadata.modified().ok())
-                .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+            let entry = entry?;
+            if entry.file_type().is_file()
+                && decide_file(entry.path(), &self.repo_root, &self.config).should_index()
             {
-                Some(modified) => modified.as_millis(),
-                None => return Ok(true),
-            };
-            if modified_at_ms > marker.indexed_at_epoch_ms {
-                return Ok(true);
+                stamps.insert(self.rel_path(entry.path())?, file_stamp(entry.path())?);
             }
         }
-        Ok(!indexed_paths.is_empty())
+        Ok(stamps)
+    }
+
+    /// Reconcile changed/deleted files without deleting and rebuilding the index.
+    /// A persisted metadata manifest avoids decompressing every stored document
+    /// on later mounts. A legacy index is upgraded once, without losing data.
+    pub async fn reconcile_all(&self) -> Result<()> {
+        let indexer = self.clone();
+        tokio::task::spawn_blocking(move || indexer.reconcile_all_blocking())
+            .await
+            .map_err(|err| anyhow!("reconciliation task aborted: {err}"))?
+    }
+
+    fn reconcile_all_blocking(&self) -> Result<()> {
+        let _gate = self.indexing_gate.acquire()?;
+        let _background = crate::resources::Background::enter();
+        let _operation = crate::resources::Operation::enter(&self.repo_root, "reconcile");
+        let previous = self.file_stamps.lock().clone();
+        let current = self.scan_file_stamps()?;
+        let old_paths: BTreeSet<String> = match &previous {
+            Some(stamps) => stamps.keys().cloned().collect(),
+            None => self
+                .list_docs(0, usize::MAX)?
+                .0
+                .into_iter()
+                .map(|doc| doc.rel_path)
+                .collect(),
+        };
+        // Without per-file stamps, compare stored content once rather than trust
+        // a global timestamp that an unrelated incremental update can advance.
+        for (path, stamp) in &current {
+            let changed = if let Some(previous) = &previous {
+                previous.get(path) != Some(stamp)
+            } else if old_paths.contains(path) && !self.config.repo_encryption().is_enabled() {
+                let stored = self.fetch_document(path)?;
+                let body = stored
+                    .as_ref()
+                    .and_then(|doc| doc.get_first(self.body_field))
+                    .and_then(|v| v.as_text());
+                match fs::read_to_string(self.repo_root.join(path)) {
+                    Ok(current) => body != Some(current.as_str()),
+                    Err(_) => true,
+                }
+            } else {
+                true
+            };
+            if changed {
+                self.ingest_file_uncoordinated(self.repo_root.join(path))?;
+            }
+        }
+        for deleted in old_paths.iter().filter(|path| !current.contains_key(*path)) {
+            self.delete_file_uncoordinated(self.repo_root.join(deleted))?;
+        }
+        *self.file_stamps.lock() = Some(current);
+        self.write_index_ready_marker(self.num_docs())?;
+        Ok(())
     }
 
     pub fn indexing_in_progress(&self) -> Result<bool> {
@@ -1830,9 +1954,12 @@ impl Indexer {
         let record = IndexReadyRecord {
             indexed_at_epoch_ms,
             docs_indexed,
+            files: self.file_stamps.lock().clone(),
         };
         let payload = serde_json::to_vec(&record)?;
-        fs::write(self.index_ready_path(), payload)?;
+        let mut file = tempfile::NamedTempFile::new_in(self.config.state_dir())?;
+        file.write_all(&payload)?;
+        file.persist(self.index_ready_path())?;
         Ok(())
     }
 
@@ -1877,6 +2004,14 @@ impl Indexer {
         let state_dir = self.config.state_dir().to_path_buf();
         let index_size_bytes = walkdir::WalkDir::new(&state_dir)
             .into_iter()
+            .filter_entry(|entry| {
+                !entry.file_type().is_dir()
+                    || crate::watcher::should_track_subtree(
+                        entry.path(),
+                        &self.repo_root,
+                        &self.config,
+                    )
+            })
             .filter_map(|entry| entry.ok())
             .filter_map(|entry| entry.metadata().ok())
             .map(|meta| meta.len())
@@ -3721,6 +3856,7 @@ mod tests {
         IndexConfig, Indexer, IndexingGate,
     };
     use anyhow::Result;
+    use std::fs;
     use std::sync::{mpsc, Arc, Barrier};
     use std::time::Duration;
     use tempfile::TempDir;
@@ -3744,6 +3880,47 @@ mod tests {
             provenance: None,
             retrieval_explanation: None,
         }
+    }
+
+    #[tokio::test]
+    async fn reconciliation_preserves_unchanged_segments_and_detects_offline_changes() -> Result<()>
+    {
+        let repo = tempfile::TempDir::new()?;
+        let state = tempfile::TempDir::new()?;
+        fs::write(repo.path().join("one.rs"), "pub fn original() {}")?;
+        fs::write(repo.path().join("two.rs"), "pub fn retained() {}")?;
+        let config = IndexConfig::with_overrides(
+            repo.path(),
+            Some(state.path().to_path_buf()),
+            vec![],
+            vec![],
+            true,
+        )?;
+        let indexer = Indexer::with_config(repo.path().to_path_buf(), config.clone())?;
+        indexer.reindex_all().await?;
+        indexer.reconcile_all().await?; // include optional generated workspace metadata
+        let metadata = fs::read(indexer.state_dir().join("meta.json"))?;
+        indexer.reconcile_all().await?;
+        assert_eq!(metadata, fs::read(indexer.state_dir().join("meta.json"))?);
+        // An unrelated ingest must not hide a prior offline change.
+        fs::write(repo.path().join("one.rs"), "pub fn updated_sentinel() {}")?;
+        fs::write(repo.path().join("three.rs"), "pub fn inserted() {}")?;
+        indexer.ingest_file(repo.path().join("three.rs")).await?;
+        assert!(indexer.needs_reconciliation()?);
+        fs::remove_file(repo.path().join("two.rs"))?;
+        indexer.reconcile_all().await?;
+        assert!(!indexer.needs_reconciliation()?);
+        assert!(indexer
+            .read_symbols("one.rs")?
+            .unwrap()
+            .symbols
+            .iter()
+            .any(|s| s.name == "updated_sentinel"));
+        assert!(indexer.read_symbols("two.rs")?.is_none());
+        drop(indexer);
+        let reopened = Indexer::with_config(repo.path().to_path_buf(), config)?;
+        assert!(!reopened.needs_reconciliation()?);
+        Ok(())
     }
 
     #[test]

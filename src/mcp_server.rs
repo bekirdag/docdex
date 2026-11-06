@@ -42,7 +42,6 @@ use crate::orchestrator::{
 use crate::profiles::{ProfileEmbedder, ProfileManager};
 use crate::ratelimit::RateLimiter;
 use crate::search;
-use crate::symbols::SymbolsStore;
 use crate::tier2::Tier2Config;
 use crate::tree::{render_tree, TreeOptions};
 use anyhow::{Context, Result};
@@ -682,6 +681,30 @@ impl McpService {
         auth_token: Option<String>,
         delegation_metrics: Arc<DelegationMetrics>,
     ) -> Result<Self> {
+        Self::new_with_indexer(
+            repo_root,
+            index_config,
+            max_results,
+            rate_limit_per_min,
+            rate_limit_burst,
+            runtime_options,
+            auth_token,
+            delegation_metrics,
+            None,
+        )
+    }
+
+    pub(crate) fn new_with_indexer(
+        repo_root: PathBuf,
+        index_config: IndexConfig,
+        max_results: usize,
+        rate_limit_per_min: u32,
+        rate_limit_burst: u32,
+        runtime_options: McpRuntimeOptions,
+        auth_token: Option<String>,
+        delegation_metrics: Arc<DelegationMetrics>,
+        shared_indexer: Option<Arc<Indexer>>,
+    ) -> Result<Self> {
         let repo_root = repo_root
             .canonicalize()
             .context("resolve repo root for MCP server")?;
@@ -717,18 +740,23 @@ impl McpService {
         let index_config = index_config.with_repo_encryption(repo_encryption_from_config.clone());
         // Try to open with a writer; if the index is already locked (another docdexd
         // instance is indexing), fall back to read-only so search/open still work.
-        let indexer = match Indexer::with_config(repo_root.clone(), index_config.clone()) {
-            Ok(ix) => ix,
-            Err(err) if is_lock_busy(&err) => {
-                warn!(
+        let indexer = if let Some(indexer) = shared_indexer {
+            indexer
+        } else {
+            Arc::new(
+                match Indexer::with_config(repo_root.clone(), index_config.clone()) {
+                    Ok(ix) => ix,
+                    Err(err) if is_lock_busy(&err) => {
+                        warn!(
                     "docdex mcp: index writer is busy; opening read-only (disable other docdexd to enable indexing)"
                 );
-                Indexer::with_config_read_only(repo_root.clone(), index_config)
-                    .context("open MCP repository index read-only")?
-            }
-            Err(err) => return Err(err).context("open MCP repository index"),
+                        Indexer::with_config_read_only(repo_root.clone(), index_config)
+                            .context("open MCP repository index read-only")?
+                    }
+                    Err(err) => return Err(err).context("open MCP repository index"),
+                },
+            )
         };
-        let indexer = Arc::new(indexer);
         let global_state_dir = runtime_options.global_state_dir.clone().or_else(|| {
             config
                 .as_ref()
@@ -851,8 +879,11 @@ impl McpService {
             .unwrap_or(DEFAULT_FALLBACK_EMBED_DIM)
             .max(1);
         let profile_embedding_timeout_ms = embedding_timeout_ms;
+        let profile_state_dir = embeddings::env_non_empty("DOCDEX_PROFILE_STATE_DIR")
+            .map(std::path::PathBuf::from)
+            .or_else(|| global_state_dir.clone());
         let profile_state = {
-            let manager = if let Some(state_dir) = global_state_dir.as_ref() {
+            let manager = if let Some(state_dir) = profile_state_dir.as_ref() {
                 Some(
                     ProfileManager::new(state_dir, profile_embedding_dim).with_context(|| {
                         format!(

@@ -554,6 +554,10 @@ impl PersonalPreferencesStore {
             return Ok(PersonalPreferencesTranscriptScanSummary::default());
         }
         let limit = limit.unwrap_or(DEFAULT_TRANSCRIPT_SCAN_LIMIT).clamp(1, 256);
+        let _operation = crate::resources::Operation::enter(&self.db_path, "transcript_scan");
+        // One persistent metadata cache across daemon restarts. Check BEFORE
+        // reading/parsing: external session deduplication after parsing is too late.
+        let cache = open_db(&self.db_path)?;
         let candidates = collect_client_transcript_candidates(config, limit.saturating_mul(6))?;
         let mut summary = PersonalPreferencesTranscriptScanSummary::default();
         let mut per_source = BTreeMap::<String, PersonalPreferencesTranscriptSourceSummary>::new();
@@ -577,16 +581,50 @@ impl PersonalPreferencesStore {
                 summary.scanned_files += 1;
                 source_summary.scanned_files += 1;
             }
+            let stamp = match transcript_stamp(&candidate.path) {
+                Ok(stamp) => stamp,
+                Err(_) => continue,
+            };
+            let bytes = fs::metadata(&candidate.path)?.len();
+            if bytes > MAX_AUTO_TRANSCRIPT_BYTES {
+                summary.deferred_large_files += 1;
+                let _deferred =
+                    crate::resources::Operation::enter(&candidate.path, "transcript_deferred_size");
+                continue;
+            }
+            let cache_key = transcript_cache_key(&candidate);
+            let previous: Option<String> = cache
+                .query_row(
+                    "SELECT value FROM personal_preferences_meta WHERE key = ?1",
+                    params![cache_key],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if previous.as_deref() == Some(&stamp) {
+                summary.cached_files += 1;
+                summary.skipped_existing += 1;
+                source_summary.skipped_existing += 1;
+                let _cached =
+                    crate::resources::Operation::enter(&candidate.path, "transcript_cache_hit");
+                continue;
+            }
+            if summary.bytes_read.saturating_add(bytes) > MAX_AUTO_SCAN_BYTES {
+                break;
+            }
+            summary.bytes_read += bytes;
             let imports = match load_transcript_candidate_imports(&candidate) {
                 Ok(imports) => imports,
                 Err(_) => {
                     summary.parse_errors += 1;
                     source_summary.parse_errors += 1;
+                    cache_transcript_stamp(&cache, &cache_key, &stamp)?;
                     continue;
                 }
             };
+            let mut complete = true;
             for import in imports {
                 if summary.sessions_detected >= limit {
+                    complete = false;
                     break;
                 }
                 summary.sessions_detected += 1;
@@ -643,6 +681,9 @@ impl PersonalPreferencesStore {
                 }
                 summary.captures_created += 1;
                 source_summary.captures_created += 1;
+            }
+            if complete {
+                cache_transcript_stamp(&cache, &cache_key, &stamp)?;
             }
             if summary.sessions_detected >= limit {
                 break;

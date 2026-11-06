@@ -282,10 +282,14 @@ async fn embed_repo_memory_text(
     text: &str,
 ) -> Result<RepoEmbedding, String> {
     let stored_dim = target.store.embedding_dim().ok().flatten();
+    let strict = std::env::var("DOCDEX_EMBEDDING_STRICT").as_deref() == Ok("1");
     match target.embedder.embed(text).await {
         Ok(embedding) => {
             if let Some(expected) = stored_dim {
                 if embedding.len() != expected {
+                    if strict {
+                        return Err("repo_embedding_dimension_mismatch".to_string());
+                    }
                     if expected == 0 {
                         return Err("repo_embedding_dim_unavailable".to_string());
                     }
@@ -303,6 +307,9 @@ async fn embed_repo_memory_text(
             })
         }
         Err(err) => {
+            if strict {
+                return Err(truncate_reason(&err.to_string()));
+            }
             let expected =
                 stored_dim.or_else(|| (target.fallback_dim > 0).then_some(target.fallback_dim));
             let Some(expected) = expected else {

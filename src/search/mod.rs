@@ -1133,6 +1133,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/ai-help", get(ai_help_handler))
         .route("/metrics", get(metrics_handler))
+        .route("/v1/diagnostics/resources", get(resource_diagnostics_handler))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             security_middleware,
@@ -1385,7 +1386,7 @@ pub(crate) async fn memory_recall_handler(
 
     let started = Instant::now();
     let repo_root = repo.indexer.repo_root().display().to_string();
-    let query_embedding = match memory.embedder.embed(query).await {
+    let query_embedding = match memory.embedder.embed_query(query).await {
         Ok(value) => value,
         Err(err) => {
             let (code, status, message) = if let Some(app) = err.downcast_ref::<AppError>() {
@@ -1553,6 +1554,16 @@ pub(crate) async fn memory_delete_handler(
 
 async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
     state.metrics.render_prometheus()
+}
+
+async fn resource_diagnostics_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let mut report = crate::resources::diagnostics();
+    report["repositories"] = state
+        .repos
+        .as_ref()
+        .map(|manager| serde_json::json!(manager.resource_snapshots()))
+        .unwrap_or_else(|| serde_json::json!([]));
+    Json(report)
 }
 
 #[derive(Serialize)]
@@ -4395,6 +4406,11 @@ async fn metrics_middleware(
     if matches!(path, "/healthz" | "/metrics") {
         return Ok(next.run(request).await);
     }
+    let _interactive = if matches!(path, "/search" | "/v1/mcp" | "/v1/chat/completions") {
+        Some(crate::resources::Interactive::enter())
+    } else {
+        None
+    };
     let start = Instant::now();
     let response = next.run(request).await;
     let duration_ms = start.elapsed().as_millis();

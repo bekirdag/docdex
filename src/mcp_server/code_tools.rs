@@ -11,16 +11,17 @@ impl McpServer {
         }
         let rel_path = normalize_rel_path(&args.path).ok_or(InvalidPathError)?;
         let rel_str = rel_path.to_string_lossy().replace('\\', "/");
-        let store = SymbolsStore::new(self.indexer.repo_root(), self.indexer.config().state_dir())
-            .context("open symbols store")?;
-        if store.requires_reindex()? {
-            return Err(StaleSymbolsIndexError.into());
-        }
-        let payload = store
-            .read_symbols(&rel_str)?
-            .ok_or_else(|| MissingSymbolsIndexError {
-                rel_path: rel_str.to_string(),
-            })?;
+        let indexer = Arc::clone(&self.indexer);
+        let payload = tokio::task::spawn_blocking(move || -> Result<_> {
+            if indexer.symbols_reindex_required()? {
+                return Err(StaleSymbolsIndexError.into());
+            }
+            indexer
+                .read_symbols(&rel_str)?
+                .ok_or_else(|| MissingSymbolsIndexError { rel_path: rel_str }.into())
+        })
+        .await
+        .context("symbols read task aborted")??;
         Ok(serde_json::to_value(payload).context("serialize symbols payload")?)
     }
 
@@ -34,20 +35,21 @@ impl McpServer {
         }
         let rel_path = normalize_rel_path(&args.path).ok_or(InvalidPathError)?;
         let rel_str = rel_path.to_string_lossy().replace('\\', "/");
-        let store = SymbolsStore::new(self.indexer.repo_root(), self.indexer.config().state_dir())
-            .context("open symbols store")?;
-        if store.requires_reindex()? {
-            return Err(StaleSymbolsIndexError.into());
-        }
         let max_nodes = args
             .max_nodes
             .unwrap_or(AST_DEFAULT_MAX_NODES)
             .clamp(1, AST_MAX_NODES);
-        let payload = store
-            .read_ast(&rel_str, max_nodes)?
-            .ok_or_else(|| MissingAstIndexError {
-                rel_path: rel_str.to_string(),
-            })?;
+        let indexer = Arc::clone(&self.indexer);
+        let payload = tokio::task::spawn_blocking(move || -> Result<_> {
+            if indexer.symbols_reindex_required()? {
+                return Err(StaleSymbolsIndexError.into());
+            }
+            indexer
+                .read_ast(&rel_str, max_nodes)?
+                .ok_or_else(|| MissingAstIndexError { rel_path: rel_str }.into())
+        })
+        .await
+        .context("AST read task aborted")??;
         Ok(serde_json::to_value(payload).context("serialize ast payload")?)
     }
 
@@ -242,6 +244,7 @@ impl McpServer {
         &self,
         memory: &McpMemoryState,
         text: &str,
+        query: bool,
     ) -> Result<MemoryEmbedding> {
         let stored_dim = match memory.store.embedding_dim() {
             Ok(dim) => dim,
@@ -253,10 +256,22 @@ impl McpServer {
                 None
             }
         };
-        match memory.embedder.embed(text).await {
+        let result = if query {
+            memory.embedder.embed_query(text).await
+        } else {
+            memory.embedder.embed(text).await
+        };
+        match result {
             Ok(embedding) => {
                 if let Some(expected) = stored_dim {
                     if embedding.len() != expected {
+                        if std::env::var("DOCDEX_EMBEDDING_STRICT").ok().as_deref() == Some("1") {
+                            return Err(AppError::new(
+                                ERR_EMBEDDING_FAILED,
+                                "Embedding dimension changed; rebuild the managed index",
+                            )
+                            .into());
+                        }
                         warn!(
                             provider = memory.embedder.provider(),
                             model = memory.embedder.model(),
@@ -279,6 +294,9 @@ impl McpServer {
                 })
             }
             Err(err) => {
+                if std::env::var("DOCDEX_EMBEDDING_STRICT").ok().as_deref() == Some("1") {
+                    return Err(err);
+                }
                 warn!(
                     error = ?err,
                     "memory embedding failed; falling back to local hash"

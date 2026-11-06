@@ -14,6 +14,15 @@ const WATCH_EVENT_CAPACITY: usize = 256;
 const WATCH_ACTION_CAPACITY: usize = 256;
 const WATCH_BATCH_MAX_ACTIONS: usize = 256;
 const WATCH_BATCH_WINDOW: Duration = Duration::from_millis(25);
+const WATCHER_STARTUP_TIMEOUT_ENV: &str = "DOCDEX_WATCHER_STARTUP_TIMEOUT_MS";
+
+fn watcher_startup_timeout(raw: Option<&str>) -> Duration {
+    let millis = raw
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| (1_000..=120_000).contains(value))
+        .unwrap_or(30_000);
+    Duration::from_millis(millis)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum WatchAction {
@@ -173,7 +182,7 @@ async fn process_action_batch(indexer: &Arc<Indexer>, actions: Vec<WatchAction>)
         let idx = Arc::clone(indexer);
         match action {
             WatchAction::Rescan => {
-                if let Err(err) = idx.reindex_all().await {
+                if let Err(err) = idx.reconcile_all().await {
                     warn!(
                         target: "docdexd",
                         error = ?err,
@@ -277,7 +286,7 @@ fn start_blocking_watcher(
                 }
             };
             let _ = watcher.configure(Config::default().with_poll_interval(Duration::from_secs(2)));
-            if let Err(err) = watcher.watch(&repo_root, RecursiveMode::Recursive) {
+            if let Err(err) = watch_included_directories(&mut watcher, &repo_root, &repo_root, &config, &watcher_stop_flag) {
                 warn!(
                     target: "docdexd",
                     error = ?err,
@@ -312,6 +321,18 @@ fn start_blocking_watcher(
                 }
                 match event_rx.recv_timeout(Duration::from_millis(250)) {
                     Ok(res) => {
+                        if let Ok(event) = &res {
+                            if matches!(event.kind, EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(_))) {
+                                for path in &event.paths {
+                                    if path.is_dir() && should_track_subtree(path, &repo_root, &config) {
+                                        if let Err(err) = watch_included_directories(&mut watcher, path, &repo_root, &config, &watcher_stop_flag) {
+                                            warn!(error = ?err, "failed to watch new repository directories");
+                                            action_overflowed.store(true, Ordering::Release);
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         if let Err(err) =
                             handle_event(&repo_root, &config, &tx, &action_overflowed, res)
                         {
@@ -331,7 +352,47 @@ fn start_blocking_watcher(
                 }
             }
         })?;
-    match ready_rx.recv_timeout(Duration::from_secs(2)) {
+    let timeout =
+        watcher_startup_timeout(std::env::var(WATCHER_STARTUP_TIMEOUT_ENV).ok().as_deref());
+    wait_for_watcher_ready(ready_rx, handle, &stop_flag, &wait_repo_root, timeout)
+}
+
+fn watch_included_directories(
+    watcher: &mut RecommendedWatcher,
+    start: &Path,
+    repo_root: &Path,
+    config: &index::IndexConfig,
+    stop: &AtomicBool,
+) -> Result<(), notify::Error> {
+    // Recursive notify watches traverse node_modules/target before event filters
+    // run. Register only included directories, with cancellation between entries.
+    for entry in walkdir::WalkDir::new(start)
+        .into_iter()
+        .filter_entry(|entry| {
+            !stop.load(Ordering::Relaxed)
+                && (!entry.file_type().is_dir()
+                    || should_track_subtree(entry.path(), repo_root, config))
+        })
+    {
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+        let entry = entry.map_err(|err| notify::Error::generic(&err.to_string()))?;
+        if entry.file_type().is_dir() {
+            watcher.watch(entry.path(), RecursiveMode::NonRecursive)?;
+        }
+    }
+    Ok(())
+}
+
+fn wait_for_watcher_ready(
+    ready_rx: std::sync::mpsc::Receiver<Result<(), String>>,
+    handle: std::thread::JoinHandle<()>,
+    stop_flag: &AtomicBool,
+    repo_root: &Path,
+    timeout: Duration,
+) -> Result<std::thread::JoinHandle<()>> {
+    match ready_rx.recv_timeout(timeout) {
         Ok(Ok(())) => Ok(handle),
         Ok(Err(message)) => {
             stop_flag.store(true, Ordering::Relaxed);
@@ -344,8 +405,8 @@ fn start_blocking_watcher(
                 let _ = handle.join();
             }
             Err(anyhow!(
-                "filesystem watcher for {} did not become ready: {err}",
-                wait_repo_root.display()
+                "filesystem watcher for {} did not become ready within {} ms ({WATCHER_STARTUP_TIMEOUT_ENV}): {err}",
+                repo_root.display(), timeout.as_millis()
             ))
         }
     }
@@ -490,7 +551,11 @@ fn rename_requires_full_reconcile(event: &Event, mode: RenameMode) -> bool {
     }
 }
 
-fn should_track_subtree(path: &Path, repo_root: &Path, config: &index::IndexConfig) -> bool {
+pub(crate) fn should_track_subtree(
+    path: &Path,
+    repo_root: &Path,
+    config: &index::IndexConfig,
+) -> bool {
     if path.starts_with(config.state_dir()) || !path.starts_with(repo_root) {
         return false;
     }
@@ -568,6 +633,78 @@ mod tests {
     use tokio::sync::mpsc;
 
     const TEST_KEY: &str = "01234567890123456789012345678901";
+
+    #[test]
+    fn watcher_startup_timeout_is_bounded_and_defaults_for_invalid_values() {
+        for value in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("999"),
+            Some("120001"),
+            Some("-1"),
+            Some("30s"),
+        ] {
+            assert_eq!(super::watcher_startup_timeout(value).as_millis(), 30_000);
+        }
+        for value in [1_000, 30_000, 120_000] {
+            assert_eq!(
+                super::watcher_startup_timeout(Some(&format!(" {value} "))).as_millis(),
+                value
+            );
+        }
+    }
+
+    #[test]
+    fn watcher_readiness_can_take_longer_than_two_seconds() -> Result<()> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(2_100));
+            tx.send(Ok(())).unwrap();
+        });
+        let stop = AtomicBool::new(false);
+        super::wait_for_watcher_ready(
+            rx,
+            handle,
+            &stop,
+            std::path::Path::new("repo"),
+            super::watcher_startup_timeout(None),
+        )?
+        .join()
+        .unwrap();
+        assert!(!stop.load(Ordering::Relaxed));
+        Ok(())
+    }
+
+    #[test]
+    fn watcher_readiness_timeout_stops_owned_thread_without_waiting_for_registration() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (stopped_tx, stopped_rx) = std::sync::mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = Arc::clone(&stop);
+        let handle = std::thread::spawn(move || {
+            while !thread_stop.load(Ordering::Relaxed) {
+                std::thread::yield_now();
+            }
+            drop(tx);
+            stopped_tx.send(()).unwrap();
+        });
+        let error = super::wait_for_watcher_ready(
+            rx,
+            handle,
+            &stop,
+            std::path::Path::new("repo"),
+            std::time::Duration::from_millis(5),
+        )
+        .unwrap_err();
+        assert!(stop.load(Ordering::Relaxed));
+        assert!(error
+            .to_string()
+            .contains("within 5 ms (DOCDEX_WATCHER_STARTUP_TIMEOUT_MS)"));
+        stopped_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+    }
 
     #[test]
     fn encrypted_repos_do_not_start_filesystem_watcher() -> Result<()> {

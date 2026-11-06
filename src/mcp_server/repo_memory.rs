@@ -31,7 +31,7 @@ impl McpServer {
             }),
         );
         let started = Instant::now();
-        let embedding = self.embed_memory_text(&memory, text).await?;
+        let embedding = self.embed_memory_text(&memory, text, false).await?;
 
         let created_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -102,7 +102,7 @@ impl McpServer {
             }),
         );
         let started = Instant::now();
-        let embedding = self.embed_memory_text(&memory, query).await?;
+        let embedding = self.embed_memory_text(&memory, query, true).await?;
 
         let store = memory.store.clone();
         let items = tokio::task::spawn_blocking(move || store.recall(&embedding.embedding, top_k))

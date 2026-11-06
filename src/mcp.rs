@@ -503,7 +503,20 @@ impl McpProxyRouter {
         }
         let mut repo = self.config.repo.clone();
         repo.repo = repo_root.clone();
+        let shared_indexer = if let Some(manager) = self.config.repo_manager.as_ref() {
+            Some(
+                manager
+                    .mount_repo_async(repo_root.clone())
+                    .await?
+                    .repo
+                    .indexer
+                    .clone(),
+            )
+        } else {
+            None
+        };
         let options = McpSpawnOptions {
+            shared_indexer,
             repo,
             max_results: self.config.max_results,
             rate_limit_per_min: self.config.rate_limit_per_min,
@@ -915,6 +928,7 @@ mod tests {
 
 #[derive(Clone)]
 struct McpSpawnOptions {
+    shared_indexer: Option<Arc<crate::index::Indexer>>,
     repo: crate::config::RepoArgs,
     max_results: usize,
     rate_limit_per_min: u32,
@@ -931,7 +945,9 @@ struct McpSpawnOptions {
 }
 
 async fn spawn_mcp_proxy(options: McpSpawnOptions) -> Result<Arc<McpProxy>> {
-    let service = build_mcp_service(&options)?;
+    let service = tokio::task::spawn_blocking(move || build_mcp_service(&options))
+        .await
+        .map_err(|err| anyhow!("MCP service construction aborted: {err}"))??;
     Ok(McpProxy::new(service))
 }
 
@@ -966,7 +982,7 @@ fn build_mcp_service(options: &McpSpawnOptions) -> Result<crate::mcp_server::Mcp
         options.repo.symbols_enabled(),
     )?
     .with_repo_encryption(repo_encryption);
-    crate::mcp_server::McpService::new(
+    crate::mcp_server::McpService::new_with_indexer(
         repo_root,
         index_config,
         options.max_results,
@@ -983,5 +999,6 @@ fn build_mcp_service(options: &McpSpawnOptions) -> Result<crate::mcp_server::Mcp
         },
         options.auth_token.clone(),
         options.delegation_metrics.clone(),
+        options.shared_indexer.clone(),
     )
 }

@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,6 +16,15 @@ pub fn legacy_repo_id_for_root(repo_root: &Path) -> String {
 }
 
 pub fn repo_fingerprint_sha256(repo_root: &Path) -> Result<String> {
+    let registry =
+        crate::state_paths::StatePaths::new(crate::state_paths::default_state_base_dir()?)
+            .repo_registry_path();
+    select_repo_fingerprint(repo_root, &registry)
+}
+
+// Preserve an established name-based identity only for its registered owner.
+// New repositories are path-scoped: a basename is not a repository identity.
+fn select_repo_fingerprint(repo_root: &Path, registry_path: &Path) -> Result<String> {
     let repo_root = repo_root
         .canonicalize()
         .unwrap_or_else(|_| repo_root.to_path_buf());
@@ -23,8 +32,31 @@ pub fn repo_fingerprint_sha256(repo_root: &Path) -> Result<String> {
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_else(|| repo_root.to_string_lossy().to_string());
-    let payload = format!("v2|name|{}", repo_name);
-    Ok(hex::encode(Sha256::digest(payload.as_bytes())))
+    let legacy = hex::encode(Sha256::digest(format!("v2|name|{}", repo_name).as_bytes()));
+    let canonical = normalize_path(&repo_root);
+    let registry: Option<serde_json::Value> = match fs::read(registry_path) {
+        Ok(bytes) => Some(serde_json::from_slice(&bytes).with_context(|| {
+            format!(
+                "parse repository identity registry {}",
+                registry_path.display()
+            )
+        })?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error).context("read repository identity registry"),
+    };
+    if registry
+        .as_ref()
+        .and_then(|value| value.get("repos"))
+        .and_then(|repos| repos.get(&legacy))
+        .and_then(|entry| entry.get("canonical_path"))
+        .and_then(|value| value.as_str())
+        == Some(canonical.as_str())
+    {
+        return Ok(legacy);
+    }
+    Ok(hex::encode(Sha256::digest(
+        format!("v3|path|{}", canonical).as_bytes(),
+    )))
 }
 
 pub(crate) fn git_dir_for_repo(repo_root: &Path) -> Option<PathBuf> {
@@ -62,6 +94,42 @@ mod tests {
     use anyhow::Result;
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    fn same_basename_workspaces_have_distinct_stable_identities() -> Result<()> {
+        let temp = TempDir::new()?;
+        let a = temp.path().join("a/workspace");
+        let b = temp.path().join("b/workspace");
+        fs::create_dir_all(&a)?;
+        fs::create_dir_all(&b)?;
+        let registry = temp.path().join("registry.json");
+        let first = select_repo_fingerprint(&a, &registry)?;
+        assert_ne!(first, select_repo_fingerprint(&b, &registry)?);
+        assert_eq!(first, select_repo_fingerprint(&a, &registry)?);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_identity_stays_with_registered_owner_only() -> Result<()> {
+        let temp = TempDir::new()?;
+        let a = temp.path().join("a/workspace");
+        let b = temp.path().join("b/workspace");
+        fs::create_dir_all(&a)?;
+        fs::create_dir_all(&b)?;
+        let registry = temp.path().join("registry.json");
+        let legacy = hex::encode(Sha256::digest(b"v2|name|workspace"));
+        fs::write(
+            &registry,
+            serde_json::to_vec(&serde_json::json!({
+                "version":1,"repos":{legacy.clone():{"canonical_path":normalize_path(&a),"state_key":legacy}}
+            }))?,
+        )?;
+        assert_eq!(select_repo_fingerprint(&a, &registry)?, legacy);
+        assert_ne!(select_repo_fingerprint(&b, &registry)?, legacy);
+        fs::write(&registry, b"malformed")?;
+        assert!(select_repo_fingerprint(&a, &registry).is_err());
+        Ok(())
+    }
 
     #[test]
     fn normalize_path_resolves_realpath_when_symlinks_available() -> Result<()> {

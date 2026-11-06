@@ -360,6 +360,7 @@ pub struct SymbolsStore {
     repo_id: String,
     db_path: PathBuf,
     legacy_db_path: Option<PathBuf>,
+    connection: std::sync::Arc<parking_lot::Mutex<Option<Connection>>>,
 }
 
 impl SymbolsStore {
@@ -379,6 +380,7 @@ impl SymbolsStore {
             repo_id: repo_id_for_root(repo_root)?,
             db_path,
             legacy_db_path,
+            connection: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         };
         store.ensure_schema_version()?;
         Ok(store)
@@ -399,18 +401,12 @@ impl SymbolsStore {
     }
 
     pub fn reset(&self) -> Result<()> {
-        if self.db_path.exists() {
-            if self.db_path.is_dir() {
-                fs::remove_dir_all(&self.db_path)
-                    .with_context(|| format!("remove {}", self.db_path.display()))?;
-            } else {
-                fs::remove_file(&self.db_path)
-                    .with_context(|| format!("remove {}", self.db_path.display()))?;
-            }
-        }
-        self.ensure_schema_version()?;
-        self.clear_reindex_required()?;
-        Ok(())
+        // Keep the database inode stable for concurrent readers and writers.
+        // Unlinking it can leave connections writing to an unreachable database.
+        let mut conn = self.connection()?;
+        let tx = conn.transaction()?;
+        tx.execute_batch("DELETE FROM symbols; DELETE FROM symbols_files; DELETE FROM ast_nodes; DELETE FROM ast_files; DELETE FROM symbols_meta WHERE key = 'symbols_reindex_required';")?;
+        tx.commit().context("reset symbols store")
     }
 
     pub fn upsert_symbols(&self, rel_path: &str, payload: &SymbolsResponseV1) -> Result<()> {
@@ -882,6 +878,8 @@ impl SymbolsStore {
     fn ensure_schema_version(&self) -> Result<()> {
         let legacy_dir = self.prepare_legacy_dir()?;
         let conn = self.connection()?;
+        // WAL permits symbols/AST reads during incremental index writes.
+        conn.pragma_update(None, "journal_mode", "WAL")?;
         self.init_schema(&conn)?;
         self.validate_migration_steps()?;
         let version = self
@@ -906,8 +904,21 @@ impl SymbolsStore {
         Ok(())
     }
 
-    fn connection(&self) -> Result<Connection> {
-        Connection::open(&self.db_path).with_context(|| format!("open {}", self.db_path.display()))
+    fn connection(&self) -> Result<parking_lot::MappedMutexGuard<'_, Connection>> {
+        let mut slot = self.connection.lock();
+        if slot.is_none() {
+            let conn = Connection::open(&self.db_path)
+                .with_context(|| format!("open {}", self.db_path.display()))?;
+            conn.busy_timeout(std::time::Duration::from_secs(5))?;
+            // A bounded page cache survives requests. Reopening the last WAL
+            // connection on every read churned its shared-memory files as well
+            // as discarding SQLite's useful pages.
+            conn.pragma_update(None, "cache_size", -1024)?;
+            *slot = Some(conn);
+        }
+        Ok(parking_lot::MutexGuard::map(slot, |slot| {
+            slot.as_mut().unwrap()
+        }))
     }
 
     fn init_schema(&self, conn: &Connection) -> Result<()> {
@@ -1067,8 +1078,14 @@ impl SymbolsStore {
                 self.store_meta_text(conn, "parser_versions_changed_at_ms", &now_ms)?;
             }
         }
-        self.store_meta_text(conn, "parser_versions", &current_str)?;
-        self.store_meta_text(conn, "docdex_version", env!("CARGO_PKG_VERSION"))?;
+        if self.read_meta_text(conn, "parser_versions")?.as_deref() != Some(&current_str) {
+            self.store_meta_text(conn, "parser_versions", &current_str)?;
+        }
+        if self.read_meta_text(conn, "docdex_version")?.as_deref()
+            != Some(env!("CARGO_PKG_VERSION"))
+        {
+            self.store_meta_text(conn, "docdex_version", env!("CARGO_PKG_VERSION"))?;
+        }
         Ok(())
     }
 
@@ -1607,6 +1624,74 @@ fn current_parser_versions() -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn symbols_reset_keeps_existing_connections_on_the_same_database() -> Result<()> {
+        let repo = tempfile::TempDir::new()?;
+        let state = tempfile::TempDir::new()?;
+        let store = SymbolsStore::new(repo.path(), state.path())?;
+        let conn = Connection::open(&store.db_path)?;
+        conn.execute(
+            "INSERT INTO symbols_files(file_path) VALUES ('before.rs')",
+            [],
+        )?;
+        store.reset()?;
+        conn.execute(
+            "INSERT INTO symbols_files(file_path) VALUES ('after.rs')",
+            [],
+        )?;
+        let count: i64 = store.connection()?.query_row(
+            "SELECT COUNT(*) FROM symbols_files WHERE file_path='after.rs'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(count, 1);
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM symbols_files WHERE file_path='before.rs'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )?,
+            0
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cloned_symbols_stores_share_a_bounded_connection_cache() -> Result<()> {
+        let repo = tempfile::TempDir::new()?;
+        let state = tempfile::TempDir::new()?;
+        let store = SymbolsStore::new(repo.path(), state.path())?;
+        store.connection()?.execute_batch(
+            "CREATE TEMP TABLE cache_marker(value); INSERT INTO cache_marker VALUES (42);",
+        )?;
+        let cloned = store.clone();
+        drop(store);
+        let conn = cloned.connection()?;
+        assert_eq!(
+            conn.query_row("SELECT value FROM cache_marker", [], |row| row
+                .get::<_, i64>(0))?,
+            42
+        );
+        assert_eq!(
+            conn.pragma_query_value(None, "cache_size", |row| row.get::<_, i64>(0))?,
+            -1024
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn reopening_current_symbols_store_does_not_require_a_write_lock() -> Result<()> {
+        let repo = tempfile::TempDir::new()?;
+        let state = tempfile::TempDir::new()?;
+        let store = SymbolsStore::new(repo.path(), state.path())?;
+        let conn = store.connection()?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let reopened = SymbolsStore::new(repo.path(), state.path())?;
+        assert!(!reopened.requires_reindex()?);
+        conn.execute_batch("ROLLBACK")?;
+        Ok(())
+    }
 
     #[test]
     fn symbols_migration_steps_cover_all_versions() {

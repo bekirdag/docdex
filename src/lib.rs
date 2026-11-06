@@ -55,3 +55,5 @@ pub mod user_memory_sync;
 pub mod util;
 pub mod watcher;
 pub mod web;
+
+pub(crate) mod resources;

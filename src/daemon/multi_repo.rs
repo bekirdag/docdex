@@ -461,12 +461,23 @@ impl RepoManager {
     where
         F: FnOnce(),
     {
+        let maintenance = crate::resources::Background::try_maintenance();
+        self.sweep_idle_with_permit(now, before_idle_actions, maintenance);
+    }
+
+    fn sweep_idle_with_permit<F, P>(
+        &self,
+        now: Instant,
+        before_idle_actions: F,
+        maintenance: Option<P>,
+    ) where
+        F: FnOnce(),
+    {
         let mut idle_entries: Vec<IdleCandidate> = Vec::new();
         let mut hibernate_entries: Vec<IdleCandidate> = Vec::new();
         let mut conversation_sweeps: Vec<(String, PathBuf, crate::search::ConversationState)> =
             Vec::new();
         let pinned_repo_id = self.pinned_repo_id.read().clone();
-        let maintenance = crate::resources::Background::try_maintenance();
         let allow_maintenance = maintenance.is_some();
         let sweep_interval =
             Duration::from_secs(self.conversation_config.sweeper_interval_seconds.max(1));
@@ -1309,24 +1320,24 @@ mod tests {
         })
         .await
         .expect("startup indexing completes");
-        // Admission is process-wide: parallel tests can still be indexing
-        // other repositories. Verify eventual retention, not a one-tick grant.
-        tokio::time::timeout(Duration::from_secs(30), async {
-            loop {
-                manager.sweep_idle(now);
-                if conversations
-                    .store
-                    .read_session(&imported.session_id)
-                    .expect("read session")
-                    .is_none()
-                {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("retention sweep completes after competing background work");
+        // Exercise both admission outcomes independently of other tests and
+        // the runner's real cgroup pressure. Production supplies a Background
+        // permit through sweep_idle_with_hook and holds it until pruning ends.
+        let previous_sweep = entry.lock().last_conversation_sweep;
+        manager.sweep_idle_with_permit(now, || {}, None::<()>);
+        assert!(conversations
+            .store
+            .read_session(&imported.session_id)
+            .expect("read deferred session")
+            .is_some());
+        assert_eq!(entry.lock().last_conversation_sweep, previous_sweep);
+
+        manager.sweep_idle_with_permit(now, || {}, Some(()));
+        assert!(conversations
+            .store
+            .read_session(&imported.session_id)
+            .expect("read pruned session")
+            .is_none());
         assert!(conversations
             .knowledge
             .facts_for_session(&imported.session_id)

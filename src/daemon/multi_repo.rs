@@ -1309,13 +1309,24 @@ mod tests {
         })
         .await
         .expect("startup indexing completes");
-        manager.sweep_idle(now);
-
-        assert!(conversations
-            .store
-            .read_session(&imported.session_id)
-            .expect("read session")
-            .is_none());
+        // Admission is process-wide: parallel tests can still be indexing
+        // other repositories. Verify eventual retention, not a one-tick grant.
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                manager.sweep_idle(now);
+                if conversations
+                    .store
+                    .read_session(&imported.session_id)
+                    .expect("read session")
+                    .is_none()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("retention sweep completes after competing background work");
         assert!(conversations
             .knowledge
             .facts_for_session(&imported.session_id)

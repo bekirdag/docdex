@@ -2059,6 +2059,9 @@ fn delegation_selects_falls_back_without_candidates() {
 
 #[test]
 fn delegation_selects_primary_prefers_mcoda_on_tie() {
+    // Selection must not inherit another test's recent agent failures.
+    let state = TempDir::new().expect("failure history state");
+    let _state = EnvGuard::set("DOCDEX_STATE_DIR", state.path().to_string_lossy().as_ref());
     let mut library = LocalModelLibrary::default();
     library.models.push(LocalModelEntry {
         name: "ollama-code".to_string(),
@@ -2099,6 +2102,9 @@ fn delegation_selects_primary_prefers_mcoda_on_tie() {
 
 #[test]
 fn delegation_selects_primary_avoids_local_target_when_possible() {
+    // Selection must not inherit another test's recent agent failures.
+    let state = TempDir::new().expect("failure history state");
+    let _state = EnvGuard::set("DOCDEX_STATE_DIR", state.path().to_string_lossy().as_ref());
     let mut library = LocalModelLibrary::default();
     library.models.push(LocalModelEntry {
         name: "local-model".to_string(),
@@ -2140,6 +2146,9 @@ fn delegation_selects_primary_avoids_local_target_when_possible() {
 
 #[test]
 fn delegation_selects_primary_skips_embedding_only_models() {
+    // Selection must not inherit another test's recent agent failures.
+    let state = TempDir::new().expect("failure history state");
+    let _state = EnvGuard::set("DOCDEX_STATE_DIR", state.path().to_string_lossy().as_ref());
     let mut library = LocalModelLibrary::default();
     library.models.push(LocalModelEntry {
         name: "embed-only".to_string(),

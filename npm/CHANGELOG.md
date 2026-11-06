@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-## 0.2.100
+## 0.2.101
+- Update vulnerable HTML sanitization, archive, TLS/QUIC and compression dependencies while preserving the Tantivy 0.21 index format. Pin CI Python for release validation.
 - Avoid rereading unchanged client transcripts before capture deduplication; bound automatic transcript reads while preserving original histories and existing memories.
 - Share daemon/MCP indexes, reduce per-repository writer working sets, reconcile changed files incrementally, prune ignored watcher subtrees, and recover edits made while repositories were idle.
 - Add cgroup-aware background admission, interactive request priority, and repository/operation resource diagnostics for cache churn investigations.

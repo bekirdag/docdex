@@ -1,0 +1,11 @@
+{
+  "crate": "tantivy-sstable",
+  "version": "0.2.0",
+  "crates_io_archive_sha256": "fc0c1bb43e5e8b8e05eb8009610344dbf285f06066c844032fbb3e546b3c71df",
+  "rust_sources_unchanged": true,
+  "changes": [
+    "Cargo.toml zstd 0.12 -> 0.13",
+    "Cargo.toml.orig zstd 0.12 -> 0.13",
+    "upstream license and Docdex provenance notes added"
+  ]
+}

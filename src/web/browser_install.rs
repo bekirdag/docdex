@@ -772,7 +772,7 @@ fn extract_zip(archive_path: &Path, dest_dir: &Path) -> Result<()> {
     let mut symlinks = Vec::new();
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i).context("read chromium archive entry")?;
-        let Some(rel_path) = entry.enclosed_name().map(Path::to_path_buf) else {
+        let Some(rel_path) = entry.enclosed_name() else {
             continue;
         };
         let out_path = dest_dir.join(rel_path);
@@ -841,7 +841,7 @@ fn reserve_extracted_bytes(current: u64, additional: u64) -> Result<u64> {
     Ok(total)
 }
 
-fn zip_entry_is_symlink(entry: &zip::read::ZipFile<'_>) -> bool {
+fn zip_entry_is_symlink(entry: &zip::read::ZipFile<'_, impl Read>) -> bool {
     entry
         .unix_mode()
         .is_some_and(|mode| mode & 0o170000 == 0o120000)
@@ -894,7 +894,10 @@ fn create_safe_archive_symlink(dest_dir: &Path, link_path: &Path, target: &Path)
 }
 
 #[cfg(unix)]
-fn apply_zip_entry_permissions(entry: &zip::read::ZipFile<'_>, out_path: &Path) -> Result<()> {
+fn apply_zip_entry_permissions(
+    entry: &zip::read::ZipFile<'_, impl Read>,
+    out_path: &Path,
+) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let Some(mode) = entry.unix_mode() else {
         return Ok(());
@@ -1015,7 +1018,7 @@ mod tests {
         {
             let file = File::create(&archive_path).expect("archive file");
             let mut archive = zip::ZipWriter::new(file);
-            let options = zip::write::FileOptions::default();
+            let options = zip::write::SimpleFileOptions::default();
             archive
                 .start_file("bundle/Versions/1/resource.txt", options)
                 .expect("start resource");
@@ -1060,7 +1063,7 @@ mod tests {
                 .add_symlink(
                     "bundle/escape",
                     "../../outside",
-                    zip::write::FileOptions::default(),
+                    zip::write::SimpleFileOptions::default(),
                 )
                 .expect("add unsafe symlink");
             archive.finish().expect("finish archive");

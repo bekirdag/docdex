@@ -808,6 +808,21 @@ startup_timeout_sec = 300
   `DOCDEX_WEB_SEARXNG_URLS`) to disable this fallback. Invalid explicit values
   fail closed to an empty SearXNG list instead of silently sending queries to
   the default endpoint.
+- SearXNG result categories are chosen per query: code and developer-docs
+  queries (identifiers such as `block_in_place` or `std::fs`, API/reference,
+  troubleshooting, code-example wording) request `categories=general,it`;
+  every other research query requests `categories=general`, so
+  developer-documentation engines do not crowd out on-topic results. To pin
+  categories for an endpoint, put them on its URL; a configured `categories`
+  parameter survives normalization and always wins over the per-query default
+  (other query parameters are still dropped):
+  ```toml
+  [web]
+  searxng_urls = ["http://127.0.0.2:8888/search?categories=general"]
+  ```
+  Commas inside an endpoint's query string are kept, so
+  `?categories=general,it` also works in the comma-separated environment
+  variable.
 - `DOCDEX_WEB_*` knobs for thresholds, timeouts, cache TTL, and backoff.
 - `DOCDEX_WEB_BROWSER` / `DOCDEX_CHROME_PATH` to set a Chromium binary.
 - `web.scraper.engine` in `config.toml` is `chromium` (only supported engine).

@@ -1741,8 +1741,11 @@ pub fn default_searxng_urls() -> Vec<String> {
 
 pub fn normalize_searxng_urls(values: &[String]) -> Vec<String> {
     let mut normalized = Vec::new();
-    for value in values.iter().flat_map(|value| value.split(',')) {
-        let Some(url) = normalize_searxng_url(value) else {
+    for value in values
+        .iter()
+        .flat_map(|value| split_searxng_url_list(value))
+    {
+        let Some(url) = normalize_searxng_url(&value) else {
             continue;
         };
         if !normalized.contains(&url) {
@@ -1752,13 +1755,58 @@ pub fn normalize_searxng_urls(values: &[String]) -> Vec<String> {
     normalized
 }
 
+/// Split a comma-separated list of SearXNG endpoints.
+///
+/// A comma inside an endpoint's query string belongs to that endpoint, so
+/// `https://se.example/search?categories=general,it` stays one entry: a
+/// segment is only treated as a new endpoint once the previous one has no
+/// query string, or when the segment itself starts a URL.
+fn split_searxng_url_list(raw: &str) -> Vec<String> {
+    let mut entries: Vec<String> = Vec::new();
+    for segment in raw.split(',') {
+        if let Some(last) = entries.last_mut() {
+            if last.contains('?') && !segment.contains("://") {
+                last.push(',');
+                last.push_str(segment);
+                continue;
+            }
+        }
+        entries.push(segment.to_string());
+    }
+    entries
+}
+
+/// SearXNG query parameter an operator may pin on a configured endpoint.
+pub const SEARXNG_CATEGORIES_PARAM: &str = "categories";
+
 fn normalize_searxng_url(raw: &str) -> Option<String> {
     let mut url = Url::parse(raw.trim()).ok()?;
     if !matches!(url.scheme(), "http" | "https") || url.host().is_none() {
         return None;
     }
+    // Docdex supplies `q` and `format` per request, so every other parameter is
+    // dropped. `categories` is the exception: an operator who pins it on an
+    // endpoint has chosen that endpoint's result scope, and it must win over
+    // the per-query default.
+    let categories = url
+        .query_pairs()
+        .filter(|(key, _)| key == SEARXNG_CATEGORIES_PARAM)
+        .map(|(_, value)| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .filter(|value| !value.is_empty())
+        .last();
     url.set_query(None);
     url.set_fragment(None);
+    if let Some(categories) = categories {
+        url.query_pairs_mut()
+            .append_pair(SEARXNG_CATEGORIES_PARAM, &categories);
+    }
 
     let path = url.path().trim_end_matches('/');
     let search_path = if path.is_empty() {
@@ -1830,6 +1878,36 @@ mod tests {
         invalid.web.searxng_urls = vec!["ftp://invalid.example".to_string()];
         invalid.apply_defaults().expect("defaults");
         assert!(invalid.web.searxng_urls.is_empty());
+    }
+
+    #[test]
+    fn searxng_configured_categories_survive_normalization() {
+        let values = vec![
+            "https://se.example/search?categories=general&stale=1#frag".to_string(),
+            "https://two.example?categories=general,it, https://three.example/search?categories="
+                .to_string(),
+        ];
+        let normalized = normalize_searxng_urls(&values);
+        assert_eq!(
+            normalized,
+            vec![
+                "https://se.example/search?categories=general".to_string(),
+                "https://two.example/search?categories=general%2Cit".to_string(),
+                "https://three.example/search".to_string(),
+            ]
+        );
+        for value in &normalized {
+            assert!(Url::parse(value).is_ok(), "normalized url parses: {value}");
+        }
+
+        let mut config = AppConfig::default();
+        config.web.searxng_urls =
+            vec!["http://127.0.0.2:8888/search?categories=general".to_string()];
+        config.apply_defaults().expect("defaults");
+        assert_eq!(
+            config.web.searxng_urls,
+            vec!["http://127.0.0.2:8888/search?categories=general".to_string()]
+        );
     }
 
     #[test]

@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- Request SearXNG `categories=general` for research queries and keep `general,it` only for code/developer-docs queries; `it` let MDN, Microsoft Learn, Docker Hub, Hex and Hoogle fill 11 of the top 20 results on non-code research.
+- Honour a `categories` parameter on a configured `searxng_urls` entry. Normalization used to strip the whole query string, so an operator's `?categories=general` was silently ignored; it now survives and overrides the per-query default.
 
 ## 0.2.101
 - Update vulnerable HTML sanitization, archive, TLS/QUIC and compression dependencies while preserving the Tantivy 0.21 index format. Pin CI Python for release validation.

@@ -1814,6 +1814,16 @@ async fn run_web_discovery(
     let debug_enabled = env_boolish("DOCDEX_WEB_DEBUG").unwrap_or(false);
     let (query_category, category_source) =
         classify_query_category(query, llm_model, llm_agent).await;
+    let mut discovery = discovery;
+    // The classified category may come from the LLM, so it can mark a code
+    // query that the text heuristics miss; either signal keeps `it`.
+    let searxng_categories =
+        if category_prefers_code_sources(query_category) || query_prefers_code_sources(query) {
+            crate::web::ddg::SEARXNG_CODE_CATEGORIES
+        } else {
+            crate::web::ddg::SEARXNG_RESEARCH_CATEGORIES
+        };
+    discovery.set_searxng_categories(searxng_categories);
 
     let mut discovery_limit = (web_limit * WEB_DISCOVERY_MULTIPLIER)
         .max(web_limit)
@@ -4420,6 +4430,84 @@ fn parse_query_category(value: &str) -> Option<QueryCategory> {
     Some(category)
 }
 
+/// Whether a query is about code or developer documentation, and so should
+/// search SearXNG's `it` category alongside `general`.
+///
+/// Research queries (finance, news, general facts) are better served by
+/// `general` alone; `it` adds developer-documentation engines whose results
+/// crowd out on-topic ones.
+pub(crate) fn query_prefers_code_sources(query: &str) -> bool {
+    category_prefers_code_sources(detect_query_category_heuristic(query))
+        || matches!(detect_query_intent(query), QueryIntent::Code)
+        || query_has_code_identifier(query)
+}
+
+fn category_prefers_code_sources(category: QueryCategory) -> bool {
+    matches!(
+        category,
+        QueryCategory::CodeExample | QueryCategory::ApiReference | QueryCategory::Troubleshooting
+    )
+}
+
+/// Detect identifier-shaped terms (`block_in_place`, `std::fs`, `useEffect`,
+/// `fetch()`, `Cargo.toml`) that only appear in code queries.
+fn query_has_code_identifier(query: &str) -> bool {
+    query.split_whitespace().any(|term| {
+        let term = term.trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | ',' | '?' | '!'));
+        if term.contains("::") || term.contains("()") || term.contains("->") {
+            return true;
+        }
+        let alnum = |c: char| c.is_ascii_alphanumeric();
+        if term.contains('_') && term.split('_').filter(|part| !part.is_empty()).count() >= 2 {
+            return term.chars().all(|c| alnum(c) || c == '_');
+        }
+        if let Some((stem, ext)) = term.rsplit_once('.') {
+            if !stem.is_empty()
+                && stem.chars().any(|c| c.is_ascii_alphabetic())
+                && matches!(
+                    ext.to_ascii_lowercase().as_str(),
+                    "rs" | "py"
+                        | "js"
+                        | "ts"
+                        | "tsx"
+                        | "jsx"
+                        | "go"
+                        | "java"
+                        | "rb"
+                        | "toml"
+                        | "yaml"
+                        | "yml"
+                        | "json"
+                        | "sh"
+                        | "c"
+                        | "h"
+                        | "cpp"
+                        | "hpp"
+                        | "cs"
+                        | "kt"
+                        | "swift"
+                        | "php"
+                        | "lua"
+                        | "sql"
+                )
+            {
+                return true;
+            }
+        }
+        // camelCase: a lowercase letter immediately followed by an uppercase
+        // one, inside a purely alphanumeric term (excludes "iPhone"-style words
+        // only loosely, which is acceptable: the cost is the `it` category).
+        let chars: Vec<char> = term.chars().collect();
+        chars.len() > 3
+            && chars.iter().all(|c| alnum(*c))
+            && chars[0].is_ascii_lowercase()
+            && chars
+                .windows(2)
+                .skip(1)
+                .any(|pair| pair[0].is_ascii_lowercase() && pair[1].is_ascii_uppercase())
+    })
+}
+
 fn detect_query_category_heuristic(query: &str) -> QueryCategory {
     let query_lc = query.trim().to_ascii_lowercase();
     if query_lc.is_empty() {
@@ -5464,6 +5552,36 @@ mod tests {
     fn detect_query_category_heuristic_code_example() {
         let category = detect_query_category_heuristic("user approval code sample");
         assert_eq!(category, QueryCategory::CodeExample);
+    }
+
+    #[test]
+    fn research_queries_do_not_prefer_code_sources() {
+        for query in [
+            "Norwegian sovereign wealth fund annual return 2025",
+            "population of Lagos 2024",
+            "who won the 2026 Tour de France",
+            "iPhone 17 battery life review",
+        ] {
+            assert!(
+                !query_prefers_code_sources(query),
+                "research query: {query}"
+            );
+        }
+    }
+
+    #[test]
+    fn code_queries_prefer_code_sources() {
+        for query in [
+            "tokio block_in_place",
+            "std::fs::read_to_string",
+            "react useEffect cleanup",
+            "Cargo.toml workspace inheritance",
+            "axum router api reference",
+            "timeout error fix",
+            "how to parse json in rust",
+        ] {
+            assert!(query_prefers_code_sources(query), "code query: {query}");
+        }
     }
 
     #[test]

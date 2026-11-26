@@ -29,7 +29,12 @@ const SEARXNG_PROVIDER: &str = "searxng_json";
 /// leaves its whole `it` engine set (Stack Overflow, GitHub, MDN, crates.io,
 /// package registries) idle. Docdex asks code and documentation questions, so
 /// those engines carry more signal per request than extra general engines.
-const SEARXNG_CATEGORIES: &str = "general,it";
+/// SearXNG categories for research (non-code) queries. The `it` category pulls
+/// in developer-documentation engines (MDN, Microsoft Learn, Docker Hub, Hex,
+/// Hoogle) that crowd out on-topic results for everything else.
+pub const SEARXNG_RESEARCH_CATEGORIES: &str = "general";
+/// SearXNG categories for code and developer-documentation queries.
+pub const SEARXNG_CODE_CATEGORIES: &str = "general,it";
 const BRAVE_PROVIDER: &str = "brave";
 const GOOGLE_CSE_PROVIDER: &str = "google_cse";
 const BING_PROVIDER: &str = "bing";
@@ -88,6 +93,8 @@ pub struct DdgDiscovery {
     searxng_client: reqwest::Client,
     blocklist: Vec<String>,
     cache_layout: Option<crate::state_layout::StateLayout>,
+    /// Caller-chosen SearXNG categories; `None` picks per query.
+    searxng_categories: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -305,7 +312,21 @@ impl DdgDiscovery {
             searxng_client,
             blocklist,
             cache_layout,
+            searxng_categories: None,
         })
+    }
+
+    /// Pin the SearXNG categories requested for queries that do not hit an
+    /// endpoint with operator-configured `categories`. Callers that have
+    /// already classified the query (web research) use this; everyone else
+    /// gets [`default_searxng_categories`].
+    pub fn set_searxng_categories(&mut self, categories: &'static str) {
+        self.searxng_categories = Some(categories);
+    }
+
+    fn searxng_categories_for(&self, query: &str) -> &'static str {
+        self.searxng_categories
+            .unwrap_or_else(|| default_searxng_categories(query))
     }
 
     pub fn max_results(&self) -> usize {
@@ -336,7 +357,12 @@ impl DdgDiscovery {
                 Some(selected_provider.as_str())
             };
         let url = build_ddg_url(&self.config.ddg_base_url, query)?;
-        let cache_key = discovery_cache_key(&self.config, &selected_provider, query);
+        let cache_key = discovery_cache_key(
+            &self.config,
+            &selected_provider,
+            self.searxng_categories_for(query),
+            query,
+        );
         let mut proxy_attempted = false;
         let proxy_base_url = self.config.ddg_proxy_base_url.as_ref();
 
@@ -739,7 +765,12 @@ impl DdgDiscovery {
             } else {
                 Some(selected_provider.as_str())
             };
-        let cache_key = discovery_cache_key(&self.config, &selected_provider, query);
+        let cache_key = discovery_cache_key(
+            &self.config,
+            &selected_provider,
+            self.searxng_categories_for(query),
+            query,
+        );
         let mut last_error: Option<anyhow::Error> = None;
         let mut fallback_chain = None;
         let chain = self.fallback_chain_for(&mut fallback_chain, true, preferred_fallback_provider);
@@ -1031,7 +1062,7 @@ impl DdgDiscovery {
         cache_limit: usize,
         cache_key: &str,
     ) -> Result<Option<WebDiscoveryResponse>> {
-        let url = build_searxng_url(base_url, query)?;
+        let url = build_searxng_url(base_url, query, self.searxng_categories_for(query))?;
         let resp = self.searxng_client.get(url).send().await?;
         if !resp.status().is_success() {
             self.note_provider_status(SEARXNG_PROVIDER, resp.status());
@@ -1393,12 +1424,32 @@ fn build_ddg_url(base: &Url, query: &str) -> Result<Url> {
     Ok(url)
 }
 
-fn build_searxng_url(base: &Url, query: &str) -> Result<Url> {
+/// Choose SearXNG categories from the query text alone.
+///
+/// Code-shaped queries keep `general,it`; anything else is research and asks
+/// for `general` only.
+pub fn default_searxng_categories(query: &str) -> &'static str {
+    if crate::orchestrator::web::query_prefers_code_sources(query) {
+        SEARXNG_CODE_CATEGORIES
+    } else {
+        SEARXNG_RESEARCH_CATEGORIES
+    }
+}
+
+fn build_searxng_url(base: &Url, query: &str, default_categories: &str) -> Result<Url> {
     let mut url = base.clone();
-    url.query_pairs_mut()
-        .append_pair("q", query)
-        .append_pair("format", "json")
-        .append_pair("categories", SEARXNG_CATEGORIES);
+    // An endpoint configured with `?categories=...` keeps the operator's
+    // choice; only endpoints without one get the per-query default.
+    let configured = base
+        .query_pairs()
+        .any(|(key, value)| key == "categories" && !value.trim().is_empty());
+    {
+        let mut pairs = url.query_pairs_mut();
+        pairs.append_pair("q", query).append_pair("format", "json");
+        if !configured {
+            pairs.append_pair("categories", default_categories);
+        }
+    }
     Ok(url)
 }
 
@@ -1475,7 +1526,12 @@ fn is_loopback_url(url: &Url) -> bool {
     }
 }
 
-fn discovery_cache_key(config: &WebConfig, provider: &str, query: &str) -> String {
+fn discovery_cache_key(
+    config: &WebConfig,
+    provider: &str,
+    searxng_categories: &str,
+    query: &str,
+) -> String {
     let searxng_origins = config
         .searxng_urls
         .iter()
@@ -1483,7 +1539,7 @@ fn discovery_cache_key(config: &WebConfig, provider: &str, query: &str) -> Strin
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        "discovery:{provider}:ddg={}:searxng={searxng_origins}:mswarm={}:q={query}",
+        "discovery:{provider}:ddg={}:searxng={searxng_origins}:cat={searxng_categories}:mswarm={}:q={query}",
         config.ddg_base_url, config.mswarm_base_url
     )
 }
@@ -2584,18 +2640,58 @@ Markdown Content:
         assert!(results[0].snippet.is_none());
     }
 
-    #[test]
-    fn searxng_url_requests_general_and_it_categories() {
-        let base = Url::parse("http://127.0.0.1:18888/search").expect("base url");
-
-        let url = build_searxng_url(&base, "tokio block_in_place").expect("searxng url");
-
-        let pairs: Vec<(String, String)> = url
-            .query_pairs()
+    fn searxng_pairs(url: &Url) -> Vec<(String, String)> {
+        url.query_pairs()
             .map(|(k, v)| (k.into_owned(), v.into_owned()))
-            .collect();
+            .collect()
+    }
+
+    #[test]
+    fn searxng_url_requests_general_and_it_categories_for_code_queries() {
+        let base = Url::parse("http://127.0.0.1:18888/search").expect("base url");
+        let query = "tokio block_in_place";
+        assert_eq!(default_searxng_categories(query), SEARXNG_CODE_CATEGORIES);
+
+        let url = build_searxng_url(&base, query, default_searxng_categories(query))
+            .expect("searxng url");
+
+        let pairs = searxng_pairs(&url);
         assert!(pairs.contains(&("format".to_string(), "json".to_string())));
         assert!(pairs.contains(&("categories".to_string(), "general,it".to_string())));
+    }
+
+    #[test]
+    fn searxng_url_requests_general_only_for_research_queries() {
+        let base = Url::parse("http://127.0.0.1:18888/search").expect("base url");
+        let query = "Norwegian sovereign wealth fund annual return 2025";
+        assert_eq!(
+            default_searxng_categories(query),
+            SEARXNG_RESEARCH_CATEGORIES
+        );
+
+        let url = build_searxng_url(&base, query, default_searxng_categories(query))
+            .expect("searxng url");
+
+        let pairs = searxng_pairs(&url);
+        assert!(pairs.contains(&("categories".to_string(), "general".to_string())));
+    }
+
+    #[test]
+    fn searxng_url_keeps_operator_configured_categories() {
+        let configured = crate::config::normalize_searxng_urls(&[
+            "http://127.0.0.2:8888/search?categories=general&stale=1".to_string(),
+        ]);
+        let base = Url::parse(&configured[0]).expect("base url");
+
+        let url = build_searxng_url(&base, "tokio block_in_place", SEARXNG_CODE_CATEGORIES)
+            .expect("searxng url");
+
+        let categories: Vec<String> = searxng_pairs(&url)
+            .into_iter()
+            .filter(|(k, _)| k == "categories")
+            .map(|(_, v)| v)
+            .collect();
+        assert_eq!(categories, vec!["general".to_string()]);
     }
 
     #[test]

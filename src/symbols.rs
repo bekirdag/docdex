@@ -31,7 +31,7 @@ const AST_NODE_STORE_LIMIT: usize = 50_000;
 const AST_NODE_NAME_LIMIT: usize = 120;
 const TREE_SITTER_VERSION: &str = "0.22.6";
 const TREE_SITTER_GO_VERSION: &str = "0.21.2";
-const TREE_SITTER_JAVASCRIPT_VERSION: &str = "0.21.4";
+const TREE_SITTER_JAVASCRIPT_VERSION: &str = "0.23.1";
 const TREE_SITTER_PYTHON_VERSION: &str = "0.21.0";
 const TREE_SITTER_RUST_VERSION: &str = "0.21.2";
 const TREE_SITTER_TYPESCRIPT_VERSION: &str = "0.21.2";
@@ -2022,11 +2022,14 @@ fn extract_tree_sitter_symbols(
     Ok(symbols)
 }
 
-fn tree_sitter_language(language: SourceLanguage, rel_path: &str) -> Option<Language> {
+pub(crate) fn tree_sitter_language(language: SourceLanguage, rel_path: &str) -> Option<Language> {
     match language {
         SourceLanguage::Rust => Some(ts_rust::language()),
         SourceLanguage::Python => Some(ts_python::language()),
-        SourceLanguage::JavaScript => Some(ts_javascript::language()),
+        SourceLanguage::JavaScript => {
+            // The grammar exports a static, non-null TSLanguage compatible with runtime ABI 14.
+            Some(unsafe { Language::from_raw(ts_javascript::LANGUAGE.into_raw()().cast()) })
+        }
         SourceLanguage::TypeScript => {
             if rel_path.to_lowercase().ends_with(".tsx") {
                 Some(ts_typescript::language_tsx())

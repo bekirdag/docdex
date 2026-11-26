@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.2.103
+- Ship query-aware SearXNG categories and endpoint overrides with security updates for SQLite, HTML sanitization, cookies, QUIC and URL parsing.
+
 ## 0.2.102
 - Request SearXNG `categories=general` for research queries and keep `general,it` only for code/developer-docs queries; `it` let MDN, Microsoft Learn, Docker Hub, Hex and Hoogle fill 11 of the top 20 results on non-code research.
 - Honour a `categories` parameter on a configured `searxng_urls` entry. Normalization used to strip the whole query string, so an operator's `?categories=general` was silently ignored; it now survives and overrides the per-query default.

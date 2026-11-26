@@ -360,37 +360,10 @@ fn parse_tree(
     rel_path: &str,
     content: &str,
 ) -> Option<tree_sitter::Tree> {
-    let ts_language = tree_sitter_language(language, rel_path)?;
+    let ts_language = crate::symbols::tree_sitter_language(language, rel_path)?;
     let mut parser = Parser::new();
     parser.set_language(&ts_language).ok()?;
     parser.parse(content, None)
-}
-
-fn tree_sitter_language(language: SourceLanguage, rel_path: &str) -> Option<tree_sitter::Language> {
-    match language {
-        SourceLanguage::Rust => Some(ts_rust::language()),
-        SourceLanguage::Python => Some(ts_python::language()),
-        SourceLanguage::JavaScript => Some(ts_javascript::language()),
-        SourceLanguage::TypeScript => {
-            if rel_path.to_lowercase().ends_with(".tsx") {
-                Some(ts_typescript::language_tsx())
-            } else {
-                Some(ts_typescript::language_typescript())
-            }
-        }
-        SourceLanguage::Go => Some(ts_go::language()),
-        SourceLanguage::Java => Some(ts_java::language()),
-        SourceLanguage::CSharp => Some(ts_c_sharp::language()),
-        SourceLanguage::C => Some(ts_c::language()),
-        SourceLanguage::Cpp => Some(ts_cpp::language()),
-        SourceLanguage::Php => Some(ts_php::language_php()),
-        SourceLanguage::Kotlin => Some(ts_kotlin::language()),
-        SourceLanguage::Swift => Some(ts_swift::language()),
-        SourceLanguage::Ruby => Some(ts_ruby::language()),
-        SourceLanguage::Lua => Some(ts_lua::language()),
-        SourceLanguage::Dart => Some(ts_dart::language()),
-        SourceLanguage::Markdown => None,
-    }
 }
 
 fn collect_js_ts_imports(
